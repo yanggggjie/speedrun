@@ -100,3 +100,10 @@ MCP 工具：`get_handoff_pack`、`get_control_state`/`wait_for_human_idle`、`t
 - **显式交还优先**：人点"交还"（可附一句话）是首选信号；静默时长只是兜底，因为分不清"做完了"和"在想"。agent 这一轮已结束时，由人在 agent 窗口说一句话，agent 下一次调工具就读到待读消息。
 - **判人算法的改进（待验证）**：键盘和滚轮改成一对一消耗对账（事件数多于 agent 发出的指令数，就说明人动了），并且优先用 DOM 合成事件（`isTrusted: false`），这样页面里 `isTrusted: true` 的事件就一定是人，只有必须用 CDP 输入的动作才走水印加对账。
 - **待验证**：各 harness 的工具调用超时上限、轮询的 token 成本、静默阈值、点"交还"的快捷键和提示方式。
+
+## 13. 录制范围与体积（讨论结论）
+- **硬上限 1GB**（索引、响应体、快照、SQLite 合计）。daemon 定期检查，不是每次写入都查。达到约 80% 先淘汰页面自己轮询发出的响应体，再按天淘汰最旧的响应体和快照；索引最后才动。按天分文件和目录，淘汰就是删文件。估算 24 小时约 20–30MB（未实测），1GB 主要防极端页面。
+- **只录前台 tab，agent 的 tab 例外**。前台 = 页面 `document.visibilityState === "visible"`（hook 本地判断，不需要扩展发消息），离开前台有 5–10 秒宽限（点击触发的请求还在飞）。后台 tab 只记导航和请求计数，不读响应体、不取快照。agent 在最近约 10 分钟内发过命令或持有租约的 tab，不论前后台一律全量录。人的输入只会发生在前台 tab，所以租约和判人不受影响。待实测：`visibilityState` 在各系统被其他应用遮挡时的表现。
+- **过滤埋点，借鉴 yodo（`/Users/me/Code/x/yodo/yodo-browser-skill/skills/yodo/src/record/pipeline.ts`）**：用 `@ghostery/adblocker` 的预置广告和跟踪规则（url + 类型 + sourceUrl）给请求打"噪声"标记；脱敏沿用 `RecordSanitizer`（敏感字段名正则、JWT/UUID/hex 形态识别、同一个秘密用稳定别名 `⟨secret_001:jwt⟩`，agent 看别名，原值留本地，重放时替换）；第三方请求按（方法 + 不带参数的 URL）去重。与 yodo 不同：yodo 只留 2xx 且直接丢弃噪声；我们保留非 2xx（登录过期、报错对 agent 有用，只存索引加小响应体），噪声请求不丢，只存索引并合并成计数。
+- **第一方埋点要另外识别**：知乎自己的 `zhihu-web-analytics`、`datahub`、`apm` 都是同站，adblock 规则和"第三方"规则都抓不住。补启发式：POST 加 204 或响应体极小；URL 含 collect/log/track/beacon/apm/analytics；这类只记索引。
+- **在源头少读**：hook 只对"同站点且不是噪声"的请求读响应体，其余只发一条很小的元信息。adblock 规则在 daemon 里跑，给索引打标记和决定默认视图是否隐藏。
