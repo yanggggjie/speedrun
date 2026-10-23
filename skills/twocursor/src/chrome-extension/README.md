@@ -7,7 +7,7 @@
 
 ## 文件
 
-- `manifest.json`：固定 `key`，扩展 ID 为 `apnadjjfmlppoolfkobcbppllognhkcb`（与 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）。权限：`debugger`、`tabs`、`nativeMessaging`、`storage`、`alarms`、`scripting`，以及 `host_permissions: <all_urls>`。内容脚本不写在 manifest 里，由白名单动态注册，白名单之外的站点不注入、不读取。
+- `manifest.json`：固定 `key`，扩展 ID 为 `dkjmgdhelenchaippejoppbcfbjfgppl`（与 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）。权限：`debugger`、`tabs`、`nativeMessaging`、`storage`、`alarms`、`scripting`，以及 `host_permissions: <all_urls>`。内容脚本不写在 manifest 里，由白名单动态注册，白名单之外的站点不注入、不读取。
 - `background.js`：连接、操作、事件转发、所有权登记、录制白名单与事件批量转发。
 - `journal/hook.js`（页面里，MAIN world）与 `journal/relay.js`（隔离世界）：录制脚本。
 - `background.selfcheck.mjs`：用桩对象模拟 `chrome.*` 的冒烟测试（`npm test` 运行）。

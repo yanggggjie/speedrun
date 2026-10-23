@@ -9,7 +9,7 @@ import * as path from "node:path";
 
 export const NATIVE_HOST_NAME = "com.twocursor.connect";
 /** 由 chrome-extension/manifest.json 的 key 决定；改 key 会改变这个 ID。 */
-export const EXTENSION_ID = "apnadjjfmlppoolfkobcbppllognhkcb";
+export const EXTENSION_ID = "dkjmgdhelenchaippejoppbcfbjfgppl";
 
 const TWOCURSOR_HOME = path.join(os.homedir(), ".twocursor");
 /** setup.js 把 src/ 拷到这里；扩展与 manifest 都指向这个稳定位置。 */
