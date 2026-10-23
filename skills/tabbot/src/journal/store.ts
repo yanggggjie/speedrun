@@ -74,6 +74,11 @@ export class JournalStore {
     this.dbFor(day).prepare("UPDATE events SET dup = dup + 1, ts_last = ? WHERE seq = ?").run(ts, seq);
   }
 
+  /** 动作做完之后补上元素描述和结果。 */
+  update(day: string, seq: number, fields: { target?: string; size?: number; detail?: string }): void {
+    this.dbFor(day).prepare("UPDATE events SET target = COALESCE(?, target), size = COALESCE(?, size), detail = COALESCE(?, detail) WHERE seq = ?").run(fields.target ?? null, fields.size ?? null, fields.detail ?? null, seq);
+  }
+
   lastSeq(): number { return this.seq; }
 
   /** 写文件，已存在就不重写（同一天内按内容去重）。 */

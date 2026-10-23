@@ -52,12 +52,39 @@ link.onAny((method, params, sessionId) => {
 let journal: Ingestor | undefined;
 let adblock: FiltersEngine | undefined;
 const RETENTION_CHECK_MS = 5 * 60_000;
+link.raw.on("lease", (params) => {
+  const m = params as { tab: number; state: string; t: number; reason?: string; by?: string };
+  journal?.recordLease(m);
+});
 link.raw.on("journal", (params) => {
   const events = (params as { events?: HookMsg[] }).events;
   if (Array.isArray(events)) journal?.handleBatch(events);
 });
 /** 录制范围推给扩展：扩展每次 hello 之后、CLI 改了范围之后各推一次。 */
 function pushSites(): Promise<unknown> { return link.siteOp("setSites", extensionConfig(readConfig())); }
+/** agent 的动作：经扩展在页面里执行；动作和它引发的请求记进日志（来源 agent）。返回扩展的结果，加上动作那一行的 seq。 */
+async function runAct(tabId: number, cmd: Record<string, unknown>): Promise<unknown> {
+  const kind = String(cmd.kind ?? "");
+  const ts = Date.now();
+  const target = typeof cmd.ref === "string" ? cmd.ref : typeof cmd.url === "string" ? cmd.url : typeof cmd.key === "string" ? cmd.key : "";
+  const act = journal?.beginAct(tabId, ts, kind, target, { cmd: { ...cmd, text: undefined }, chars: typeof cmd.text === "string" ? cmd.text.length : undefined });
+  try {
+    const result = (await link.siteOp("act", { tabId, cmd })) as { ok?: boolean; target?: unknown; chars?: number; error?: string; rejected?: string };
+    if (act) journal?.endAct(tabId, act, Date.now(), { target: describeTarget(result.target) || target, size: result.chars, detail: { ok: result.ok, error: result.error, rejected: result.rejected } });
+    return { ...(result as object), actSeq: act?.seq };
+  } catch (error) {
+    if (act) journal?.endAct(tabId, act, Date.now(), { detail: { ok: false, error: error instanceof Error ? error.message : String(error) } });
+    throw error;
+  }
+}
+/** 页面里返回的元素描述 { tag, role, text, sel } 变成日志里的 `button[提交]`。 */
+function describeTarget(t: unknown): string {
+  if (typeof t === "string") return t;
+  if (!t || typeof t !== "object") return "";
+  const o = t as { tag?: string; role?: string | null; text?: string };
+  const name = (o.role || o.tag || "").trim();
+  return o.text ? `${name}[${o.text.slice(0, 30)}]` : name;
+}
 /** ponytail: 没有 relay 且没有 run/record 超过 10 分钟才退出；忙时不重试，下次 relay 断开再判断。 */
 const IDLE_EXIT_MS = 10 * 60_000;
 
@@ -111,6 +138,8 @@ async function dispatch(req: JsonRpcRequest, conn: ConnState): Promise<unknown> 
     const params = paramsOf(req);
     if (req.method === "journal.sync") return pushSites();
     if (req.method === "journal.tabs") return link.siteOp("siteTabs");
+    if (req.method === "journal.lease") return link.siteOp(params.op === "release" ? "leaseRelease" : "leaseAcquire", { tabId: params.tabId, reason: params.reason });
+    if (req.method === "journal.act") return runAct(Number(params.tabId), (params.cmd ?? {}) as Record<string, unknown>);
     return link.siteOp("snapshot", { tabId: params.tabId, full: params.full === true });
   }
   await ensureChrome();

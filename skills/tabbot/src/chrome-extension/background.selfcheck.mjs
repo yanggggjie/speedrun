@@ -44,7 +44,7 @@ globalThis.chrome = {
   scripting: {
     registerContentScripts: async (list) => { registered.push(...list); },
     unregisterContentScripts: async () => { registered.length = 0; },
-    executeScript: async ({ target, func, args }) => { calls.push(["executeScript", target.tabId]); return [{ result: func ? func(...args) : null }]; },
+    executeScript: async ({ target, func, args }) => { calls.push(["executeScript", target.tabId]); return [{ result: func ? await func(...args) : null }]; },
   },
   action: { onClicked: onEvt("actionClicked") },
   alarms: { create: (n, o) => calls.push(["alarm", n, o.periodInMinutes]), onAlarm: onEvt("alarm") },
@@ -70,6 +70,7 @@ globalThis.chrome = {
     get: async (id) => { const t = tabs.get(id); if (!t) throw new Error("no tab"); return t; },
     remove: async (id) => { tabs.delete(id); calls.push(["tabs.remove", id]); },
     query: async () => [...tabs.values()],
+    update: async (id, { url }) => { calls.push(["tabs.update", id, url]); const t = tabs.get(id); if (t) t.url = url; return t; },
     onCreated: onEvt("tabCreated"),
     onUpdated: onEvt("tabUpdated"),
     onRemoved: onEvt("tabRemoved"),
@@ -268,5 +269,81 @@ assert.equal("excludeMatches" in registered[0], false);
 await host({ id: 35, op: "tab", name: "setSites", args: { mode: "only", sites: ["ithome.com"], exclude: [] } });
 await settle();
 assert.deepEqual(registered[0].matches, ["*://ithome.com/*", "*://*.ithome.com/*"]);
+
+// 12. 租约与 act：agent 的动作是页面内的合成事件；真人输入（trusted 标记为真）在扩展里本地撤销租约；滚轮只算在场
+await host({ id: 39, op: "tab", name: "setSites", args: { mode: "all", sites: [], exclude: [] } });
+await settle();
+const T8003 = 8003;
+const sendMsg = (msg) => listeners.runtimeMessage({ __tcrl: 1, top: true, page: "https://v2ex.com/", msg }, { id: "fake-extension-id", tab: { id: T8003 }, frameId: 0 });
+const leasePosts = () => posted.filter((m) => m.type === "lease");
+const actOp = async (id, cmd) => { await host({ id, op: "tab", name: "act", args: { tabId: T8003, cmd } }); await settle(); return last().result; };
+// 没有租约，act 被拒
+assert.equal((await actOp(40, { kind: "click", ref: "@e1" })).rejected, "no-lease");
+// 获取租约（没有人输入过，不用等）
+await host({ id: 41, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
+assert.deepEqual(last().result, { granted: true });
+assert.equal(leasePosts().at(-1).state, "acquired");
+await host({ id: 42, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
+assert.deepEqual(last().result, { granted: true, already: true });
+// 范围之外的 tab（被排除、非网页）不能获取租约
+await host({ id: 43, op: "tab", name: "leaseAcquire", args: { tabId: 8004 } }); await settle();
+assert.match(last().error.message, /不在录制范围内/);
+// act：在页面里执行，结果原样返回
+globalThis.window = globalThis;
+globalThis.__tcrAct = async (c) => ({ ok: true, target: { tag: "button", text: "提交" }, settle: { settled: true, waitedMs: 130 }, url: "https://v2ex.com/", title: "V2EX", echo: c });
+let r = await actOp(44, { kind: "click", ref: "@e12" });
+assert.equal(r.ok, true); assert.equal(r.echo.ref, "@e12"); assert.equal(r.revokedDuring, undefined);
+// 动作引发页面跳转：executeScript 报 frame 被移除，算成功，并带上新地址
+globalThis.__tcrAct = async () => { throw new Error("Frame with ID 0 was removed."); };
+r = await actOp(45, { kind: "click", ref: "@e3" });
+assert.equal(r.ok, true); assert.equal(r.navigated, true); assert.ok(r.url);
+// 页面返回的失败原样带回；不相关的错误是失败
+globalThis.__tcrAct = async () => ({ ok: false, error: "元素 @e9 已不在页面上，请重新 snapshot" });
+assert.match((await actOp(46, { kind: "click", ref: "@e9" })).error, /已不在页面上/);
+globalThis.__tcrAct = async () => { throw new Error("Cannot access contents of the page"); };
+await host({ id: 47, op: "tab", name: "act", args: { tabId: T8003, cmd: { kind: "click", ref: "@e1" } } }); await settle();
+assert.match(last().error.message, /Cannot access/);
+// goto：用 tabs.update 导航
+r = await actOp(48, { kind: "goto", url: "https://v2ex.com/recent?p=2" });
+assert.equal(r.ok, true); assert.ok(calls.some((c) => c[0] === "tabs.update" && c[1] === T8003 && c[2] === "https://v2ex.com/recent?p=2"));
+// 合成事件（trusted 标记为 false，agent 自己产生的）不撤销租约；在场信号不进日志
+const journalBefore = journalPosts().flatMap((m) => m.events).length;
+sendMsg({ k: "ev", t: 1, type: "click", trusted: false });
+sendMsg({ k: "presence", kind: "key" }); // 在场信号：按键 → 撤销（下面验证）
+assert.equal(leasePosts().at(-1).state, "revoked", "真人按键立刻撤销租约");
+assert.deepEqual({ reason: leasePosts().at(-1).reason, by: leasePosts().at(-1).by }, { reason: "human", by: "key" });
+await new Promise((r2) => setTimeout(r2, 350));
+const newEvents = journalPosts().flatMap((m) => m.events).slice(journalBefore);
+assert.ok(newEvents.every((e) => e.k !== "presence"), "在场信号不进日志");
+// 撤销之后 act 被拒，并告诉 agent 人多久前动过
+r = await actOp(49, { kind: "click", ref: "@e1" });
+assert.equal(r.rejected, "no-lease"); assert.ok(r.humanIdleMs < 1500);
+// 人刚输入，租约不能马上拿回（防抖）
+await host({ id: 50, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
+assert.equal(last().result.granted, false); assert.equal(last().result.reason, "human-active");
+await new Promise((r2) => setTimeout(r2, 1600));
+await host({ id: 51, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
+assert.equal(last().result.granted, true, "人静默超过 1.5s 之后可以重新获取");
+// 滚轮、滚动只算在场，不撤销租约
+sendMsg({ k: "presence", kind: "wheel" });
+sendMsg({ k: "ev", t: 2, type: "scroll", trusted: true, dy: 300 });
+assert.equal(leasePosts().at(-1).state, "acquired", "滚轮不撤销租约");
+// 真人点击、输入、特殊键的事件也撤销租约
+sendMsg({ k: "ev", t: 3, type: "click", trusted: true, pressure: 0.5 });
+assert.equal(leasePosts().at(-1).state, "revoked");
+assert.equal(leasePosts().at(-1).by, "click");
+// 交还：带原因；没有租约时说明
+await new Promise((r2) => setTimeout(r2, 1600));
+await host({ id: 52, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
+await host({ id: 53, op: "tab", name: "leaseRelease", args: { tabId: T8003, reason: "请登录" } }); await settle();
+assert.deepEqual(last().result, { released: true });
+assert.deepEqual({ state: leasePosts().at(-1).state, reason: leasePosts().at(-1).reason }, { state: "released", reason: "请登录" });
+await host({ id: 54, op: "tab", name: "leaseRelease", args: { tabId: T8003 } }); await settle();
+assert.deepEqual(last().result, { released: false });
+// tabs 列表带上租约和人静默时间
+await host({ id: 55, op: "tab", name: "siteTabs", args: {} }); await settle();
+const t8003 = last().result.tabs.find((t) => t.tabId === T8003);
+assert.equal(t8003.lease, false); assert.equal(typeof t8003.humanIdleMs, "number");
+delete globalThis.__tcrAct; delete globalThis.window;
 
 console.log("extension smoke ok");

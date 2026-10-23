@@ -1,6 +1,6 @@
 /** 事件来源：human 是真人输入，agent 是 TabBot 自己发的动作，page 是页面自己做的（请求、脚本触发的事件）。 */
 export type Src = "human" | "agent" | "page";
-export type Kind = "input" | "nav" | "net" | "snap" | "ws" | "tab" | "bg";
+export type Kind = "input" | "nav" | "net" | "snap" | "ws" | "tab" | "bg" | "lease";
 
 /** 写进 events 表的一行（不含 seq）。 */
 export type NewEvent = {

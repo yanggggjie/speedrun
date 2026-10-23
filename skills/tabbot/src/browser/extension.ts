@@ -141,8 +141,8 @@ export class ExtensionLink {
     }
     if (msg.type === "event") {
       this.emit(String(msg.method), msg.params, String(msg.tabId));
-    } else if (msg.type === "journal") {
-      this.emit("journal", msg, undefined);
+    } else if (msg.type === "journal" || msg.type === "lease") {
+      this.emit(String(msg.type), msg, undefined);
     } else if (msg.type === "tab") {
       // 页面外的 tab 事件：created / updated / removed / detached
       this.emit(`tab.${String(msg.kind)}`, msg, undefined);

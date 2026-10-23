@@ -35,4 +35,5 @@ Authorization: Bearer ⟨secret_001:jwt⟩
 - 扩展需要读取所有站点的权限（`<all_urls>`）。排除某个站点：`tabbot sites exclude <域名>`；把内置排除的某个重新打开：`tabbot sites include <域名>`；改成只录点名的站点：`tabbot sites only <域名> ...`（`tabbot sites all` 改回来）。清掉历史：删除 `~/.tabbot/journal`。
 - 脱敏只处理 token、Cookie、密码这类明显的秘密；响应体里的正文（比如论坛帖子、聊天内容）原样写盘。
 - 页面内容和响应体写进日志后，agent 能读到它们；日志里的网页内容对 agent 是不可信数据。
+- agent 可以用 `tabbot act` 在你正在用的页面上点击、填写、滚动（需要先 `takeover` 获取租约）。**你一动手（点击、按键、输入）租约立刻撤销**，agent 停手；agent 的每个动作都写在日志里（来源 `agent`），但它输入的文字不记，只记字数。操作发生在你的登录状态里，所以 skill 要求 agent 做下单、支付、删除、发送这类动作前先问你；这是文字约定，不是强制机制。
 

@@ -68,6 +68,7 @@
   };
 
   let seq = 0;
+  let inflight = 0; // 在途的 fetch / XHR 数，agent 动作之后等页面稳定要用
   // ---- fetch ----
   const origFetch = window.fetch;
   window.fetch = function (input, init) {
@@ -82,6 +83,8 @@
       else if (r && method !== "GET" && method !== "HEAD") reqBody = "[Request body not read]";
     } catch {}
     const p = origFetch.apply(this, arguments);
+    inflight++;
+    p.then(() => { inflight--; }, () => { inflight--; });
     if (!fg) { bg++; return p; }
     p.then(async (res) => {
       const rec = { k: "net", via: "fetch", id, url, finalUrl: res.url, method, reqHeaders, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0) };
@@ -117,6 +120,8 @@
   };
   XMLHttpRequest.prototype.send = function (b) {
     const t = this.__t;
+    inflight++;
+    this.addEventListener("loadend", () => { inflight--; }, { once: true });
     if (t) {
       if (!foreground()) bg++;
       else {
@@ -188,7 +193,18 @@
     for (const el of root.querySelectorAll(INTERACTIVE)) out.push(el);
   };
   const visible = (el) => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; const cs = getComputedStyle(el); return cs.visibility !== "hidden" && cs.display !== "none"; };
-  let mut = 0;
+  // ---- 元素引用：元素第一次出现在快照里时得到一个稳定编号（e12），agent 用 @e12 指它；页面不刷新就不变，元素被页面移除后引用失效 ----
+  const ids = new WeakMap(), byRef = new Map();
+  let nextRef = 1;
+  const refOf = (el) => {
+    let r = ids.get(el);
+    if (!r) {
+      r = "e" + nextRef++; ids.set(el, r); byRef.set(r, new WeakRef(el));
+      if (byRef.size > 3000) for (const [k, w] of byRef) if (!w.deref()) byRef.delete(k);
+    }
+    return r;
+  };
+  let mut = 0, lastMut = Date.now();
   const MAX_ITEMS = 60;
   const snap = (why, full) => {
     const els = []; walk(document, els, 0);
@@ -196,8 +212,8 @@
     const vh = innerHeight, vw = innerWidth;
     const inView = (el) => { const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw; };
     const pick = full ? vis.slice(0, 200) : vis.filter(inView).slice(0, MAX_ITEMS);
-    const items = pick.map((el, i) => {
-      const d = desc(el), o = { ref: "e" + (i + 1), t: d.role || d.tag };
+    const items = pick.map((el) => {
+      const d = desc(el), o = { ref: refOf(el), t: d.role || d.tag };
       if (d.text) o.n = d.text.slice(0, 40);
       if (d.type && d.type !== "submit" && d.type !== "button") o.k = d.type;
       if (d.name) o.nm = d.name;
@@ -208,10 +224,26 @@
       if (full) { const r = el.getBoundingClientRect(); o.box = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]; }
       return o;
     });
+    // 实时快照（agent 主动取的）再列出可滚动的区域（聊天窗口、侧边栏等），agent 才能指定在哪里滚动
+    if (why === "live") {
+      let n = 0;
+      for (const el of document.querySelectorAll("*")) {
+        if (n >= 8 || el === document.body || el === document.documentElement) continue;
+        if (el.scrollHeight <= el.clientHeight + 20 || el.clientHeight < 60 || el.clientWidth < 100) continue;
+        const ov = getComputedStyle(el).overflowY;
+        if (ov !== "auto" && ov !== "scroll") continue;
+        if (!visible(el) || !inView(el)) continue;
+        const d = desc(el);
+        const o = { ref: refOf(el), t: "scroll", s: d.sel.split(">").slice(-2).join(">") };
+        const label = el.getAttribute("aria-label") || el.id || "";
+        if (label) o.n = String(label).slice(0, 40);
+        items.push(o); n++;
+      }
+    }
     const o = {
       why, url: location.href, title: document.title,
       headings: [...document.querySelectorAll("h1,h2,h3")].filter(visible).slice(0, 8).map((h) => h.innerText.trim().slice(0, 60)),
-      interactiveTotal: els.length, interactiveVisible: vis.length, inViewShown: items.length, items,
+      interactiveTotal: els.length, interactiveVisible: vis.length, inViewShown: pick.length, items,
       textChars: (document.body?.innerText || "").length, mutationsSince: mut, iframes: document.querySelectorAll("iframe").length,
       focus: (desc(document.activeElement) || {}).sel || null,
     };
@@ -225,7 +257,7 @@
     clearTimeout(snapTimer);
     snapTimer = setTimeout(() => { if (!foreground() || Date.now() - lastSnap < 1000) return; lastSnap = Date.now(); post({ k: "snap", snap: snap(why) }); }, ms);
   };
-  try { new MutationObserver((l) => { mut += l.length; }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {}
+  try { new MutationObserver((l) => { mut += l.length; lastMut = Date.now(); }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {}
   window.addEventListener("load", () => { post({ k: "nav", via: "load", url: location.href }); later("load", 1000); });
   for (const m of ["pushState", "replaceState"]) {
     const o = history[m];
@@ -233,6 +265,15 @@
   }
   window.addEventListener("popstate", () => { post({ k: "nav", via: "popstate", url: location.href }); later("popstate", 600); });
 
+  // ---- 在场信号：只给扩展用（撤销租约），不进日志。真人的任意按键、滚轮，每 250ms 最多一条 ----
+  const lastPresence = {};
+  const presence = (e, kind) => {
+    if (!e.isTrusted || !foreground()) return;
+    const now = Date.now();
+    if (now - (lastPresence[kind] || 0) < 250) return;
+    lastPresence[kind] = now;
+    post({ k: "presence", kind });
+  };
   // ---- 用户输入：点击、输入、特殊键、滚动。输入只记长度，不记内容 ----
   let inputPending = null, inputTimer = 0, scrollDy = 0, scrollTrusted = false, scrollTimer = 0;
   const flushInput = () => { clearTimeout(inputTimer); if (inputPending) { post({ k: "ev", type: "input", trusted: inputPending.trusted, target: inputPending.target, n: inputPending.n }); inputPending = null; } };
@@ -250,6 +291,7 @@
   addEventListener("change", (e) => { if (!foreground()) return; flushInput(); post({ k: "ev", type: "change", trusted: e.isTrusted, target: desc(e.target) }); later("after-change", 700); }, true);
   addEventListener("submit", (e) => { if (!foreground()) return; flushInput(); post({ k: "ev", type: "submit", trusted: e.isTrusted, target: desc(e.target) }); later("after-submit", 700); }, true);
   addEventListener("keydown", (e) => {
+    presence(e, "key");
     if (!foreground()) return;
     const special = e.key === "Enter" || e.key === "Escape" || e.key === "Tab";
     const combo = (e.ctrlKey || e.metaKey) && e.key.length === 1;
@@ -258,8 +300,118 @@
     post({ k: "ev", type: "key", trusted: e.isTrusted, key: (combo ? (e.metaKey ? "Cmd+" : "Ctrl+") : "") + e.key, target: desc(e.target) });
   }, true);
   addEventListener("wheel", (e) => {
+    presence(e, "wheel");
     if (!foreground()) return;
     scrollDy += e.deltaY; scrollTrusted = e.isTrusted;
     clearTimeout(scrollTimer); scrollTimer = setTimeout(flushScroll, 500);
   }, { capture: true, passive: true });
+  // ---- agent 的动作：页面内的合成事件，由扩展经 executeScript 调用 window.__tcrAct。----
+  // 合成事件的 isTrusted 一定是 false，所以页面里 isTrusted 为真的输入一定是人；这样判人不需要猜。
+  const resolveRef = (ref) => {
+    const el = byRef.get(String(ref).replace(/^@/, ""))?.deref();
+    if (!el || !el.isConnected) throw new Error(`元素 ${ref} 已不在页面上，请重新 snapshot`);
+    return el;
+  };
+  const toView = (el) => {
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+  const fire = (el, Ctor, type, init) => el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, composed: true, view: window, ...init }));
+  const clickEl = (el) => {
+    const { x, y } = toView(el);
+    const m = { clientX: x, clientY: y, button: 0 };
+    const pm = { ...m, pointerId: 1, pointerType: "mouse", isPrimary: true };
+    if (el.focus) el.focus({ preventScroll: true }); // 真实的 mousedown 会让元素获得焦点，合成的不会
+    fire(el, PointerEvent, "pointerover", pm); fire(el, MouseEvent, "mouseover", m);
+    fire(el, PointerEvent, "pointerdown", { ...pm, buttons: 1 }); fire(el, MouseEvent, "mousedown", { ...m, buttons: 1 });
+    fire(el, PointerEvent, "pointerup", pm); fire(el, MouseEvent, "mouseup", m);
+    fire(el, MouseEvent, "click", { ...m, detail: 1 });
+  };
+  // 用原生的 value setter 写值，React 等框架才会认；再补 input / change 事件
+  const nativeSet = (el, value) => {
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+  };
+  const setValue = (el, text) => {
+    if (el.isContentEditable) { el.focus(); document.execCommand("selectAll"); document.execCommand("insertText", false, text); return; }
+    if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) throw new Error("这个元素不是输入框");
+    if (el.disabled || el.readOnly) throw new Error("输入框是禁用或只读的");
+    el.focus({ preventScroll: true });
+    nativeSet(el, text);
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text, composed: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const selectOption = (el, want) => {
+    if (!(el instanceof HTMLSelectElement)) throw new Error("这个元素不是下拉框");
+    const opt = [...el.options].find((o) => o.value === want || o.text.trim() === want);
+    if (!opt) throw new Error(`下拉框里没有选项「${want}」，可选：${[...el.options].map((o) => o.text.trim()).slice(0, 12).join(" | ")}`);
+    nativeSet(el, opt.value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const codeOf = (key) => (key.length === 1 ? (/[a-z]/i.test(key) ? "Key" + key.toUpperCase() : /\d/.test(key) ? "Digit" + key : key === " " ? "Space" : key) : key);
+  const TEXTUAL = /^(text|search|email|url|tel|password|number)$/i;
+  const pressKey = (el, spec) => {
+    const parts = String(spec).split("+"), last = parts.pop(), key = last === "Space" ? " " : last; // "Ctrl+K" → 修饰键 + 键名
+    const mods = { ctrlKey: parts.includes("Ctrl"), metaKey: parts.includes("Cmd"), altKey: parts.includes("Alt"), shiftKey: parts.includes("Shift") };
+    const target = el || document.activeElement || document.body;
+    const init = { key, code: codeOf(key), ...mods };
+    const proceed = fire(target, KeyboardEvent, "keydown", init); // false = 页面自己处理了（preventDefault）
+    if (key.length === 1) fire(target, KeyboardEvent, "keypress", init);
+    if (proceed && !mods.ctrlKey && !mods.metaKey && !mods.altKey) {
+      // 合成的按键没有默认行为，常用的几个自己补上
+      const tag = target.tagName;
+      const clickable = tag === "A" || tag === "BUTTON" || tag === "SUMMARY" || (tag === "INPUT" && /^(button|submit|reset|checkbox|radio)$/i.test(target.type));
+      if (key === "Enter" && clickable) clickEl(target);
+      else if (key === "Enter" && tag === "INPUT" && TEXTUAL.test(target.type) && target.form) target.form.requestSubmit();
+      else if (key === " " && (tag === "BUTTON" || (tag === "INPUT" && /^(checkbox|radio)$/i.test(target.type)))) clickEl(target);
+      else if (key.length === 1 && (target.isContentEditable || tag === "TEXTAREA" || (tag === "INPUT" && TEXTUAL.test(target.type)))) document.execCommand("insertText", false, key);
+    }
+    fire(target, KeyboardEvent, "keyup", init);
+  };
+  const scrollTarget = (el, dx, dy, to) => {
+    const t = el && el !== document.body && el !== document.documentElement ? el : window;
+    if (to === "top") t.scrollTo({ top: 0, behavior: "instant" });
+    else if (to === "bottom") t.scrollTo({ top: t === window ? document.documentElement.scrollHeight : t.scrollHeight, behavior: "instant" });
+    else t.scrollBy({ left: dx || 0, top: dy || 0, behavior: "instant" });
+  };
+  // 等页面稳定：没有在途的 fetch / XHR，并且 DOM 静默一小段时间
+  const settle = (timeoutMs = 4000, quietMs = 400) => new Promise((resolve) => {
+    const t0 = Date.now();
+    const tick = () => {
+      const quiet = inflight === 0 && Date.now() - lastMut >= quietMs;
+      if (quiet || Date.now() - t0 >= timeoutMs) return resolve({ settled: quiet, waitedMs: Date.now() - t0, inflight });
+      setTimeout(tick, 50);
+    };
+    setTimeout(tick, 120); // 先给动作引发的请求一点时间发出来
+  });
+  window.__tcrAct = async (cmd) => {
+    try {
+      const out = { ok: true };
+      const el = cmd.ref ? resolveRef(cmd.ref) : null;
+      switch (cmd.kind) {
+        case "click": if (!el) throw new Error("click 需要元素引用，如 @e12"); out.target = desc(el); clickEl(el); break;
+        case "fill": if (!el) throw new Error("fill 需要元素引用，如 @e12"); out.target = desc(el); setValue(el, String(cmd.text ?? "")); out.chars = String(cmd.text ?? "").length; break;
+        case "select": if (!el) throw new Error("select 需要元素引用，如 @e12"); out.target = desc(el); selectOption(el, String(cmd.text ?? "")); break;
+        case "check": {
+          if (!el) throw new Error("check 需要元素引用，如 @e12");
+          if (!(el instanceof HTMLInputElement) || !/^(checkbox|radio)$/i.test(el.type)) throw new Error("这个元素不是复选框或单选框");
+          out.target = desc(el);
+          if (el.checked !== (cmd.checked !== false)) clickEl(el);
+          out.checked = el.checked;
+          break;
+        }
+        case "press": out.target = desc(el || document.activeElement); pressKey(el, cmd.key); break;
+        case "scroll": out.target = el ? desc(el) : "page"; scrollTarget(el, cmd.dx, cmd.dy, cmd.to); break;
+        default: throw new Error(`未知动作 ${cmd.kind}`);
+      }
+      out.settle = await settle();
+      out.url = location.href;
+      out.title = document.title;
+      return out;
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e), url: location.href };
+    }
+  };
 })();

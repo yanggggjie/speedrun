@@ -15,6 +15,8 @@ const DEDUPE_MS = 5 * 60_000;
 /** 人或 agent 的动作之后这段时间内发出的请求，记为这个动作引发的。 */
 const CAUSE_MS = 2_000;
 const DETAIL_BODY_MAX = 8 * 1024;
+/** 动作结束后，晚到的合成事件还算动作自己的这段时间。 */
+const ACT_GRACE_MS = 800;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
@@ -50,6 +52,8 @@ export class Ingestor {
   private readonly engine: () => FiltersEngine | undefined;
   private readonly seen = new Map<string, { seq: number; day: string; ts: number }>();
   private readonly lastAction = new Map<number, { seq: number; ts: number }>();
+  /** agent 正在这个 tab 上执行动作（到这个时间为止）：页面里 isTrusted 为 false 的输入事件是这个动作自己产生的，不再重复记。 */
+  private readonly actUntil = new Map<number, number>();
 
   constructor(store: JournalStore, options: IngestOptions = {}) {
     this.store = store;
@@ -70,6 +74,29 @@ export class Ingestor {
         }
       });
     }
+  }
+
+  /**
+   * agent 开始执行一个动作：先写一行 agent 的记录（动作引发的请求会指向它），并在动作期间把页面里同一个 tab 的合成事件吞掉。
+   * 返回这一行的 seq。
+   */
+  beginAct(tab: number, ts: number, verb: string, target: string, detail?: Record<string, unknown>): { seq: number; day: string } {
+    this.actUntil.set(tab, Number.POSITIVE_INFINITY);
+    const seq = this.store.batch(ts, () => this.push({ ts, tab, frame: 0, src: "agent", kind: "input", verb, target, detail: detail ? JSON.stringify(detail) : undefined }));
+    this.lastAction.set(tab, { seq, ts });
+    return { seq, day: dayOf(ts) };
+  }
+
+  /** 动作做完：补上元素描述和结果；动作结束后再宽限一小会儿，晚到的合成事件也算它的。 */
+  endAct(tab: number, act: { seq: number; day: string }, ts: number, fields: { target?: string; size?: number; detail?: Record<string, unknown> }): void {
+    this.actUntil.set(tab, ts + ACT_GRACE_MS);
+    this.store.batch(ts, () => this.store.update(act.day, act.seq, { target: fields.target, size: fields.size, detail: fields.detail ? JSON.stringify(fields.detail) : undefined }));
+  }
+
+  /** 租约变化（扩展上报）：人撤销记为 human，其余记为 agent。 */
+  recordLease(msg: { tab: number; state: string; t: number; reason?: string; by?: string }): void {
+    const src: Src = msg.state === "revoked" ? "human" : "agent";
+    this.store.batch(msg.t, () => this.push({ ts: msg.t, tab: msg.tab, frame: 0, src, kind: "lease", verb: msg.state, target: msg.by ?? msg.reason, detail: JSON.stringify({ reason: msg.reason, by: msg.by }) }));
   }
 
   private handle(msg: HookMsg): void {
@@ -131,6 +158,8 @@ export class Ingestor {
 
   private input(msg: HookMsg, base: Pick<NewEvent, "ts" | "tab" | "frame" | "page">): void {
     const type = str(msg.type) ?? "";
+    // agent 的动作产生的合成事件已经由 beginAct 记过一行，这里不重复记
+    if (msg.trusted === false && base.ts <= (this.actUntil.get(base.tab) ?? 0)) return;
     const pressure = num(msg.pressure);
     // 来源：真人输入 isTrusted 为 true；agent 的鼠标点击带水印；脚本触发的事件 isTrusted 为 false，算页面自己的。
     let src: Src = msg.trusted === true ? "human" : "page";

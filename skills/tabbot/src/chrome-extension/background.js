@@ -218,9 +218,26 @@ async function runTab(name, args) {
       const out = [];
       for (const tab of await chrome.tabs.query({})) {
         if (tab.id == null || !tab.url || !matchSite(tab.url)) continue;
-        out.push({ tabId: tab.id, windowId: tab.windowId, active: tab.active, url: tab.url, title: tab.title || "" });
+        out.push({ tabId: tab.id, windowId: tab.windowId, active: tab.active, url: tab.url, title: tab.title || "", lease: lease.has(tab.id), humanIdleMs: humanAt.has(tab.id) ? idleMs(tab.id) : null });
       }
       return { tabs: out };
+    }
+    case "leaseAcquire": {
+      await siteTab(args.tabId);
+      if (lease.has(args.tabId)) return { granted: true, already: true };
+      const idle = idleMs(args.tabId);
+      if (idle < HUMAN_IDLE_MS) return { granted: false, reason: "human-active", idleMs: idle };
+      lease.set(args.tabId, { since: Date.now(), used: Date.now() });
+      leaseEvent(args.tabId, "acquired");
+      return { granted: true };
+    }
+    case "leaseRelease": {
+      const had = lease.delete(args.tabId);
+      if (had) leaseEvent(args.tabId, "released", { reason: typeof args.reason === "string" ? args.reason.slice(0, 200) : "" });
+      return { released: had };
+    }
+    case "act": {
+      return await runAct(args.tabId, args.cmd ?? {});
     }
     case "snapshot": {
       const tab = await siteTab(args.tabId);
@@ -376,11 +393,79 @@ async function siteTab(tabId) {
   return tab;
 }
 
+// ---- 租约：agent 能不能在这个 tab 上动手（只管写，读不受影响）----
+// 状态在扩展里，人一动手就在这里本地撤销（不经过 daemon，毫秒级）。agent 的动作是页面内的合成事件（页面脚本上报的 trusted 标记为 false），
+// 所以 trusted 标记为真的输入一定是人。扩展 service worker 重启会丢租约，这是安全的一侧：agent 要重新 takeover。
+const lease = new Map(); // tabId -> { since, used }
+const humanAt = new Map(); // tabId -> 最近一次真人输入的时间
+const HUMAN_IDLE_MS = 1500; // 真人输入之后这段时间内不能获取租约
+const LEASE_IDLE_MS = 10 * 60_000; // 租约超过这么久没有动作就失效，避免忘了交还
+const NAVIGATION_ERROR = /frame|removed|navigat|closed|destroyed/i;
+
+function leaseEvent(tabId, state, extra = {}) {
+  postToHost({ type: "lease", tab: tabId, state, t: Date.now(), ...extra });
+}
+
+/** 真人输入：撤销租约（滚轮、滚动只当"人在场"，不撤销，因为 agent 用元素引用定位，滚动不会让目标失效）。 */
+function humanInput(tabId, kind) {
+  humanAt.set(tabId, Date.now());
+  if (kind === "wheel" || kind === "scroll") return;
+  if (lease.delete(tabId)) leaseEvent(tabId, "revoked", { reason: "human", by: kind });
+}
+
+const idleMs = (tabId) => Date.now() - (humanAt.get(tabId) ?? 0);
+
+async function waitComplete(tabId, ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab || tab.status !== "loading") return tab;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return chrome.tabs.get(tabId).catch(() => null);
+}
+
+/** 执行 agent 的一个动作：先看租约，再在页面里执行；动作引发页面跳转（点链接、提交表单）算成功。 */
+async function runAct(tabId, cmd) {
+  await siteTab(tabId);
+  const held = lease.get(tabId);
+  if (held && Date.now() - held.used > LEASE_IDLE_MS) { lease.delete(tabId); leaseEvent(tabId, "expired", { reason: "idle" }); }
+  if (!lease.has(tabId)) return { ok: false, rejected: "no-lease", humanIdleMs: idleMs(tabId) };
+  lease.get(tabId).used = Date.now();
+  let result;
+  if (cmd.kind === "goto") {
+    await chrome.tabs.update(tabId, { url: cmd.url });
+    result = { ok: true, navigated: true };
+  } else {
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: (c) => (window.__tcrAct ? window.__tcrAct(c) : { ok: false, error: "页面里没有录制脚本（刷新这个页面后再试）" }),
+        args: [cmd],
+      });
+      result = res?.result ?? { ok: false, error: "页面没有返回结果" };
+    } catch (error) {
+      if (!NAVIGATION_ERROR.test(String(error?.message ?? error))) throw error;
+      result = { ok: true, navigated: true };
+    }
+  }
+  if (result.navigated) {
+    const tab = await waitComplete(tabId, 15_000);
+    if (tab) { result.url = tab.url; result.title = tab.title; }
+  }
+  if (!lease.has(tabId)) result.revokedDuring = true; // 动作执行期间，人动手了
+  return result;
+}
+
 chrome.runtime.onMessage.addListener((m, sender) => {
   if (!m || m.__tcrl !== 1 || sender.id !== chrome.runtime.id || !sender.tab) return;
   const { __tcrl, ...msg } = m.msg ?? {};
   void __tcrl;
-  pushJournal({ ...msg, tab: sender.tab.id, frame: sender.frameId ?? 0, top: m.top, page: m.page });
+  const tabId = sender.tab.id;
+  if (msg.k === "presence") { humanInput(tabId, msg.kind); return; } // 在场信号只给租约用，不进日志
+  if (msg.k === "ev" && msg.trusted === true) humanInput(tabId, msg.type);
+  pushJournal({ ...msg, tab: tabId, frame: sender.frameId ?? 0, top: m.top, page: m.page });
 });
 
 function tabEvent(ev, tabId, url) {
@@ -404,6 +489,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   await sitesReady;
+  lease.delete(tabId);
+  humanAt.delete(tabId);
   const url = siteTabs.get(tabId);
   if (url === undefined) return;
   siteTabs.delete(tabId);

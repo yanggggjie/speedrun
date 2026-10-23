@@ -32,22 +32,21 @@
 
 ## 4. 判断是人还是 agent
 
-原则：**判不准就判"人"**（把人误判成 agent，租约不会撤销，两边会抢操作）；用"构造"代替"猜"，让 agent 的输入方式和人产生的事件类型尽量不重叠。
+原则：**判不准就判"人"**（把人误判成 agent，租约不会撤销，两边会抢操作）；用"构造"代替"猜"。
 
-| 输入 | agent 的做法 | 页面里据此判断 |
-|---|---|---|
-| 鼠标点击 | CDP 点击，带水印 `force: 0.123`（已验证零误判）| `pressure ≈ 0.123` 是 agent |
-| 打字 | `Input.insertText`（预期不产生 `keydown`）| 任何 `keydown` 是人 |
-| 特殊键 | `dispatchKeyEvent` 并登记，一对一消耗对账 | 事件数多于指令数就是人 |
-| 滚动 | `scrollBy` 之类（预期不产生 `wheel`）| 任何 `wheel` 是人 |
-| 其它 | DOM 合成事件，`isTrusted: false` | `isTrusted: true` 一定是人 |
+**已实现：agent 的动作全是页面内的合成事件**（`click`、`fill`、`select`、`check`、`press`、`scroll` 在页面里用 `dispatchEvent`、原生 setter 实现），不用 `chrome.debugger`，所以不弹"正在调试此浏览器"横幅。合成事件的 `isTrusted` 一定是 `false`，因此：
+- 页面里 `isTrusted` 为真的输入**一定是人**，不需要水印和对账；
+- agent 的动作由 holder 登记（`beginAct` / `endAct` 写一行 `agent`），动作期间页面里同一个 tab 的合成事件不重复记；
+- 页面自己用脚本触发的合成事件，动作窗口之外仍记成 `page`。
+
+代价：个别站点不认合成事件（文件选择框、部分风控）。这些以后用 `chrome.debugger` 的真实输入补（带水印 `force: 0.123`，鼠标已验证零误判；键盘和滚轮要一对一消耗对账，设计见第 10 节），这一版不做。
 
 ## 5. 控制权：租约
 
-- 租约只管 agent **能不能写**。人一动手（`pointerdown`、`keydown`）就在扩展里本地撤销（中位数 4.5ms，撤销后 agent 点击 12/12 被拒）；`pointermove`、`wheel` 只当"人在场"，因为 agent 用元素引用定位，滚动不会让目标失效。
+- 租约只管 agent **能不能写**，状态在扩展里（不经过 daemon，人一动手本地毫秒级撤销）。人的点击、任意按键、输入、提交立刻撤销；滚轮和滚动只当"人在场"，不撤销，因为 agent 用元素引用定位，滚动不会让目标失效。
 - 观察通道不受租约影响：人动手后 agent 仍能读日志。
-- 人接手后 agent 不能自动恢复：先读日志，再重新获取租约，且要人静默足够久。不重试被打断的动作。
-- 写操作（下单、删除、发送、支付）默认要人确认；租约按标签页隔离。
+- 获取租约（`takeover`）要求人静默超过 1.5 秒，否则被拒；人接手后 agent 不能自动恢复：先读日志，再重新 `takeover`。不重试被打断的动作。租约 10 分钟没有动作自动失效；扩展 service worker 重启会丢租约（安全的一侧，agent 重新 `takeover`）。
+- 写操作（下单、删除、发送、支付）：skill 里要求 agent 先问用户，目前没有机制强制（见第 10 节）。租约按标签页隔离。
 
 ## 6. agent 怎么感知
 
@@ -58,9 +57,9 @@
 
 ## 7. CLI
 
-已实现（只读，见 `skills/tabbot/SKILL.md` 第 9 节）：`sites`、`tabs`、`log`、`sql`、`snapshot`、`wait`、`status`。输出是文本，第一行是结论，失败仍是 `{ status: "failure", error }`。
+已实现（见 `skills/tabbot/SKILL.md` 第 9 节）：观察 `sites`、`tabs`、`log`、`sql`、`snapshot`、`wait`、`status`；在原页面上操作 `takeover`、`release`、`act click|fill|select|check|press|scroll|goto`。元素用稳定引用 `@e12`（来自 `snapshot`，页面不刷新就不变，元素被移除后失效）；每个 `act` 自带等页面稳定（没有在途请求且 DOM 静默 400ms），返回这一步引起的变化（跳转、引发的请求）。输出是文本，第一行是结论，失败退出码非零。
 
-计划中（拟用名，未确认）：`act click|fill|press|scroll|goto`（元素用引用 `@e12`，动作时重新解析；自带等页面稳定，返回这一步引起的变化）、`replay`、`takeover` / `release --reason`。
+计划中：`replay`（重放请求）。
 
 ## 8. 安全与隐私
 
@@ -70,22 +69,23 @@
 
 ## 9. 实现状态
 
-- **已完成（第一阶段）**：轻量层录制、holder 写日志、过滤脱敏去重、淘汰、第 7 节的只读命令、`doctor` 的录制检查、自检（日志、过滤、命令行、扩展）。
-- **验证过**：页面 hook 在真实 Chrome 里（点击、输入、滚动、请求、前后台）；轻量层在知乎、IT之家上除 CORS 预检外无漏抓。
-- **产品化已做**：改名 TabBot、独立的扩展 ID 和 native host（与 yodo 可同时安装）、新图标、仓库改名。
-- **没做**：第二阶段（租约、`takeover`/`release`、`act`、agent 动作登记、专用标签页组）。**没在用户的日常 Chrome 里用产品安装端到端跑过。**
+- **第一阶段（观察）已完成**：轻量层录制（默认所有 http/https 站点，内置排除敏感站点）、holder 写日志、过滤脱敏去重、淘汰、只读命令、`doctor` 的录制检查。
+- **第二阶段第一块（在原页面上操作）已完成**：页面内合成事件的 `act`、租约（扩展里本地撤销）、agent 动作登记、`takeover` / `release` / `act`。自检覆盖日志登记、命令解析、扩展里的租约与动作、holder 端到端；`scripts/dev/hook-e2e.mjs` 在真实 Chrome 里验证了每个动作（点击、填写、选择、勾选、Enter 提交、点链接导航、页面和容器滚动、等页面稳定、引用失效）。
+- **验证过**：页面 hook 在真实 Chrome 里；轻量层在知乎、IT之家、V2EX 上除 CORS 预检外无漏抓。
+- **产品化已做**：改名 TabBot、独立的扩展 ID 和 native host（与 yodo 可同时安装）、图标、仓库改名。
+- **没做**：`chrome.debugger` 真实输入的兜底、专用标签页组、写操作的强制确认、页面上"agent 控制中"的提示和人的交还入口、`replay`。**`act` 还没在用户的日常 Chrome 里端到端跑过。**
 
 ## 10. 设计 TODO（没想清楚的）
 
 **判人与输入**
-- 验证两个假设：`Input.insertText` 不产生 `keydown`，`scrollBy` 不产生 `wheel`。不成立就要换做法。
-- 特殊键的一对一消耗对账：设计与误判率验证（旧的时间窗口法有 1–2% 误判，已作废）。
-- Claude in Chrome 的输入没有水印，会被当成人；agent 的输入走 TabBot 自己的通道，还是把它的动作也登记进 ledger？
+- 合成事件的兼容性：在更多真实站点上试 `act`（不认合成事件的站点有哪些、怎么识别并告诉 agent）；不认的用 `chrome.debugger` 真实输入兜底，这时才需要验证 `Input.insertText` 不产生 `keydown`、`scrollBy` 不产生 `wheel`，以及键盘的一对一消耗对账。
+- Claude in Chrome 的输入是真实输入（`isTrusted` 为真），会被当成人而撤销租约；agent 如果走它，要么也登记进 ledger，要么只让 TabBot 自己的 `act` 操作原页面。
 
 **控制与命令**
-- 租约状态机：重新获取的条件、人"交还"的入口（页面浮层、快捷键）、被抢占时给人的提示。
-- `act`、`takeover`、`release` 的命令名和语义确认；`wait` 要不要也响应页面自己的变化（异步加载完）。
-- 专用标签页组和 `adopt`：agent 默认只在自己的组里干活。
+- 写操作（下单、删除、发送、支付）的强制确认：现在只有 skill 的文字要求，没有机制；识别"提交类"动作的规则怎么定。
+- 人"交还"的入口（页面浮层、快捷键）、页面上"agent 控制中"的提示、被抢占时给人的提示。
+- `wait` 要不要也响应页面自己的变化（异步加载完）；`takeover` 要不要在被拒时自动 `wait`。
+- 专用标签页组和 `adopt`：现在 agent 可以直接在原页面上操作，要不要仍给它一个自己的组用来开新页面。
 - 交接包：直接读日志够不够，还是需要一个 `handoff` 摘要命令。
 - 横幅、点"取消"断开后的重连提示（不能静默重连）；多 agent、多会话的游标。
 
@@ -101,7 +101,7 @@
 - `visibilityState` 在窗口被其它应用遮挡时的表现。
 
 **稳定性与测试**
-- `hook.js` 的自动测试；站点兼容性（流式响应、`Request` 对象、页面检测 `fetch.toString()`、反调试）。
+- 站点兼容性（流式响应、`Request` 对象、页面检测 `fetch.toString()`、反调试）；默认全录之后，hook 包住更多站点的 `fetch`/XHR，出问题的站点怎么发现和自动排除。`scripts/dev/hook-e2e.mjs` 只覆盖了本地夹具，不在 `npm test` 里。
 - 轮询的 token 成本；各 harness 的工具调用超时上限。
 
 **产品化**

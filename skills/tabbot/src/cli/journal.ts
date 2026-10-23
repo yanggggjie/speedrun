@@ -45,8 +45,8 @@ function out(text: string): void { console.log(text); }
 function fail(error: string): void { console.log(formatErrorStdout(error)); process.exitCode = 1; }
 
 /** 经 holder 问扩展；握手类失败按统一格式输出。 */
-async function ask(method: "journal.sync" | "journal.tabs" | "journal.snapshot", params?: Record<string, unknown>): Promise<unknown | undefined> {
-  try { return await ensureSessionAndRpc(method, params, 15_000); } catch (error) {
+async function ask(method: "journal.sync" | "journal.tabs" | "journal.snapshot" | "journal.lease" | "journal.act", params?: Record<string, unknown>, ms = 15_000): Promise<unknown | undefined> {
+  try { return await ensureSessionAndRpc(method, params, ms); } catch (error) {
     const value = error as { data?: { status?: string }; message?: string };
     if (value.data?.status && isHandshakeStatus(value.data.status)) { console.log(formatHandshakeStdout(value.data.status)); process.exitCode = 1; } else fail(value.message ?? String(error));
     return undefined;
@@ -82,12 +82,14 @@ export async function sitesCommand(args: string[]): Promise<void> {
   return saveSites({ ...config, exclude: config.exclude.filter((d) => !hosts.includes(d)), allow: [...config.allow, ...reopened] }, `已重新打开 ${hosts.join(", ")}`);
 }
 
+type TabInfo = { tabId: number; windowId: number; active: boolean; url: string; title: string; lease?: boolean; humanIdleMs?: number | null };
+
 export async function tabsCommand(): Promise<void> {
-  const res = (await ask("journal.tabs")) as { tabs: { tabId: number; windowId: number; active: boolean; url: string; title: string }[] } | undefined;
+  const res = (await ask("journal.tabs")) as { tabs: TabInfo[] } | undefined;
   if (!res) return;
   if (res.tabs.length === 0) return out("录制范围内没有打开的标签页。");
   out(`${res.tabs.length} 个标签页（录制范围内）`);
-  for (const t of res.tabs) out(`tab${t.tabId} win${t.windowId} ${t.active ? "前台" : "后台"} ${t.url} "${t.title}"`);
+  for (const t of res.tabs) out(`tab${t.tabId} win${t.windowId} ${t.active ? "前台" : "后台"}${t.lease ? " 租约:agent" : ""}${t.humanIdleMs != null ? ` 人静默${Math.round(t.humanIdleMs / 1000)}s` : ""} ${t.url} "${t.title}"`);
 }
 
 export async function logCommand(args: string[]): Promise<void> {
@@ -158,4 +160,113 @@ export async function statusCommand(): Promise<void> {
   out(`daemon：${ping ? `在运行，扩展${ping.extension ? "已连接" : "未连接"}` : "未运行"}`);
   out(`目录：${JOURNAL_DIR.replace(os.homedir(), "~")}（日志 <日期>.db，响应体 bodies/<日期>/，快照 snapshots/<日期>/）`);
   out(`范围：${describeConfig(readConfig())}`);
+}
+
+// ---- 在原页面上操作：takeover / release / act ----
+
+export type ActCmd = { kind: string; ref?: string; text?: string; key?: string; dx?: number; dy?: number; to?: string; checked?: boolean; url?: string };
+
+const REF = /^@?e\d+$/;
+const normRef = (r: string): string => (r.startsWith("@") ? r : `@${r}`);
+
+/** 解析 act 的参数（不含 --tab）：click @e1 | fill @e1 "文字" | select @e1 "选项" | check @e1 [--off] | press Enter [@e1] | scroll down|up [px] [@e1] | scroll top|bottom [@e1] | goto <url>。 */
+export function parseAct(args: string[]): { cmd: ActCmd } | { error: string } {
+  const flags = parseFlags(args, ["off"]);
+  if ("error" in flags) return { error: flags.error };
+  const [kind, ...rest] = flags.rest;
+  const ref = (v: string | undefined): string | { error: string } => (v && REF.test(v) ? normRef(v) : { error: `需要元素引用，如 @e12（先用 tabbot snapshot 取）` });
+  switch (kind) {
+    case "click": { const r = ref(rest[0]); return typeof r === "string" ? { cmd: { kind, ref: r } } : r; }
+    case "fill": case "select": {
+      const r = ref(rest[0]); if (typeof r !== "string") return r;
+      if (rest[1] === undefined) return { error: `用法：tabbot act ${kind} @e12 "文字"` };
+      return { cmd: { kind, ref: r, text: rest.slice(1).join(" ") } };
+    }
+    case "check": { const r = ref(rest[0]); return typeof r === "string" ? { cmd: { kind, ref: r, checked: !flags.bools.has("off") } } : r; }
+    case "press": {
+      if (!rest[0]) return { error: "用法：tabbot act press Enter [@e12]（组合键如 Ctrl+K、Cmd+A）" };
+      if (rest[1] !== undefined && !REF.test(rest[1])) return { error: "press 的第二个参数应该是元素引用，如 @e12" };
+      return { cmd: { kind, key: rest[0], ...(rest[1] ? { ref: normRef(rest[1]) } : {}) } };
+    }
+    case "scroll": {
+      const refArg = rest.find((x) => REF.test(x));
+      const other = rest.filter((x) => !REF.test(x));
+      const dir = other[0];
+      const amount = other[1] === undefined ? 600 : Number(other[1]);
+      if (!Number.isFinite(amount)) return { error: "滚动的距离要是数字（像素）" };
+      const base = refArg ? { ref: normRef(refArg) } : {};
+      if (dir === "top" || dir === "bottom") return { cmd: { kind, to: dir, ...base } };
+      if (dir === "down") return { cmd: { kind, dy: amount, ...base } };
+      if (dir === "up") return { cmd: { kind, dy: -amount, ...base } };
+      return { error: "用法：tabbot act scroll down|up [像素] [@e12] | scroll top|bottom [@e12]" };
+    }
+    case "goto": {
+      const url = rest[0];
+      if (!url) return { error: "用法：tabbot act goto <网址>" };
+      try { const u = new URL(url.includes("://") ? url : `https://${url}`); if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("协议"); return { cmd: { kind, url: u.href } }; } catch { return { error: `不是有效的网址：${url}` }; }
+    }
+    default: return { error: "用法：tabbot act click|fill|select|check|press|scroll|goto ...（元素引用 @e12 来自 tabbot snapshot）" };
+  }
+}
+
+/** 选标签页：--tab 优先；否则按场景挑（需要租约的挑持有租约的，takeover 挑前台的）；挑不出唯一的就说明。 */
+async function pickTab(flagTab: number | undefined, mode: "lease" | "front"): Promise<number | undefined> {
+  if (flagTab !== undefined) return flagTab;
+  const res = (await ask("journal.tabs")) as { tabs: TabInfo[] } | undefined;
+  if (!res) return undefined;
+  const pool = mode === "lease" ? res.tabs.filter((t) => t.lease) : res.tabs.filter((t) => t.active);
+  if (pool.length === 1) return pool[0]!.tabId;
+  if (pool.length === 0) { fail(mode === "lease" ? "没有持有租约的标签页：先 tabbot takeover --tab N（tabbot tabs 看标签页）" : "录制范围内没有前台标签页：用 --tab N 指定（tabbot tabs 看标签页）"); return undefined; }
+  fail(`有 ${pool.length} 个${mode === "lease" ? "持有租约" : "前台"}的标签页，用 --tab N 指定：${pool.map((t) => `tab${t.tabId}`).join(" ")}`);
+  return undefined;
+}
+
+function humanSince(ms: number | undefined): string { return ms === undefined ? "" : `${Math.round(ms / 1000)} 秒前`; }
+
+export async function takeoverCommand(args: string[]): Promise<void> {
+  const flags = parseFlags(args);
+  if ("error" in flags) return fail(flags.error);
+  const t = intFlag(flags, "tab"); if (isError(t)) return fail(t.error);
+  const tab = await pickTab(t as number | undefined, "front"); if (tab === undefined) return;
+  const res = (await ask("journal.lease", { op: "acquire", tabId: tab })) as { granted: boolean; already?: boolean; reason?: string; idleMs?: number } | undefined;
+  if (!res) return;
+  if (!res.granted) { process.exitCode = 1; return out(`✗ 没有获取租约：人还在操作 tab${tab}（${humanSince(res.idleMs)}有输入）。用 tabbot wait --tab ${tab} 等人停手，再重试 takeover`); }
+  const rows = await readEvents({ tab, limit: 8 });
+  out(`✓ 已获取 tab${tab} 的租约${res.already ? "（本来就持有）" : ""}。人一动手租约立刻撤销；操作前先 tabbot snapshot --tab ${tab} 取元素引用。`);
+  if (rows.length) out(`这个标签页最近的事件：\n${formatRows(rows)}`);
+}
+
+export async function releaseCommand(args: string[]): Promise<void> {
+  const flags = parseFlags(args);
+  if ("error" in flags) return fail(flags.error);
+  const t = intFlag(flags, "tab"); if (isError(t)) return fail(t.error);
+  const tab = await pickTab(t as number | undefined, "lease"); if (tab === undefined) return;
+  const res = (await ask("journal.lease", { op: "release", tabId: tab, reason: flags.values.get("reason") })) as { released: boolean } | undefined;
+  if (res) out(res.released ? `✓ 已交还 tab${tab} 的租约${flags.values.get("reason") ? `（${flags.values.get("reason")}）` : ""}` : `tab${tab} 本来就没有租约`);
+}
+
+export async function actCommand(args: string[]): Promise<void> {
+  const flags = parseFlags(args, ["off"]);
+  if ("error" in flags) return fail(flags.error);
+  const t = intFlag(flags, "tab"); if (isError(t)) return fail(t.error);
+  const rest = args.filter((a, i) => !(a === "--tab" || args[i - 1] === "--tab" || a.startsWith("--tab=")));
+  const parsed = parseAct(rest);
+  if ("error" in parsed) return fail(parsed.error);
+  const tab = await pickTab(t as number | undefined, "lease"); if (tab === undefined) return;
+  const res = (await ask("journal.act", { tabId: tab, cmd: parsed.cmd }, 40_000)) as { ok?: boolean; error?: string; rejected?: string; humanIdleMs?: number; navigated?: boolean; revokedDuring?: boolean; url?: string; title?: string; target?: unknown; settle?: { settled: boolean; waitedMs: number }; actSeq?: number } | undefined;
+  if (!res) return;
+  const cmdText = `${parsed.cmd.kind}${parsed.cmd.ref ? ` ${parsed.cmd.ref}` : ""}${parsed.cmd.key ? ` ${parsed.cmd.key}` : ""}${parsed.cmd.url ? ` ${parsed.cmd.url}` : ""}`;
+  if (res.rejected === "no-lease") { process.exitCode = 1; return out(`✗ ${cmdText}：没有租约。${res.humanIdleMs !== undefined && res.humanIdleMs < 60_000 ? `人 ${humanSince(res.humanIdleMs)}刚动过，租约被撤销了：先 tabbot log --tab ${tab} --src human 看人做了什么，再 tabbot takeover --tab ${tab}` : `先 tabbot takeover --tab ${tab}`}`); }
+  if (res.ok === false) { process.exitCode = 1; return out(`✗ ${cmdText}：${res.error ?? "失败"}`); }
+  const lines = [`✓ ${cmdText}${res.settle ? (res.settle.settled ? `（页面已稳定，等了 ${(res.settle.waitedMs / 1000).toFixed(1)}s）` : "（等了很久页面还在变化，没有稳定）") : ""}`];
+  if (res.navigated) lines.push(`页面已跳转：${res.url ?? ""} "${res.title ?? ""}"`);
+  else if (res.url) lines.push(`页面：${res.url} "${res.title ?? ""}"`);
+  if (res.revokedDuring) lines.push(`⚠ 动作执行期间人动手了，租约已被撤销：先 tabbot log --tab ${tab} --src human 看人做了什么，再决定要不要重新 takeover`);
+  // 这个动作引发的请求（扩展的事件要一小会儿才到日志里）
+  await new Promise((r) => setTimeout(r, 500));
+  if (res.actSeq !== undefined) {
+    const caused = (await readEvents({ since: res.actSeq, tab, limit: 100 })).filter((r) => r.cause === res.actSeq);
+    if (caused.length) lines.push(`引发了 ${caused.length} 个请求：\n${formatRows(caused.slice(0, 8))}${caused.length > 8 ? `\n…还有 ${caused.length - 8} 个（tabbot log --tab ${tab} --since ${res.actSeq}）` : ""}`);
+  }
+  out(lines.join("\n"));
 }

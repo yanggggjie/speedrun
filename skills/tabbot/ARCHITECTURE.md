@@ -127,3 +127,16 @@ CLI: 直接开只读 SQLite（log / sql / wait / status）；tabs、snapshot、s
 - **wait**：直接轮询日志文件（不经过 holder）：有人的事件且静默 `--idle` 秒就返回，超时则返回"无变化"或"人还在操作"。
 - **自检**：`journal/*.selfcheck.ts`、`cli/journal.selfcheck.ts`（真实起 CLI 子进程，HOME 指向临时目录）、`chrome-extension/background.selfcheck.mjs`（桩 chrome 对象）。`hook.js` 在页面里的行为没有自动测试，改它之后用真实 Chrome 手动验证（点击、输入、滚动、请求、前后台）。
 
+### 7.1 在原页面上操作（takeover / release / act）
+
+```
+CLI act ─RPC journal.act→ holder.runAct ─siteOp "act"→ 扩展 runAct ─executeScript(MAIN)→ 页面 window.__tcrAct
+          └ beginAct / endAct 写 agent 行（动作期间吞掉同 tab 的合成事件）
+```
+
+- **租约**在扩展里（`lease` Map，`humanAt` Map），不经过 daemon：页面脚本把真人输入（`trusted` 为真的 `ev`，以及不进日志的 `presence` 在场信号：任意按键、滚轮）交给扩展，`humanInput` 立即撤销租约（滚轮、滚动只记"人在场"）。`leaseAcquire` 要求人静默超过 `HUMAN_IDLE_MS`（1.5s）；租约 `LEASE_IDLE_MS`（10 分钟）没有动作失效；service worker 重启丢租约。租约变化以 `{ type: "lease", tab, state, ... }` 上报，holder 写进日志（kind `lease`，撤销记为 `human`，其余记为 `agent`）。
+- **动作**是页面内的合成事件：`hook.js` 的 `window.__tcrAct`。`click` 先滚到视图中央并聚焦，再发 pointer / mouse 序列和 `click`（对 `<a>`、按钮有默认行为）；`fill` 用原生 `value` setter 加 `input`、`change` 事件（React 等框架才认），可编辑区域用 `execCommand("insertText")`；`select`、`check`、`press`（`Enter` 点按钮或提交表单，可打印字符插入到输入框）、`scroll`（页面或容器）。元素引用是稳定编号（`WeakMap` 元素 → `eN`，`Map` 编号 → `WeakRef`），快照和动作共用；实时快照（`why: "live"`）还会列出可滚动区域。
+- **等页面稳定**：`hook.js` 统计在途的 fetch / XHR，并记录最近一次 DOM 变化；动作之后等"没有在途请求且 DOM 静默 400ms"，最多 4 秒。动作引发页面跳转（点链接、提交表单）时，页面里等待的脚本被打断，`executeScript` 报"frame 被移除"，扩展把它当成成功（`navigated: true`），等标签页加载完再返回新地址。`goto` 用 `chrome.tabs.update`。
+- **登记**：`Ingestor.beginAct` 先写一行 `agent`（动作引发的请求的 `cause` 指向它），动作期间同一个 tab 上 `trusted` 为 false 的页面事件不重复记；`endAct` 补上元素描述、字数、结果（`fill` 的文字不进日志）；动作结束后 800ms 的宽限内晚到的合成事件也不重复记。被租约拒绝的动作也有一行记录。
+- **测试**：`journal/act.selfcheck.ts`（登记）、`cli/act.selfcheck.ts`（命令解析）、`chrome-extension/background.selfcheck.mjs`（租约与动作，桩 chrome）、`native-messaging-host/holder.e2e.selfcheck.mjs`（经 relay、holder 到假扩展）；`scripts/dev/hook-e2e.mjs` 在真实 Chrome 里验证 `hook.js` 的每个动作（需要本机 Chrome，不在 `npm test` 里）。
+

@@ -27,6 +27,8 @@ function fakeExtension(child) {
   const owned = new Map(); // tabId -> windowId
   const attached = new Set();
   const cdpLog = [];
+  const held = new Set(); // 持有租约的 tab
+  const acts = [];
   let nextId = 10;
   let buf = Buffer.alloc(0);
   const reply = (id, result) => child.stdin.write(frame({ id, result }));
@@ -49,6 +51,16 @@ function fakeExtension(child) {
           case "windowOf": owned.has(a.tabId) ? reply(msg.id, { windowId: owned.get(a.tabId), state: "normal" }) : fail(msg.id, "tab 不属于 tabbot"); break;
           case "attach": owned.has(a.tabId) ? (attached.add(a.tabId), reply(msg.id, {})) : fail(msg.id, "tab 不属于 tabbot"); break;
           case "detach": attached.delete(a.tabId); reply(msg.id, {}); break;
+          // 常驻录制：范围、租约、在原页面上的动作（不要求 tab 由 tabbot 创建）
+          case "setSites": reply(msg.id, { mode: a.mode, sites: a.sites, exclude: a.exclude }); break;
+          case "siteTabs": reply(msg.id, { tabs: [{ tabId: 77, windowId: 1, active: true, url: "https://example.com/", title: "示例", lease: held.has(77), humanIdleMs: null }] }); break;
+          case "leaseAcquire": held.add(a.tabId); child.stdin.write(frame({ type: "lease", tab: a.tabId, state: "acquired", t: Date.now() })); reply(msg.id, { granted: true }); break;
+          case "leaseRelease": held.delete(a.tabId); child.stdin.write(frame({ type: "lease", tab: a.tabId, state: "released", reason: a.reason, t: Date.now() })); reply(msg.id, { released: true }); break;
+          case "act":
+            if (!held.has(a.tabId)) { reply(msg.id, { ok: false, rejected: "no-lease", humanIdleMs: 99999 }); break; }
+            acts.push(a.cmd);
+            reply(msg.id, { ok: true, target: { tag: "input", text: "搜索" }, chars: String(a.cmd.text ?? "").length, settle: { settled: true, waitedMs: 150 } });
+            break;
           default: fail(msg.id, `未知操作 ${msg.name}`);
         }
       } else if (msg.op === "cdp") {
@@ -60,7 +72,7 @@ function fakeExtension(child) {
       }
     }
   });
-  return { cdpLog };
+  return { cdpLog, acts };
 }
 
 /** 一条长连接承载整个会话（run 状态绑定在连接上）。 */
@@ -162,6 +174,29 @@ await rpc("record.abort");
 const recordingLeft = fs.existsSync(path.join(SESSION, "recording")) ? fs.readdirSync(path.join(SESSION, "recording")) : [];
 assert.deepEqual(recordingLeft, [], "abort 后进行中的录制目录应被清掉");
 console.log("record.abort cleanup ok");
+closeRpc();
+
+// 在原页面上操作：journal.lease / journal.act 经 holder 到扩展；动作写进日志（来源 agent），输入的文字不进日志
+const noLease = await rpc("journal.act", { tabId: 77, cmd: { kind: "click", ref: "@e1" } });
+assert.equal(noLease.rejected, "no-lease", "没有租约，扩展拒绝动作");
+assert.equal((await rpc("journal.lease", { op: "acquire", tabId: 77 })).granted, true);
+const acted = await rpc("journal.act", { tabId: 77, cmd: { kind: "fill", ref: "@e5", text: "你好世界" } });
+assert.equal(acted.ok, true);
+assert.equal(typeof acted.actSeq, "number", "返回动作那一行的 seq，CLI 用它找引发的请求");
+assert.equal(ext.acts.at(-1).text, "你好世界", "文字原样交给扩展");
+assert.equal((await rpc("journal.lease", { op: "release", tabId: 77, reason: "做完了" })).released, true);
+const { readEvents } = await import(path.join(SRC, "journal", "query.ts"));
+const journalDir = path.join(HOME, ".tabbot", "journal");
+let rows;
+await waitFor(async () => (rows = await readEvents({ dir: journalDir, all: true, limit: 50 })).some((r) => r.kind === "lease" && r.verb === "released"));
+const kinds = rows.map((r) => `${r.src}:${r.kind}:${r.verb}`);
+assert.ok(kinds.includes("agent:lease:acquired") && kinds.includes("agent:lease:released"), kinds.join(" "));
+const fillRow = rows.find((r) => r.src === "agent" && r.verb === "fill" && r.target === "input[搜索]");
+assert.ok(fillRow, "agent 的 fill 动作写进了日志，元素描述来自页面：" + JSON.stringify(rows));
+assert.equal(fillRow.size, 4, "只记字数");
+assert.ok(!JSON.stringify(rows).includes("你好世界"), "输入的文字不进日志");
+assert.ok(rows.some((r) => r.src === "agent" && r.verb === "click" && JSON.parse(r.detail).rejected === "no-lease"), "被拒绝的动作也有记录");
+console.log("journal lease/act ok");
 closeRpc();
 
 const daemonPid = ping.pid;

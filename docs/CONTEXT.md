@@ -27,7 +27,7 @@ TabBot（曾用名 TwoCursor、TabCobot）：人和 agent 共用同一个 Chrome
 - 本机的 8766 端口曾被一个无关服务占用；产品不用固定端口，走 Unix socket 和 native messaging。
 
 ## 下一步
-见 `DESIGN.md` 第 9、10 节：先在日常 Chrome 里端到端验证第一阶段（`hook.js` 兼容性、体积统计），再做第二阶段（先验证构造法的两个假设）。
+见 `DESIGN.md` 第 9、10 节：在日常 Chrome 里端到端验证 `act`（先在不重要的页面上试），再补兼容性、写操作确认、页面上的提示和交还入口。
 
 ## 隐私提醒
 日常 Chrome 里测试时，日志含登录态内容（响应体等），在 `~/.tabbot/journal`；测完用 `tabbot sites exclude <域名>` 排除或 `sites only` 缩小范围，需要时删除该目录。

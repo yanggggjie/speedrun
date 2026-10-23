@@ -26,6 +26,15 @@ function size(bytes: number | null | undefined): string {
   return bytes >= 1024 ? `${(bytes / 1024).toFixed(1)}KB` : `${bytes}B`;
 }
 
+/** agent 的动作失败了：日志行末尾带上原因。 */
+function failure(row: EventRow): string {
+  if (row.src !== "agent" || !row.detail) return "";
+  try {
+    const d = JSON.parse(row.detail) as { ok?: boolean; error?: string; rejected?: string };
+    return d.ok === false ? ` ✗ ${d.error ?? d.rejected ?? "失败"}` : "";
+  } catch { return ""; }
+}
+
 function bodyOf(row: EventRow): string {
   switch (row.kind) {
     case "net": {
@@ -37,9 +46,10 @@ function bodyOf(row: EventRow): string {
       return parts.filter((p) => p !== "").join(" ");
     }
     case "input": {
-      const extra = row.verb === "input" && row.size ? ` ${row.size}字` : row.verb === "scroll" && row.size != null ? ` ${row.size > 0 ? "↓" : "↑"}${Math.abs(row.size)}px` : "";
-      return `${row.verb} ${row.target ?? ""}${extra}`.trim();
+      const extra = (row.verb === "input" || row.verb === "fill") && row.size ? ` ${row.size}字` : row.verb === "scroll" && row.size != null ? ` ${row.size > 0 ? "↓" : "↑"}${Math.abs(row.size)}px` : "";
+      return `${row.verb} ${row.target ?? ""}${extra}${failure(row)}`.trim();
     }
+    case "lease": return `lease ${row.verb}${row.target ? ` (${row.target})` : ""}`;
     case "nav": return `nav ${row.target ?? ""} ${shortUrl(row.url, undefined)}`.trim();
     case "snap": return `snap ${row.target ?? ""} file:${dayOf(row.ts)}/${row.body ?? ""}`.trim();
     case "ws": return `ws ${row.verb} ${row.target ?? ""}`.trim();
