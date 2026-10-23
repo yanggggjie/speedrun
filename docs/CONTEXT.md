@@ -22,7 +22,8 @@ TabBot（曾用名 TwoCursor、TabCobot）：人和 agent 共用同一个 Chrome
 ## 开发与测试
 - Node ≥24（直接运行 `.ts`）。`npm install --prefix skills/tabbot/src --omit=optional` 之后：`npm run check`（tsc）、`npm test`（全部自检）、`npm run verify:pack`（隔离 HOME 真实安装）。
 - 在真实 Chrome 里测：`npm run dev:install` 本地安装（会写 `~/.tabbot`、注册 Chrome 的 native messaging host），再在 `chrome://extensions` 加载 `~/.tabbot/src/chrome-extension`，`tabbot sites add <域名>` 点名站点。品牌版 Chrome 不支持 `--load-extension`，必须手动加载。
-- 用 Claude in Chrome 在专用 tab 里操作页面，产品的轻量层同时记录；它的截图只截页面内容，截不到浏览器界面和横幅。
+- 用 Claude in Chrome 在专用 tab 里操作页面，产品的轻量层同时记录；它的截图只截页面内容，截不到浏览器界面和横幅。注意它在后台标签页里加载的页面，按设计不会被记录（后台只计数）。
+- 自检（`npm test`）会在临时目录里造数据，结束时自己清掉；真实 Chrome 里的测试数据在 `~/.tabbot/journal`。
 - 本机的 8766 端口曾被一个无关服务占用；产品不用固定端口，走 Unix socket 和 native messaging。
 
 ## 下一步

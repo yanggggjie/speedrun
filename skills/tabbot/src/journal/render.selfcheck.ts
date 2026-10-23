@@ -19,7 +19,9 @@ assert.equal(normalizeSite("ithome.com"), "ithome.com");
 assert.equal(normalizeSite("news.bbc.co.uk"), "bbc.co.uk");
 assert.equal(normalizeSite("  "), null);
 
-const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "tc-sites-")), "sites.json");
+const sitesDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-sites-"));
+process.on("exit", () => fs.rmSync(sitesDir, { recursive: true, force: true })); // 自检结束清掉临时目录
+const file = path.join(sitesDir, "sites.json");
 assert.deepEqual(readSites(file), []);
 writeSites(["b.com", "a.com", "a.com"], file);
 assert.deepEqual(readSites(file), ["a.com", "b.com"]);

@@ -8,6 +8,8 @@ import { enforceCap } from "./retention.ts";
 import { bodiesDir, dayOf, JournalStore, listDays } from "./store.ts";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-journal-"));
+process.on("exit", () => fs.rmSync(dir, { recursive: true, force: true })); // 自检结束清掉临时目录
+
 const store = new JournalStore(dir);
 await store.open();
 const ingest = new Ingestor(store);
@@ -119,6 +121,8 @@ assert.deepEqual(enforceCap({ dir, capBytes: 1e12, today }), []);
 
 // 一批事件跨午夜：按天拆进各自的库，不会写错文件
 const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "tc-journal-midnight-"));
+process.on("exit", () => fs.rmSync(dir2, { recursive: true, force: true })); // 自检结束清掉临时目录
+
 const store3 = new JournalStore(dir2);
 await store3.open();
 const midnight = new Date(T0); midnight.setHours(23, 59, 59, 900);

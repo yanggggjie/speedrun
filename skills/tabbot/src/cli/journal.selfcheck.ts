@@ -6,6 +6,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "tabbot-journal-cli-"));
+process.on("exit", () => fs.rmSync(home, { recursive: true, force: true })); // 自检结束清掉临时目录
+
 process.env.HOME = home;
 const { Ingestor } = await import("../journal/ingest.ts");
 const { JournalStore } = await import("../journal/store.ts");
