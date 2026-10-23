@@ -91,3 +91,19 @@
 4. 没测：页面是否能检测到被改写的 `fetch`（`toString()` 非 native）；已登录的复杂 SPA（GraphQL、WebSocket 密集）；有 CSP 的站点（manifest 注入的 MAIN-world 脚本理论上不受页面 CSP 限制，未实测）。
 
 **注意**：本机 8766 被一个无关的 python 服务占用，`lab/hub.mjs` 已支持 `HUB_PORT` 环境变量，轻量层用 8769（`HUB_PORT=8769 node lab/hub.mjs`）。
+
+## E6b 日常 Chrome + 已登录站点（知乎、IT之家）
+环境：用户日常 Chrome，手动加载 `lab/out/ext-light-local`（只对 zhihu.com、ithome.com 生效，由 `node lab/light-setup.mjs zhihu.com ithome.com` 生成），操作由 Claude in Chrome 完成（导航、滚动、点击、新标签页打开文章、SPA 跳转）。对照基准用扩展自己的 `webRequest`（没有 debugger）：Claude in Chrome 的 `read_network_requests` 在首次调用前的请求看不到，不适合当 ground truth。样本很小，每站点一次会话。
+
+| 站点 | webRequest 里的 XHR/fetch | hook 抓到 | 没抓到 |
+|---|---|---|---|
+| IT之家（首页→翻页→新标签打开文章） | 9 | 8 | 1 个 CORS 预检 `OPTIONS`（浏览器自己发的） |
+| 知乎（首页、展开回答、滚动、切到专栏 SPA 跳转） | 82 | 78 | 4 个，同样是 `OPTIONS` 预检 |
+
+- 除预检外没有发现漏抓。fetch/XHR 响应体都在，最大的是知乎推荐流 67KB，没触顶 256KB。
+- 请求头里能看到知乎的签名头 `x-zse-93`/`x-zse-96`/`x-zst-81`、`x-api-version`、`x-app-za` 等，说明请求头记录对重放有用；同时也说明**重放不能原样发旧签名**，签名是按请求算的，要靠页面自己的 JS 重新生成（在页面里调用站点自己的请求函数，或 DOM 降级）。`Cookie`/`Authorization` 只记 `[redacted]`。
+- WebSocket：知乎有 7 条 ws 事件被记录（open + 前几帧）。
+- 快照：默认只列视口内最多 60 条可交互元素，3.9–4.8KB（知乎页面里可见元素 178–307 个）；SPA 跳转后自动出新快照（34 条，2.7KB）。比 E6 的 40KB 小一个数量级，但离"2–4k token"仍有差距（约 1–1.6k token 的纯数据，还没算交接包的其他部分），可接受。
+- 用户事件：Claude in Chrome 发出的点击/滚轮 `isTrusted` 是 true，和真人无法用 `isTrusted` 区分（与 E1 一致）；有 1 个事件 `isTrusted=false`，来源未查（可能是 `ref` 点击走了 DOM）。
+- 小问题：知乎首次加载没出 `load` 快照（只有点击后的快照），原因没查；多标签页（新标签页打开文章）的事件带 `tab` 字段，能区分。
+- 隐私：本轮含登录态数据（`/api/v4/me` 响应体等），测完已删除 `lab/out/ext-events.jsonl`。
