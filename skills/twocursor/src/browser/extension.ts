@@ -38,6 +38,8 @@ export class ExtensionLink {
   write: (message: Record<string, unknown>) => void = () => {};
   readonly raw: RawCdpConnection;
   readonly ops: TabOps;
+  /** 常驻录制用的扩展操作（setSites、siteTabs、snapshot）；不要求 tab 由 twocursor 创建，扩展一侧只放行白名单站点。 */
+  readonly siteOp: (name: string, args?: Record<string, unknown>) => Promise<unknown>;
   chromeVersion = "";
   private nextId = 1;
   private closed = false;
@@ -83,6 +85,8 @@ export class ExtensionLink {
       attach: (tabId) => call({ op: "tab", name: "attach", args: { tabId } }).then(() => undefined),
       detach: (tabId) => call({ op: "tab", name: "detach", args: { tabId } }).then(() => undefined),
     };
+
+    this.siteOp = (name, args = {}) => call({ op: "tab", name, args });
 
     const send = (method: string, params: Record<string, unknown> = {}, sessionId?: string, timeoutMs?: number): Promise<unknown> => {
       // 页面级 CDP 只能发给某个 tab（sessionId = tabId）；browser 级命令已由 ops 取代。
@@ -137,6 +141,8 @@ export class ExtensionLink {
     }
     if (msg.type === "event") {
       this.emit(String(msg.method), msg.params, String(msg.tabId));
+    } else if (msg.type === "journal") {
+      this.emit("journal", msg, undefined);
     } else if (msg.type === "tab") {
       // 页面外的 tab 事件：created / updated / removed / detached
       this.emit(`tab.${String(msg.kind)}`, msg, undefined);

@@ -1,5 +1,11 @@
 # 更新记录
 
+## 未发布
+
+- 新增常驻录制：对你点名的站点（`twocursor sites add <域名>`）一直记录人的操作、页面请求和响应、页面状态，落在 `~/.twocursor/journal`，总大小上限 1GB。
+- 新增只读观察命令：`twocursor log`、`sql`、`snapshot`、`tabs`、`wait`、`status`。埋点和广告自动识别为噪声，token、Cookie、密码脱敏。
+- 扩展新增 `scripting` 和 `<all_urls>` 权限；只对白名单站点注入脚本。更新后需要在 `chrome://extensions` 里刷新一次扩展。
+
 ## v2.0.1
 
 - 完全以源码分发，遇到问题可让 agent 读源码修复，见「2.2 遇到问题」。

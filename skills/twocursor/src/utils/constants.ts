@@ -44,3 +44,13 @@ export const SESSION_LOG_MAX_BYTES = 20 * 1024 * 1024;
 export const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB
 /** 响应体超过此值拆到 *.response.json / *.response.html */
 export const RESPONSE_SPLIT_BYTES = 1024;
+
+/** 常驻录制的日志：按天一个 SQLite 文件，响应体、快照按天放目录；sites.json 是录制白名单。 */
+export const JOURNAL_DIR = path.join(TWOCURSOR_HOME, "journal");
+export const JOURNAL_SITES_FILE = path.join(JOURNAL_DIR, "sites.json");
+/** 日志目录总大小硬上限（索引、响应体、快照合计）。 */
+export const JOURNAL_CAP_BYTES = 1024 * 1024 * 1024;
+/** 超过上限的这个比例就开始淘汰最旧一天的响应体和快照。 */
+export const JOURNAL_THIN_RATIO = 0.8;
+/** 单个响应体写盘上限，hook 里读到这个大小就截断。 */
+export const JOURNAL_BODY_MAX_BYTES = 256 * 1024;

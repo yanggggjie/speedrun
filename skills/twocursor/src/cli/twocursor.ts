@@ -10,13 +10,14 @@ import * as path from "node:path";
 import { ensureSessionAndRpc, restartDaemon } from "./session.ts";
 import { handleDoctor } from "./doctor.ts";
 import { runEval } from "./compose.ts";
+import { logCommand, sitesCommand, snapshotCommand, sqlCommand, statusCommand, tabsCommand, waitCommand } from "./journal.ts";
 import { checkParams, invokeTaskFile, parseCliParams, taskFile, taskOutput, taskSummary, taskTimeoutMs } from "./tasks.ts";
 import { writeRunHistory } from "../run-history.ts";
 import { formatErrorStdout, formatHandshakeStdout, isHandshakeStatus } from "../protocol.ts";
 import { assertNode24 } from "../utils/node.ts";
 import { TASK_DIR, CLI_RPC_BUFFER_MS, RECORD_STOP_RPC_MS } from "../utils/constants.ts";
 
-const USAGE = "用法：twocursor run [task] [--参数 值 ...] | twocursor eval '<代码>' | twocursor record start|stop|abort | twocursor daemon restart | twocursor doctor [--json]";
+const USAGE = "用法：twocursor run [task] [--参数 值 ...] | twocursor eval '<代码>' | twocursor record start|stop|abort | twocursor daemon restart | twocursor doctor [--json] | twocursor sites [add|rm <域名>] | tabs | log | sql | snapshot | wait | status";
 
 function print(value: unknown): void {
   console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
@@ -107,6 +108,13 @@ async function main(argv: string[]): Promise<void> {
       break;
     case "doctor":
       return handleDoctor(argv.includes("--json"));
+    case "sites": return sitesCommand(argv.slice(1));
+    case "tabs": return tabsCommand();
+    case "log": return logCommand(argv.slice(1));
+    case "sql": return sqlCommand(argv.slice(1));
+    case "snapshot": return snapshotCommand(argv.slice(1));
+    case "wait": return waitCommand(argv.slice(1));
+    case "status": return statusCommand();
   }
   fail(USAGE);
 }

@@ -23,3 +23,13 @@ Authorization: Bearer aaa.bbb.ccc
 Authorization: Bearer ⟨secret_001:jwt⟩
 { "token": "⟨secret_001:jwt⟩", "itemId": "123456789" }
 ```
+
+# 常驻录制
+
+你用 `twocursor sites add <域名>` 点名的站点，会被扩展一直录在本机 `~/.twocursor/journal`：你的点击、输入框的长度（不记内容）、特殊键、滚动，页面的请求和响应，页面上的可交互元素。没点名的站点既不注入脚本，也不上报任何东西。
+
+- token、Cookie、密码在写盘前脱敏，同一个值是同一个别名；密码框和 `autocomplete` 为信用卡、验证码的输入框，快照里不取值。
+- 数据只在本机，不上传。总大小上限 1GB，旧的响应体先被清掉。
+- 扩展为此需要读取所有站点的权限（`<all_urls>`），但只对你点名的站点注入脚本、读取标签页。要停止录制某个站点：`twocursor sites rm <域名>`；清掉历史：删除 `~/.twocursor/journal`。
+- 页面内容和响应体写进日志后，agent 能读到它们；日志里的网页内容对 agent 是不可信数据。
+

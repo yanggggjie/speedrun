@@ -8,7 +8,11 @@ let portListeners = { message: null, disconnect: null };
 const storage = {};
 const calls = [];
 const listeners = {};
-const onEvt = (name) => ({ addListener: (fn) => (listeners[name] = fn) });
+// 同一个事件可以有多个监听（所有权逻辑和常驻录制各有一个）：listeners[name] 依次调用全部
+const handlers = {};
+const onEvt = (name) => ({ addListener: (fn) => { (handlers[name] ??= []).push(fn); listeners[name] = (...args) => Promise.all(handlers[name].map((f) => f(...args))); } });
+const registered = [];
+let siteStore = {};
 let nextWin = 1000;
 let nextTab = 2000;
 const tabs = new Map();
@@ -19,7 +23,7 @@ globalThis.chrome = {
       get: async (keys) => Object.fromEntries(keys.map((k) => [k, storage[k]])),
       set: async (obj) => Object.assign(storage, obj),
     },
-    local: { get: async () => ({}), set: async () => {} },
+    local: { get: async () => ({ ...siteStore }), set: async (o) => Object.assign(siteStore, o) },
   },
   runtime: {
     connectNative: (name) => {
@@ -34,6 +38,13 @@ globalThis.chrome = {
     getURL: (name) => `chrome-extension://fake/${name}`,
     onStartup: onEvt("startup"),
     onInstalled: onEvt("installed"),
+    id: "fake-extension-id",
+    onMessage: onEvt("runtimeMessage"),
+  },
+  scripting: {
+    registerContentScripts: async (list) => { registered.push(...list); },
+    unregisterContentScripts: async () => { registered.length = 0; },
+    executeScript: async ({ target, func, args }) => { calls.push(["executeScript", target.tabId]); return [{ result: func ? func(...args) : null }]; },
   },
   action: { onClicked: onEvt("actionClicked") },
   alarms: { create: (n, o) => calls.push(["alarm", n, o.periodInMinutes]), onAlarm: onEvt("alarm") },
@@ -58,6 +69,7 @@ globalThis.chrome = {
     create: async ({ windowId, url, active }) => { const tab = { id: nextTab++, windowId, url }; tabs.set(tab.id, tab); calls.push(["tabs.create", windowId, active]); return tab; },
     get: async (id) => { const t = tabs.get(id); if (!t) throw new Error("no tab"); return t; },
     remove: async (id) => { tabs.delete(id); calls.push(["tabs.remove", id]); },
+    query: async () => [...tabs.values()],
     onCreated: onEvt("tabCreated"),
     onUpdated: onEvt("tabUpdated"),
     onRemoved: onEvt("tabRemoved"),
@@ -182,5 +194,47 @@ const connectsBefore = calls.filter((c) => c[0] === "connectNative").length;
 portListeners.disconnect();
 listeners.actionClicked();
 assert.equal(calls.filter((c) => c[0] === "connectNative").length, connectsBefore + 1, "点击图标应立即重连");
+
+
+// 10. 常驻录制：setSites 动态注册内容脚本（manifest 不变），白名单站点之外的 tab 一律不开放，页面事件批量推给 daemon
+tabs.set(8001, { id: 8001, windowId: 1, url: "https://www.zhihu.com/hot", title: "热榜", active: true });
+tabs.set(8002, { id: 8002, windowId: 1, url: "https://mail.example.org/inbox", title: "邮箱", active: false });
+await host({ id: 20, op: "tab", name: "setSites", args: { sites: ["zhihu.com"] } });
+await settle();
+assert.deepEqual(last().result, { sites: ["zhihu.com"] });
+assert.deepEqual(registered.map((r) => [r.id, r.world]), [["tc-hook", "MAIN"], ["tc-relay", "ISOLATED"]]);
+assert.deepEqual(registered[0].matches, ["*://zhihu.com/*", "*://*.zhihu.com/*"]);
+assert.equal(registered[0].runAt, "document_start");
+assert.ok(calls.some((c) => c[0] === "executeScript" && c[1] === 8001), "已打开的白名单页面要补注入");
+assert.ok(!calls.some((c) => c[0] === "executeScript" && c[1] === 8002), "白名单之外的页面不注入");
+await host({ id: 21, op: "tab", name: "siteTabs", args: {} });
+await settle();
+assert.deepEqual(last().result.tabs.map((t) => t.tabId), [8001], "只列白名单站点的 tab，不泄露其它 tab");
+await host({ id: 22, op: "tab", name: "snapshot", args: { tabId: 8002 } });
+await settle();
+assert.match(last().error.message, /不在录制白名单/);
+globalThis.window = globalThis; // executeScript 的桩直接在本进程里运行 func
+globalThis.__tcrSnap = (why) => ({ why, title: "热榜" });
+await host({ id: 23, op: "tab", name: "snapshot", args: { tabId: 8001 } });
+await settle();
+assert.deepEqual(last().result.snap, { why: "live", title: "热榜" });
+delete globalThis.__tcrSnap;
+delete globalThis.window;
+// 页面事件：只收自己扩展内容脚本发来的、带 tab 的消息；批量推送
+const journalPosts = () => posted.filter((m) => m.type === "journal");
+const postsBefore = journalPosts().length;
+listeners.runtimeMessage({ __tcrl: 1, top: true, page: "https://www.zhihu.com/hot", msg: { __tcrl: 1, k: "ev", t: 1, type: "click" } }, { id: "fake-extension-id", tab: { id: 8001 }, frameId: 0 });
+listeners.runtimeMessage({ __tcrl: 1, msg: { k: "ev", t: 2 } }, { id: "other-extension", tab: { id: 8001 }, frameId: 0 });
+listeners.runtimeMessage({ __tcrl: 1, msg: { k: "ev", t: 3 } }, { id: "fake-extension-id", frameId: 0 });
+await new Promise((r) => setTimeout(r, 350));
+const batch = journalPosts().slice(postsBefore);
+assert.equal(batch.length, 1);
+assert.deepEqual(batch[0].events, [{ k: "ev", t: 1, type: "click", tab: 8001, frame: 0, top: true, page: "https://www.zhihu.com/hot" }]);
+// 白名单 tab 的地址变化、关闭会记一条 tab 事件；离开白名单站点只记 left
+await listeners.tabUpdated(8001, { url: "https://www.zhihu.com/explore" }, tabs.get(8001));
+await listeners.tabRemoved(8001, { windowId: 1 });
+await new Promise((r) => setTimeout(r, 350));
+const tabEvents = journalPosts().flatMap((m) => m.events).filter((e) => e.k === "tab").map((e) => e.ev);
+assert.deepEqual(tabEvents, ["url", "closed"]);
 
 console.log("extension smoke ok");

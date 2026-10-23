@@ -205,6 +205,30 @@ async function runTab(name, args) {
       }
       return {};
     }
+    case "setSites": {
+      await applySites(Array.isArray(args.sites) ? args.sites.filter((x) => typeof x === "string") : []);
+      return { sites };
+    }
+    case "siteTabs": {
+      await sitesReady;
+      const out = [];
+      for (const tab of await chrome.tabs.query({})) {
+        if (tab.id == null || !tab.url || !matchSite(tab.url)) continue;
+        out.push({ tabId: tab.id, windowId: tab.windowId, active: tab.active, url: tab.url, title: tab.title || "" });
+      }
+      return { tabs: out };
+    }
+    case "snapshot": {
+      const tab = await siteTab(args.tabId);
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: (why, full) => (window.__tcrSnap ? window.__tcrSnap(why, full) : null),
+        args: ["live", !!args.full],
+      });
+      if (!res?.result) throw new Error("页面里没有录制脚本（刷新这个页面后再试）");
+      return { snap: res.result };
+    }
     default:
       throw new Error(`未知操作 ${name}`);
   }
@@ -261,6 +285,107 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
   owned.recordWindows.delete(windowId);
   await saveOwned();
 });
+
+// ---- 常驻录制（journal）----
+// 对用户在白名单里点名的站点，注册内容脚本（hook.js 在页面里，relay.js 在隔离世界），把观察到的事件批量交给 daemon。
+// 白名单由 daemon 经 setSites 下发并存在 storage.local；脚本注册是动态的，manifest 不变，改站点不需要重新加载扩展。
+// 只读操作（tabs、snapshot）只对白名单站点的 tab 生效，不要求 tab 由 twocursor 创建。
+const JOURNAL_SCRIPTS = [
+  { id: "tc-hook", js: ["journal/hook.js"], world: "MAIN" },
+  { id: "tc-relay", js: ["journal/relay.js"], world: "ISOLATED" },
+];
+const JOURNAL_BUFFER_MAX = 2000;
+const JOURNAL_FLUSH_MS = 300;
+let sites = [];
+let journalBuffer = [];
+let journalTimer = null;
+const siteTabs = new Map(); // tabId -> 最近一次的 URL（只放白名单站点的 tab，用来在关闭时记一条 closed）
+
+const sitesReady = chrome.storage.local.get("sites").then((saved) => { sites = Array.isArray(saved.sites) ? saved.sites : []; });
+
+function matchSite(url) {
+  try {
+    const host = new URL(url).hostname;
+    return sites.some((d) => host === d || host.endsWith("." + d));
+  } catch {
+    return false;
+  }
+}
+
+function pushJournal(event) {
+  journalBuffer.push(event);
+  if (journalBuffer.length > JOURNAL_BUFFER_MAX) journalBuffer.splice(0, journalBuffer.length - JOURNAL_BUFFER_MAX);
+  if (!journalTimer) journalTimer = setTimeout(flushJournal, JOURNAL_FLUSH_MS);
+}
+
+function flushJournal() {
+  journalTimer = null;
+  if (!port || journalBuffer.length === 0) return; // 没连上 daemon 时攒着（有上限），连上后下一次推送带出去
+  const events = journalBuffer;
+  journalBuffer = [];
+  postToHost({ type: "journal", events });
+}
+
+async function applySites(list) {
+  sites = [...new Set(list)];
+  await chrome.storage.local.set({ sites });
+  await chrome.scripting.unregisterContentScripts({ ids: JOURNAL_SCRIPTS.map((s) => s.id) }).catch(() => {});
+  if (sites.length === 0) return;
+  const matches = sites.flatMap((d) => [`*://${d}/*`, `*://*.${d}/*`]);
+  await chrome.scripting.registerContentScripts(
+    JOURNAL_SCRIPTS.map((s) => ({ ...s, matches, runAt: "document_start", allFrames: true, matchOriginAsFallback: true, persistAcrossSessions: true })),
+  );
+  // 已经打开的 tab 不会重新加载，补注入一次（两个脚本都是幂等的）。
+  for (const tab of await chrome.tabs.query({})) {
+    if (tab.id == null || !tab.url || !matchSite(tab.url)) continue;
+    siteTabs.set(tab.id, tab.url);
+    for (const s of JOURNAL_SCRIPTS) {
+      chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: s.js, world: s.world }).catch(() => {});
+    }
+  }
+}
+
+async function siteTab(tabId) {
+  await sitesReady;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab || !tab.url || !matchSite(tab.url)) throw new Error(`tab ${tabId} 不在录制白名单的站点里`);
+  return tab;
+}
+
+chrome.runtime.onMessage.addListener((m, sender) => {
+  if (!m || m.__tcrl !== 1 || sender.id !== chrome.runtime.id || !sender.tab) return;
+  const { __tcrl, ...msg } = m.msg ?? {};
+  void __tcrl;
+  pushJournal({ ...msg, tab: sender.tab.id, frame: sender.frameId ?? 0, top: m.top, page: m.page });
+});
+
+function tabEvent(ev, tabId, url) {
+  pushJournal({ k: "tab", t: Date.now(), ev, tab: tabId, frame: 0, url });
+}
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  await sitesReady;
+  if (changeInfo.url == null) return;
+  const was = siteTabs.has(tabId);
+  const now = matchSite(changeInfo.url);
+  if (now) {
+    siteTabs.set(tabId, changeInfo.url);
+    tabEvent(was ? "url" : "opened", tabId, changeInfo.url);
+  } else if (was) {
+    siteTabs.delete(tabId);
+    tabEvent("left", tabId, "");
+  }
+  void tab;
+});
+
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await sitesReady;
+  const url = siteTabs.get(tabId);
+  if (url === undefined) return;
+  siteTabs.delete(tabId);
+  tabEvent("closed", tabId, url);
+});
+
 
 // service worker 每次启动都尝试连接；onStartup / onInstalled 显式触发，alarm 兜底。
 chrome.runtime.onStartup.addListener(connect);

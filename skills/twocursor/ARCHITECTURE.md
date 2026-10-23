@@ -62,7 +62,7 @@ ping
 
 `src/chrome-extension/` 是薄层 CDP 代理，约 220 行。协议见 `src/browser/extension.ts`。
 
-- 只操作由 holder 创建的窗口和 tab，以及两类新 tab：opener 属于 twocursor 的 tab；开在录制窗口里的 tab（用户在录制窗口自己按 Cmd+T 开的 tab 没有 opener）。`openWindow` 的 `kind: "record"` 标记录制窗口，run 窗口不放宽。
+- run / 录制只操作由 holder 创建的窗口和 tab，以及两类新 tab（常驻录制的只读操作是例外，见第 7 节）：opener 属于 twocursor 的 tab；开在录制窗口里的 tab（用户在录制窗口自己按 Cmd+T 开的 tab 没有 opener）。`openWindow` 的 `kind: "record"` 标记录制窗口，run 窗口不放宽。
 - 工具栏图标：manifest 声明了 `icons` 与 `action`；点击图标会唤醒 service worker 并立即尝试连接（`need-extension` 的提示让用户点一下它）。图标源文件与设计说明在 `brand/`，改动后用 `sh brand/make-icons.sh` 重新生成 PNG。
 - 操作：`openWindow`、`openTab`、`closeTab`、`closeWindow`、`listOwned`、`windowOf`、`attach`、`detach`、`send`。
 - 事件：`debuggerEvent`、`debuggerDetach`、`tab.created`、`tab.updated`、`tab.removed`。
@@ -107,4 +107,23 @@ ping
 - daemon 的版本：启动时记下自己的 `build`，`ping` 返回 `build`、`mode`、`extensionBuild`，纯上报，没有副作用。换代码只在两处发生，都不在 `ensureAttached`（CLI 与 SDK 每条命令都会走到）里——那样会让一条不相关的命令隐式触发进程重启和几秒等待：`setup.js` 发现运行中 daemon 的 `build` 与刚写入的不同时，和用户显式运行的 `twocursor daemon restart`。两者都调 `restartDaemon`（`src/cli/session.ts`）：按 `ping` 里的 `pid` 发 `SIGTERM`（holder 收到后走 `shutdown`：收尾录制、关 run 窗、再退出），daemon 退出后 relay 随之退出，扩展按指数退避重连，Chrome 重新拉起 relay，relay 拉起新 daemon。不请求 daemon 自己退出（没有 `daemon.exit` 这个 RPC），所以新旧 daemon 走同一条路，不依赖对方实现了哪个方法。忙（`mode` 为 `run`、`record`、`record-op`）时拒绝，不杀，`setup.js` 会醒目地提示"没换成新代码，等空闲后运行 `twocursor daemon restart`"；旧 daemon（`ping` 里没有 `mode`，无从判断忙闲）直接杀。扩展没连着时只让它退出，不等新的。
 - 扩展代码的更新不能自动完成：`doctor` 的 `extension-build` 在已加载的扩展与已安装的不同时提示"在 chrome://extensions 里刷新 twocursor"。
 - `twocursor doctor` 只读。
+
+## 7. 常驻录制（journal）
+
+和 run / 录制互不相干：不用 CDP、不开窗口、不进 `Mode`，只读观察。用户点名的站点上常驻，数据落在 `~/.twocursor/journal`。
+
+```text
+页面 hook.js (MAIN) ─postMessage→ relay.js (隔离世界) ─runtime.sendMessage→ 扩展 background.js
+  ─批量(300ms) native messaging {type:"journal", events}→ relay 进程 → holder: Ingestor → JournalStore(SQLite + 文件)
+CLI: 直接开只读 SQLite（log / sql / wait / status）；tabs、snapshot、sites 生效经 holder 问扩展
+```
+
+- **扩展权限变了**：`host_permissions: <all_urls>` 加 `scripting`。内容脚本不写在 manifest 里，由 `setSites` 按白名单用 `chrome.scripting.registerContentScripts` 动态注册（`persistAcrossSessions`），所以改站点不需要重新加载扩展；白名单之外的页面既不注入脚本、也不上报任何事件。`siteTabs`、`snapshot` 这两个只读操作也只对白名单站点的 tab 开放，**不要求 tab 由 twocursor 创建**（run / 录制仍然只操作自己的窗口）。白名单在 `~/.twocursor/journal/sites.json`，holder 每次扩展 `hello` 后和 `twocursor sites add|rm` 之后下发。
+- **hook.js**（`src/chrome-extension/journal/`）：包住 fetch / XHR / sendBeacon / WebSocket；`foreground()`（页面可见，或离开前台不到 8 秒）为假时请求只计数，不读响应体；只对同站、非埋点、文本类的响应读体（上限 256KB，页面里只有粗判，最终判断在 holder）；输入只记长度；普通字符键不记，只记 Enter / Escape / Tab / Cmd 或 Ctrl 组合；滚动合并成一条；每分钟最多 3000 条。`__tcrSnap` 生成元素快照（默认视图内最多 60 个，密码和敏感字段的值不取）。页面脚本也能往 window 发消息，所以日志只是观察记录，不能当权限依据。
+- **日志**（`src/journal/`）：`<日期>.db` 一天一个 SQLite（WAL），表 `events`，`seq` 跨天单调递增；响应体 `bodies/<日期>/<哈希>.json|txt`（脱敏后缩进展开，方便 `rg`），快照 `snapshots/<日期>/`。同一天内按内容去重。`node:sqlite` 在 Node 24 里还是实验性的，`journal/sqlite.ts` 动态加载并过滤这一条警告（CLI 输出必须干净）。
+- **过滤**（`filter.ts`、`ingest.ts`）：`@ghostery/adblocker` 规则（沿用 `record/pipeline.ts` 的引擎）加第一方埋点启发式（只对非 GET：host 含 analytics / apm / datahub 等、路径含 collect / events / logs 等、204）标 `noise`，噪声只留索引、默认视图隐藏；非噪声的第三方请求只留索引；失败的请求只留小于 4KB 的响应体。`RecordSanitizer`（与 record 共用）负责脱敏：同一个秘密稳定别名，别名在 URL 里保持可读。同一个请求（方法 + 地址 + 响应内容哈希）5 分钟内重复出现只给上一行 `dup` 加一。人或 agent 的动作之后 2 秒内的请求，`cause` 指向这个动作。
+- **来源**：`isTrusted` 为真且没有水印 → `human`；鼠标点击带 `force: 0.123` 水印（`pressure ≈ 0.123`）→ `agent`；`isTrusted` 为假（脚本触发）和所有请求、导航、快照 → `page`。目前没有 agent 动作的 ledger，也没有租约（下一阶段）。
+- **淘汰**（`retention.ts`）：holder 每 5 分钟检查，目录总大小超过 1GB 的 80% 先删最旧一天的响应体和快照，仍超过 1GB 再删最旧一天的库；今天的不动。
+- **wait**：直接轮询日志文件（不经过 holder）：有人的事件且静默 `--idle` 秒就返回，超时则返回"无变化"或"人还在操作"。
+- **自检**：`journal/*.selfcheck.ts`、`cli/journal.selfcheck.ts`（真实起 CLI 子进程，HOME 指向临时目录）、`chrome-extension/background.selfcheck.mjs`（桩 chrome 对象）。`hook.js` 在页面里的行为没有自动测试，改它之后用真实 Chrome 手动验证（点击、输入、滚动、请求、前后台）。
 

@@ -31,6 +31,8 @@ globalThis.chrome = {
     getManifest: () => ({ version: "0.1.0" }),
     onStartup: onEvt(),
     onInstalled: onEvt(),
+    id: "fake-extension-id",
+    onMessage: onEvt(),
   },
   action: { onClicked: onEvt() },
   alarms: { create: () => {}, onAlarm: onEvt() },

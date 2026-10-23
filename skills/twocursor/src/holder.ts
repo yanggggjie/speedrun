@@ -3,6 +3,13 @@ import * as net from "node:net";
 import { connectChrome, disconnectChrome, ExtensionLink, frame, parseFrames, setActiveLink, type CdpBrowser, type CdpContext, type CdpPage } from "./browser/index.ts";
 import { finishRecord, liveRecordName, startRecord } from "./record/index.ts";
 import { devRpc } from "./dev/rpc.ts";
+import { Ingestor, type HookMsg } from "./journal/ingest.ts";
+import { enforceCap } from "./journal/retention.ts";
+import { readSites } from "./journal/sites.ts";
+import { dayOf, JournalStore } from "./journal/store.ts";
+import { loadAdblockEngine } from "./record/pipeline.ts";
+import type { FiltersEngine } from "@ghostery/adblocker";
+import { NeedExtensionError } from "./browser/connect.ts";
 import { Mode, type Busy } from "./mode.ts";
 import { ensureHomeLayout } from "./store/layout.ts";
 import { readVersion } from "./store/version.ts";
@@ -41,6 +48,16 @@ link.onAny((method, params, sessionId) => {
   if (!run || !sessionId) return;
   run.write({ jsonrpc: "2.0", method: "cdp.event", params: { sessionId, method, params } });
 });
+/** 常驻录制：扩展推来的页面事件写进 ~/.twocursor/journal，adblock 规则加载好之前只用启发式识别噪声。 */
+let journal: Ingestor | undefined;
+let adblock: FiltersEngine | undefined;
+const RETENTION_CHECK_MS = 5 * 60_000;
+link.raw.on("journal", (params) => {
+  const events = (params as { events?: HookMsg[] }).events;
+  if (Array.isArray(events)) journal?.handleBatch(events);
+});
+/** 白名单推给扩展：扩展每次 hello 之后、CLI 改了站点之后各推一次。 */
+function pushSites(): Promise<unknown> { return link.siteOp("setSites", { sites: readSites() }); }
 /** ponytail: 没有 relay 且没有 run/record 超过 10 分钟才退出；忙时不重试，下次 relay 断开再判断。 */
 const IDLE_EXIT_MS = 10 * 60_000;
 
@@ -89,6 +106,13 @@ function paramsOf(req: JsonRpcRequest): Record<string, unknown> { return req.par
 
 async function dispatch(req: JsonRpcRequest, conn: ConnState): Promise<unknown> {
   if (req.method === "ping") { if (chromeReady) await chromeReady.catch(() => {}); return pingBody(); }
+  if (req.method.startsWith("journal.")) {
+    if (!extSocket) throw new NeedExtensionError();
+    const params = paramsOf(req);
+    if (req.method === "journal.sync") return pushSites();
+    if (req.method === "journal.tabs") return link.siteOp("siteTabs");
+    return link.siteOp("snapshot", { tabId: params.tabId, full: params.full === true });
+  }
   await ensureChrome();
   await reconciled;
   const params = paramsOf(req);
@@ -222,6 +246,7 @@ function onRelay(sock: net.Socket): void {
           link.attach((out) => sock.write(frame(out)));
           helloDone = true;
           logger.info("extension connected");
+          pushSites().catch(warnCatch("push sites"));
           reconciled = ensureChrome().then(reconcileNow).catch(warnCatch("reconcile on hello"));
           return;
         }
@@ -254,6 +279,12 @@ export async function runHolder(): Promise<void> {
   server = await listenUnique(SESSION_SOCK, onConnection);
   if (!server) { logger.warn("CLI socket 被占用，本进程退出"); extServer.close(); if (SESSION_SOCK_IS_FILE) fs.rmSync(SESSION_EXT_SOCK, { force: true }); process.exit(0); }
   fs.rmSync(RECORDING_DIR, { recursive: true, force: true });
+  const store = new JournalStore();
+  await store.open();
+  journal = new Ingestor(store, { engine: () => adblock });
+  loadAdblockEngine().then((engine) => { adblock = engine; }).catch(warnCatch("adblock engine"));
+  const retention = setInterval(() => { try { enforceCap({ today: dayOf(Date.now()) }); } catch (error) { warnCatch("retention")(error); } }, RETENTION_CHECK_MS);
+  retention.unref();
   process.on("SIGINT", () => void shutdown(0));
   process.on("SIGTERM", () => void shutdown(0));
   process.on("uncaughtException", (error) => { logger.error("uncaughtException", error); void shutdown(1); });
