@@ -2,8 +2,8 @@
 
 ## 未发布
 
-- 新增常驻录制：对你点名的站点（`twocursor sites add <域名>`）一直记录人的操作、页面请求和响应、页面状态，落在 `~/.twocursor/journal`，总大小上限 1GB。
-- 新增只读观察命令：`twocursor log`、`sql`、`snapshot`、`tabs`、`wait`、`status`。埋点和广告自动识别为噪声，token、Cookie、密码脱敏。
+- 新增常驻录制：对你点名的站点（`tabcobot sites add <域名>`）一直记录人的操作、页面请求和响应、页面状态，落在 `~/.tabcobot/journal`，总大小上限 1GB。
+- 新增只读观察命令：`tabcobot log`、`sql`、`snapshot`、`tabs`、`wait`、`status`。埋点和广告自动识别为噪声，token、Cookie、密码脱敏。
 - 扩展新增 `scripting` 和 `<all_urls>` 权限；只对白名单站点注入脚本。更新后需要在 `chrome://extensions` 里刷新一次扩展。
 
 ## v2.0.1
@@ -17,11 +17,11 @@
 
 - 改用 Chrome 扩展连接，不再需要 remote debugging 和 Allow 弹窗，首次使用加载一次扩展。
 - 录制更完整，覆盖点击、输入、勾选、滚动和页面跳转（含单页应用、新标签页、iframe）。
-- 命令统一为 `twocursor`，task 参数改为具名：`twocursor run <task> --参数 值`；`twocursor eval` 可组合多个 task。
+- 命令统一为 `tabcobot`，task 参数改为具名：`tabcobot run <task> --参数 值`；`tabcobot eval` 可组合多个 task。
 - 运行更稳定：超时、并发等待和失败信息统一，保存运行历史。
-- 升级自动换新版本；任务或录制进行中时，结束后运行 `twocursor daemon restart`。
+- 升级自动换新版本；任务或录制进行中时，结束后运行 `tabcobot daemon restart`。
 - macOS 已验证，Windows、Linux 尚未充分测试。
-- **不兼容**：v1 带参数的 task 需改成具名参数；`~/.twocursor/temp` 和 `@executor` 取消。
+- **不兼容**：v1 带参数的 task 需改成具名参数；`~/.tabcobot/temp` 和 `@executor` 取消。
 
 ## v1.2.0
 

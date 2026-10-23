@@ -1,12 +1,12 @@
 {
-  "name": "twocursor-skill-repo",
+  "name": "tabcobot-skill-repo",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Dev harness for the twocursor skill; the shippable package lives in skills/twocursor/src.",
+  "description": "Dev harness for the tabcobot skill; the shippable package lives in skills/tabcobot/src.",
   "scripts": {
-    "check": "npm --prefix skills/twocursor/src run check",
-    "test": "npm --prefix skills/twocursor/src run test",
+    "check": "npm --prefix skills/tabcobot/src run check",
+    "test": "npm --prefix skills/tabcobot/src run test",
     "dev:install": "node tools/dev-install.mjs",
     "verify:pack": "node tools/verify-pack.mjs"
   },

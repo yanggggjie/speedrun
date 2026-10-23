@@ -1,1 +1,1 @@
-skills/yodo/AGENTS.md
+skills/tabcobot/AGENTS.md
