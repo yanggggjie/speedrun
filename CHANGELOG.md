@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 新图标：一只青绿色的小机器人，头是浏览器标签页的轮廓（替换原来继承的图标）。
 - 新增常驻录制：对你点名的站点（`tabbot sites add <域名>`）一直记录人的操作、页面请求和响应、页面状态，落在 `~/.tabbot/journal`，总大小上限 1GB。
 - 新增只读观察命令：`tabbot log`、`sql`、`snapshot`、`tabs`、`wait`、`status`。埋点和广告自动识别为噪声，token、Cookie、密码脱敏。
 - 扩展新增 `scripting` 和 `<all_urls>` 权限；只对白名单站点注入脚本。更新后需要在 `chrome://extensions` 里刷新一次扩展。

@@ -4,7 +4,7 @@
 TabBot（曾用名 TwoCursor、TabCobot）：人和 agent 共用同一个 Chrome。常驻录制用户点名的站点，agent 读日志了解现场；人可随时插手。设计见 [DESIGN.md](DESIGN.md)，实验记录见 [EXPERIMENTS.md](EXPERIMENTS.md)。
 
 ## 仓库
-- GitHub 仓库 `yanggggjie/TwoCursor`（私有，Apache-2.0；仓库名还没改成 TabBot，见 DESIGN.md 的 TODO）。代码起点是 yodo 的源码，已改名并大幅改造，历史已清空，与 yodo 仓库无关联。
+- GitHub 仓库 `yanggggjie/TabBot`（私有，Apache-2.0；2026-10-23 从 `TwoCursor` 改名，GitHub 会保留旧地址的跳转）。本机检出目录名仍是 `TwoCursor`，可自行改名。代码起点是 yodo 的源码，已改名并大幅改造，历史已清空，与 yodo 仓库无关联。
 - 命名规则：**要书写、打字、匹配的地方一律小写 `tabbot`**（命令、skill 名和触发词、数据目录 `~/.tabbot`、native host `com.tabbot.connect`、环境变量 `TABBOT_*`、Chrome 窗口标题 `tabbot run`/`tabbot record`）；**给用户看的地方写 `TabBot`**（产品名、文档正文、扩展显示名、提示文案）。和 yodo 完全独立：skill 名、命令、数据目录、native host、扩展 ID 都不同，可以同时安装使用。
 - 产品代码在 `skills/tabbot/`（运行时、扩展、文档），开发约束、检查和测试、分发见 `skills/tabbot/AGENTS.md`，运行时架构见 `skills/tabbot/ARCHITECTURE.md`（第 7 节是常驻录制）。
 - 实验代码（原 `lab/`）已删除，需要时 `git log --stat -- lab`。

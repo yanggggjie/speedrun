@@ -20,7 +20,7 @@
 ## 2. 同步 skill
 
 - 本地开发安装，在仓库根目录运行 `npm run dev:install`。
-- 在线安装运行 `npx skills add yanggggjie/TwoCursor -g -y -a '*' -s tabbot`。
+- 在线安装运行 `npx skills add yanggggjie/TabBot -g -y -a '*' -s tabbot`。
 - 运行 `npx skills ls -g`，找到 TabBot 的安装目录，下面的步骤都从这个目录运行。
 
 ## 3. 运行引导脚本
