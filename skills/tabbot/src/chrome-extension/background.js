@@ -2,6 +2,8 @@
 // 协议与 holder 端的实现见 src/browser/extension.ts。
 // 只操作 TabBot 自己创建（或由它打开）的窗口与 tab；其余 id 一律拒绝。
 
+import { applySets, isSafeMethod, redactHeadersForDaemon, replayHeaders, UNREPLAYABLE_BODY } from "./journal/replay-core.js";
+
 const HOST = "com.tabbot.connect";
 const PROTOCOL_VERSION = 1;
 const RETRY_MAX_MS = 30_000;
@@ -54,7 +56,7 @@ function postToHost(message) {
  * （按 EXTENSION_FILES 的顺序把字节依次拼接，SHA-256 取前 16 位十六进制，列表见 src/store/version.ts）。
  * 读不到就是空串，daemon 一侧只当"版本未知"。
  */
-const EXTENSION_FILES = ["background.js", "manifest.json", "journal/hook.js", "journal/relay.js"];
+const EXTENSION_FILES = ["background.js", "manifest.json", "journal/hook.js", "journal/relay.js", "journal/replay-core.js"];
 const buildId = (async () => {
   try {
     const parts = [];
@@ -238,6 +240,9 @@ async function runTab(name, args) {
     }
     case "act": {
       return await runAct(args.tabId, args.cmd ?? {});
+    }
+    case "replay": {
+      return await runReplay(args);
     }
     case "snapshot": {
       const tab = await siteTab(args.tabId);
@@ -425,13 +430,89 @@ async function waitComplete(tabId, ms) {
   return chrome.tabs.get(tabId).catch(() => null);
 }
 
+/** 这个 tab 的租约还有效吗（超过 LEASE_IDLE_MS 没有动作就失效）；有效就记一次使用。 */
+function leaseHeld(tabId) {
+  const held = lease.get(tabId);
+  if (held && Date.now() - held.used > LEASE_IDLE_MS) { lease.delete(tabId); leaseEvent(tabId, "expired", { reason: "idle" }); return false; }
+  if (!held) return false;
+  held.used = Date.now();
+  return true;
+}
+
+// ---- 原始请求：真值只留在浏览器里 ----
+// 页面里发出的每个同站请求，原始内容（含请求头里的 token 真值）存在 chrome.storage.session（浏览器自己的、不落盘的会话存储），
+// 浏览器重启就没了；转给 daemon 的那份请求头里，名字像秘密的已经抹掉。重放就用这份原始内容，在页面里发，
+// agent 和日志里只有别名。超过上限先丢最旧的。
+const RAW_MAX_BYTES = 4 * 1024 * 1024;
+const RAW_ITEM_MAX = 64 * 1024;
+const RAW_PERSIST_MS = 800;
+const rawReqs = new Map(); // `${tabId}:${rid}` -> { m, u, h, b, t, size }
+let rawBytes = 0;
+let rawTimer = null;
+const rawReady = chrome.storage.session.get(["rawReqs"]).then((saved) => {
+  for (const [k, v] of Object.entries(saved.rawReqs ?? {})) if (!rawReqs.has(k)) { rawReqs.set(k, v); rawBytes += v.size; }
+});
+
+const SLD = /^(com|co|org|net|gov|edu|ac)$/;
+const registrable = (host) => {
+  const p = host.split(".");
+  if (p.length <= 2) return host;
+  const n = p.length;
+  return p[n - 1].length === 2 && SLD.test(p[n - 2]) ? p.slice(-3).join(".") : p.slice(-2).join(".");
+};
+const sameSite = (a, b) => { try { return registrable(new URL(a).hostname) === registrable(new URL(b).hostname); } catch { return false; } };
+
+function rememberRaw(tabId, msg, pageUrl) {
+  if (msg.k !== "net" || !msg.rid || msg.via === "beacon" || !msg.url || !msg.method) return;
+  if (pageUrl && !sameSite(msg.url, pageUrl)) return; // 重放只发给标签页自己的站点，第三方的不存
+  const entry = { m: msg.method, u: msg.url, h: msg.reqHeaders ?? {}, b: typeof msg.reqBody === "string" ? msg.reqBody : null, t: msg.t ?? Date.now() };
+  entry.size = JSON.stringify(entry).length;
+  if (entry.size > RAW_ITEM_MAX) return;
+  const key = `${tabId}:${msg.rid}`;
+  const old = rawReqs.get(key);
+  if (old) rawBytes -= old.size;
+  rawReqs.set(key, entry);
+  rawBytes += entry.size;
+  for (const [k, v] of rawReqs) { if (rawBytes <= RAW_MAX_BYTES) break; rawReqs.delete(k); rawBytes -= v.size; } // Map 按插入顺序，先丢最旧的
+  if (!rawTimer) rawTimer = setTimeout(persistRaw, RAW_PERSIST_MS);
+}
+
+function persistRaw() {
+  rawTimer = null;
+  chrome.storage.session.set({ rawReqs: Object.fromEntries(rawReqs) }).catch(() => {});
+}
+
+/**
+ * 重放：取出这个请求的原始内容，应用 --set，在页面里原样发出（带这个页面的登录态）。
+ * 只能发给标签页自己的站点；GET 和 HEAD 不需要租约，其它方法有副作用，和 act 一样要租约（要不要 --yes 由 daemon 先挡）。
+ */
+async function runReplay(args) {
+  const tab = await siteTab(args.tabId);
+  await rawReady;
+  const entry = rawReqs.get(`${args.rawTab}:${args.rid}`);
+  if (!entry) return { ok: false, error: "这个请求的原始内容已经不在浏览器里了（浏览器重启、太旧被清掉，或者是扩展刷新前录的）。在页面上再触发一次这个操作，然后重试" };
+  if (typeof entry.b === "string" && UNREPLAYABLE_BODY.test(entry.b)) return { ok: false, error: "这个请求的请求体是文件、二进制或表单数据，没法重放" };
+  const applied = applySets({ method: entry.m, url: entry.u, headers: replayHeaders(entry.h), body: entry.b }, Array.isArray(args.sets) ? args.sets : []);
+  if (applied.error) return { ok: false, error: applied.error };
+  const req = { ...applied.template, method: String(applied.template.method).toUpperCase() };
+  let origin, tabOrigin;
+  try { origin = new URL(req.url).origin; tabOrigin = new URL(tab.url).origin; } catch { return { ok: false, error: "请求地址不是有效的网址" }; }
+  if (origin !== tabOrigin) return { ok: false, error: `请求的站点 ${origin} 和这个标签页（${tabOrigin}）不同源，只能在同源的标签页里重放` };
+  if (!isSafeMethod(req.method) && !leaseHeld(args.tabId)) return { ok: false, rejected: "no-lease", humanIdleMs: idleMs(args.tabId) };
+  const [res] = await chrome.scripting.executeScript({
+    target: { tabId: args.tabId },
+    world: "MAIN",
+    func: (r) => (window.__tcrReplay ? window.__tcrReplay(r) : { ok: false, error: "页面里没有录制脚本（刷新这个页面后再试）" }),
+    args: [req],
+  });
+  const result = res?.result ?? { ok: false, error: "页面没有返回结果" };
+  return { ...result, sentUrl: req.url, sentMethod: req.method };
+}
+
 /** 执行 agent 的一个动作：先看租约，再在页面里执行；动作引发页面跳转（点链接、提交表单）算成功。 */
 async function runAct(tabId, cmd) {
   await siteTab(tabId);
-  const held = lease.get(tabId);
-  if (held && Date.now() - held.used > LEASE_IDLE_MS) { lease.delete(tabId); leaseEvent(tabId, "expired", { reason: "idle" }); }
-  if (!lease.has(tabId)) return { ok: false, rejected: "no-lease", humanIdleMs: idleMs(tabId) };
-  lease.get(tabId).used = Date.now();
+  if (!leaseHeld(tabId)) return { ok: false, rejected: "no-lease", humanIdleMs: idleMs(tabId) };
   let result;
   if (cmd.kind === "goto") {
     await chrome.tabs.update(tabId, { url: cmd.url });
@@ -465,7 +546,9 @@ chrome.runtime.onMessage.addListener((m, sender) => {
   const tabId = sender.tab.id;
   if (msg.k === "presence") { humanInput(tabId, msg.kind); return; } // 在场信号只给租约用，不进日志
   if (msg.k === "ev" && msg.trusted === true) humanInput(tabId, msg.type);
-  pushJournal({ ...msg, tab: tabId, frame: sender.frameId ?? 0, top: m.top, page: m.page });
+  rememberRaw(tabId, msg, m.page);
+  const forwarded = msg.k === "net" && msg.reqHeaders ? { ...msg, reqHeaders: redactHeadersForDaemon(msg.reqHeaders) } : msg;
+  pushJournal({ ...forwarded, tab: tabId, frame: sender.frameId ?? 0, top: m.top, page: m.page });
 });
 
 function tabEvent(ev, tabId, url) {

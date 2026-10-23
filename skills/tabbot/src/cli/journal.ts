@@ -7,7 +7,9 @@ import * as os from "node:os";
 import { ensureSessionAndRpc, tryPing } from "./session.ts";
 import { formatHandshakeStdout, formatErrorStdout, isHandshakeStatus } from "../protocol.ts";
 import { JOURNAL_CAP_BYTES, JOURNAL_DIR } from "../utils/constants.ts";
-import { formatRows, lastSeq, readEvents, runSql, status as journalStatus, waitForHuman } from "../journal/query.ts";
+import { findInBodies, formatRows, lastSeq, readEvents, readEventBySeq, runSql, status as journalStatus, waitForHuman } from "../journal/query.ts";
+import { isSafeMethod, templateFromRow } from "../journal/replay.ts";
+import { formatEvent } from "../journal/format.ts";
 import { renderSnapshot, type Snapshot } from "../journal/render.ts";
 import { BUILTIN_EXCLUDE, describeConfig, normalizeHost, readConfig, writeConfig, type SitesConfig } from "../journal/sites.ts";
 import type { Src } from "../journal/types.ts";
@@ -45,7 +47,7 @@ function out(text: string): void { console.log(text); }
 function fail(error: string): void { console.log(formatErrorStdout(error)); process.exitCode = 1; }
 
 /** 经 holder 问扩展；握手类失败按统一格式输出。 */
-async function ask(method: "journal.sync" | "journal.tabs" | "journal.snapshot" | "journal.lease" | "journal.act", params?: Record<string, unknown>, ms = 15_000): Promise<unknown | undefined> {
+async function ask(method: "journal.sync" | "journal.tabs" | "journal.snapshot" | "journal.lease" | "journal.act" | "journal.replay", params?: Record<string, unknown>, ms = 15_000): Promise<unknown | undefined> {
   try { return await ensureSessionAndRpc(method, params, ms); } catch (error) {
     const value = error as { data?: { status?: string }; message?: string };
     if (value.data?.status && isHandshakeStatus(value.data.status)) { console.log(formatHandshakeStdout(value.data.status)); process.exitCode = 1; } else fail(value.message ?? String(error));
@@ -270,3 +272,85 @@ export async function actCommand(args: string[]): Promise<void> {
   }
   out(lines.join("\n"));
 }
+
+// ---- 请求优先：找请求、看请求、重放请求 ----
+
+/** tabbot req find <页面上看到的文字> [-n 20]：在存下来的响应体里找这段文字，看是哪个请求返回的。 */
+export async function reqCommand(args: string[]): Promise<void> {
+  const [sub, ...rest] = args;
+  if (sub === "find") {
+    const flags = parseFlags(rest);
+    if ("error" in flags) return fail(flags.error);
+    const needle = flags.rest.join(" ");
+    if (!needle) return fail('用法：tabbot req find "页面上看到的文字" [--n 20]');
+    const n = intFlag(flags, "n"); if (isError(n)) return fail(n.error);
+    const hits = await findInBodies(needle, { limit: (n as number | undefined) ?? 20 });
+    if (hits.length === 0) return out(`没有响应体里包含「${needle}」（只搜最近 7 天存下来的响应体；页面上的字可能是服务器直接渲染在 HTML 里的，不是接口返回的）`);
+    out(`${hits.length} 个请求的响应里有「${needle}」：（tabbot req show <编号> 看请求，tabbot replay <编号> 重放）`);
+    for (const h of hits) out(`${formatEvent(h.row)}\n    …${h.snippet}…`);
+    return;
+  }
+  if (sub === "show") {
+    const seq = Number((rest[0] ?? "").replace(/^#/, ""));
+    if (!Number.isInteger(seq)) return fail("用法：tabbot req show <编号>（编号来自 tabbot log 或 req find）");
+    const row = await readEventBySeq(seq);
+    if (!row) return fail(`找不到事件 #${seq}`);
+    out(formatEvent(row));
+    const t = templateFromRow(row);
+    if ("error" in t) return out(`不能重放：${t.error}`);
+    const u = new URL(row.url!);
+    const lines = [`地址：${row.url}`];
+    const headers = Object.entries(t.template.headers);
+    if (headers.length) lines.push(`请求头：\n${headers.map(([k, v]) => `  ${k}: ${v}`).join("\n")}`);
+    if (t.template.body !== undefined) lines.push(`请求体：${t.template.body.length > 600 ? `${t.template.body.slice(0, 600)}…` : t.template.body}`);
+    if (row.body) lines.push(`响应体文件：${row.body}（在 ~/.tabbot/journal/bodies 下，可以直接 rg）`);
+    const params = [...u.searchParams.keys()];
+    lines.push(`重放：tabbot replay ${seq}${isSafeMethod(row.method!) ? "" : " --yes"} [--set 名字=值 ...]；可以改的查询参数：${params.length ? params.join(", ") : "（无）"}${t.template.body !== undefined ? "；请求体字段用 body.字段名=值" : ""}；请求头 header.名字=值`);
+    lines.push("token 等秘密在日志里是别名或 [redacted]，真值只在浏览器里，重放时由浏览器带上，你不需要也拿不到它们。");
+    for (const w of t.warnings) lines.push(`⚠ ${w}`);
+    return out(lines.join("\n"));
+  }
+  fail('用法：tabbot req find "页面上看到的文字" | req show <编号>');
+}
+
+/** 解析 replay 的参数：<编号> [--set k=v]... [--tab N] [--yes]。--set 可以重复。 */
+export function parseReplayArgs(args: string[]): { seq: number; sets: string[]; tabId?: number; yes: boolean } | { error: string } {
+  const sets: string[] = [];
+  let seq: number | undefined, tabId: number | undefined, yes = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--yes") yes = true;
+    else if (a === "--set") { const v = args[++i]; if (v === undefined) return { error: "--set 缺少值（写成 名字=值）" }; sets.push(v); }
+    else if (a.startsWith("--set=")) sets.push(a.slice(6));
+    else if (a === "--tab" || a.startsWith("--tab=")) {
+      const v = a === "--tab" ? args[++i] : a.slice(6);
+      const n = Number(v);
+      if (v === undefined || !Number.isInteger(n) || n < 0) return { error: "--tab 需要非负整数" };
+      tabId = n;
+    } else if (a.startsWith("--")) return { error: `不认识的参数 ${a}` };
+    else if (seq === undefined) { const n = Number(a.replace(/^#/, "")); if (!Number.isInteger(n)) return { error: `请求编号要是整数（来自 tabbot log 或 req find），收到：${a}` }; seq = n; }
+    else return { error: `多余的参数：${a}` };
+  }
+  if (seq === undefined) return { error: "用法：tabbot replay <编号> [--set 名字=值 ...] [--tab N] [--yes]" };
+  return { seq, sets, ...(tabId !== undefined ? { tabId } : {}), yes };
+}
+
+export async function replayCommand(args: string[]): Promise<void> {
+  const p = parseReplayArgs(args);
+  if ("error" in p) return fail(p.error);
+  const res = (await ask("journal.replay", { seq: p.seq, sets: p.sets, tabId: p.tabId, yes: p.yes }, 40_000)) as { ok?: boolean; error?: string; rejected?: string; humanIdleMs?: number; tabId?: number; method?: string; status?: number; size?: number; ms?: number; truncated?: boolean; summary?: string; preview?: string; bodyFile?: string; replaySeq?: number; warnings?: string[] } | undefined;
+  if (!res) return;
+  if (res.rejected === "no-lease") { process.exitCode = 1; return out(`✗ 重放 #${p.seq}：非 GET 请求需要租约（和 act 一样）。${res.humanIdleMs !== undefined && res.humanIdleMs < 60_000 ? `人刚动过（${humanSince(res.humanIdleMs)}），先 tabbot log --tab ${res.tabId} --src human 看人做了什么，再 tabbot takeover --tab ${res.tabId}` : `先 tabbot takeover --tab ${res.tabId}`}`); }
+  if (res.ok === false) { process.exitCode = 1; return out(`✗ 重放 #${p.seq}：${res.error ?? "失败"}`); }
+  const bad = (res.status ?? 0) >= 400;
+  if (bad) process.exitCode = 1;
+  const kb = (res.size ?? 0) >= 1024 ? `${((res.size ?? 0) / 1024).toFixed(1)}KB` : `${res.size ?? 0}B`;
+  const lines = [`${bad ? "✗" : "✓"} 重放 #${p.seq}${p.sets.length ? `（改了 ${p.sets.map((x) => x.split("=")[0]).join(", ")}）` : ""}：${res.method} → ${res.status}，${kb}，${res.ms}ms，在 tab${res.tabId} 里发出；${res.summary ?? ""}`];
+  if (bad) lines.push(res.status === 401 || res.status === 403 ? "服务器拒绝了：登录态过期、需要签名，或这个请求依赖页面上一步的状态。改用 tabbot act 在页面上做。" : "服务器返回了错误，先看下面的响应内容再决定。");
+  if (res.bodyFile) lines.push(`响应体文件：${res.bodyFile}（~/.tabbot/journal/bodies 下，可以直接 rg）`);
+  if (res.truncated) lines.push("⚠ 响应超过 1MB，只取了前 1MB");
+  for (const w of res.warnings ?? []) lines.push(`⚠ ${w}`);
+  if (res.preview) lines.push(`响应（前 ${Math.min(res.preview.length, 1500)} 字符，已脱敏）：\n${res.preview}`);
+  out(lines.join("\n"));
+}
+

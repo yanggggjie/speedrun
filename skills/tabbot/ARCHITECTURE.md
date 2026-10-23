@@ -140,3 +140,21 @@ CLI act ─RPC journal.act→ holder.runAct ─siteOp "act"→ 扩展 runAct ─
 - **登记**：`Ingestor.beginAct` 先写一行 `agent`（动作引发的请求的 `cause` 指向它），动作期间同一个 tab 上 `trusted` 为 false 的页面事件不重复记；`endAct` 补上元素描述、字数、结果（`fill` 的文字不进日志）；动作结束后 800ms 的宽限内晚到的合成事件也不重复记。被租约拒绝的动作也有一行记录。
 - **测试**：`journal/act.selfcheck.ts`（登记）、`cli/act.selfcheck.ts`（命令解析）、`chrome-extension/background.selfcheck.mjs`（租约与动作，桩 chrome）、`native-messaging-host/holder.e2e.selfcheck.mjs`（经 relay、holder 到假扩展）；`scripts/dev/hook-e2e.mjs` 在真实 Chrome 里验证 `hook.js` 的每个动作（需要本机 Chrome，不在 `npm test` 里）。
 
+### 7.2 请求优先：重放（req / replay）
+
+```
+页面 hook.js ─net 消息（含请求头真值、rid）→ 扩展 rememberRaw ─存 chrome.storage.session（原始内容，不落盘）
+                                              └ 转给 daemon 前 redactHeadersForDaemon 抹掉名字像秘密的请求头
+CLI replay ─RPC journal.replay→ holder.runReplay（挑请求、挑同源标签页）─siteOp "replay"→ 扩展 runReplay
+   取原始内容 → replay-core.applySets（--set）→ executeScript → 页面 window.__tcrReplay（用保存下来的原始 fetch 发）
+   ← 响应 → holder 脱敏、存成响应体文件、记一行 agent replay → CLI
+```
+
+- **真值留在浏览器里**：页面里发的每个同站请求（`rid = docId:序号`，`docId` 是页面文档的随机编号），原始内容（方法、地址、请求头、请求体）存在扩展的 `chrome.storage.session`（`rawReqs`，上限 4MB，单条 64KB，先丢最旧的；浏览器重启就没了）。转给 daemon 的那份，名字像秘密的请求头（`authorization`、`*token*`、`*csrf*` 等）在扩展里已经抹成 `[redacted]`，daemon 原样保留，不再起别名；地址和请求体里的秘密由 daemon 脱敏（别名）后再写日志。日志里没有真值，也没有"保管处"。
+- **别名**：`secret_` 加"盐 + 真值"的 HMAC 前 8 位十六进制（盐在 `~/.tabbot/journal/alias-salt`，0600，第一次运行时随机生成）：同一个秘密永远是同一个别名（重启 daemon 也不变），不能还原。录制和 task 仍用按出现顺序的编号。
+- **请求体的脱敏**：JSON 请求体先解析再脱敏（继承来的文本脱敏只认 `key=value`，认不出 JSON 里的 `"access_token":"…"`）；太大（>8KB）或不是完整 JSON 的不存内容（`reqBodyTruncated`）；页面脚本放的占位文字（`[FormData]`、`[Blob 120]`）原样保留，表示没法重放。
+- **`--set`**（`chrome-extension/journal/replay-core.js` 的 `applySets`，扩展和自检共用，daemon 只引用其中的常量）：查询参数、`header.名字`、`body.路径`（JSON 或表单，按已有值的类型转换）、`body=`。应用在浏览器里的原始内容上，不在日志里的别名版本上。
+- **安全**：只能发给标签页自己的站点（`origin` 必须相同，否则不发）；GET、HEAD 不要租约，其它方法要租约（扩展检查）和 `--yes`（holder 检查）；原始请求头里浏览器自己管的（`cookie`、`origin`、`referer`、`sec-*`…）去掉，`cookie` 由浏览器按 `credentials: "include"` 带上；`__tcrReplay` 用保存下来的原始 `fetch`，所以重放不会被 hook 当成页面自己发的请求记下来。
+- **`req find`**：在最近 7 天存下来的响应体文件里找文字，返回是哪个请求返回的；`req show` 用 `templateFromRow` 把日志里的一行还原成请求的样子，并给出风险提示（签名类参数、非 GET）。
+- **测试**：`chrome-extension/journal/replay-core.selfcheck.mjs`（`--set`、请求头）、`journal/replay.selfcheck.ts`（别名稳定、还原请求的样子、选标签页、摘要、JSON 请求体不泄露）、`background.selfcheck.mjs`（原始内容、抹真值、重放操作、同源、租约）、`holder.e2e.selfcheck.mjs`（经 relay、holder 到假扩展，含日志里没有真值）；`scripts/dev/hook-e2e.mjs` 在真实 Chrome 里验证 `__tcrReplay`（带 cookie 和自定义请求头、不被记成页面请求）。
+

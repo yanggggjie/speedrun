@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import { connectChrome, disconnectChrome, ExtensionLink, frame, parseFrames, setActiveLink, type CdpBrowser, type CdpContext, type CdpPage } from "./browser/index.ts";
@@ -7,6 +8,8 @@ import { Ingestor, type HookMsg } from "./journal/ingest.ts";
 import { enforceCap } from "./journal/retention.ts";
 import { extensionConfig, readConfig } from "./journal/sites.ts";
 import { dayOf, JournalStore } from "./journal/store.ts";
+import { readEventBySeq } from "./journal/query.ts";
+import { isSafeMethod, pickReplayTab, summarizeBody, templateFromRow } from "./journal/replay.ts";
 import { loadAdblockEngine } from "./record/pipeline.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
 import { NeedExtensionError } from "./browser/connect.ts";
@@ -14,7 +17,7 @@ import { Mode, type Busy } from "./mode.ts";
 import { ensureHomeLayout } from "./store/layout.ts";
 import { readVersion } from "./store/version.ts";
 import { HANDSHAKE_GUIDES, RPC_ERRORS, handshakeStatusFromError, type JsonRpcNotification, type JsonRpcRequest, type JsonRpcResponse } from "./protocol.ts";
-import { CDP_COMMAND_TIMEOUT_MS, CDP_SHORT_TIMEOUT_MS, RECORDING_DIR, SESSION_DIR, SESSION_EXT_SOCK, SESSION_LOG, SESSION_SOCK, SESSION_SOCK_IS_FILE } from "./utils/constants.ts";
+import { JOURNAL_ALIAS_SALT_FILE, JOURNAL_DIR, CDP_COMMAND_TIMEOUT_MS, CDP_SHORT_TIMEOUT_MS, RECORDING_DIR, SESSION_DIR, SESSION_EXT_SOCK, SESSION_LOG, SESSION_SOCK, SESSION_SOCK_IS_FILE } from "./utils/constants.ts";
 import { createLogger, setLogFile } from "./utils/logger.ts";
 
 const logger = createLogger("holder");
@@ -48,6 +51,14 @@ link.onAny((method, params, sessionId) => {
   if (!run || !sessionId) return;
   run.write({ jsonrpc: "2.0", method: "cdp.event", params: { sessionId, method, params } });
 });
+/** 别名的盐：第一次运行时随机生成，存在日志目录里（权限 0600）；别名由它和真值哈希得到，不能还原真值。 */
+function aliasSalt(): string {
+  try { return fs.readFileSync(JOURNAL_ALIAS_SALT_FILE, "utf8").trim(); } catch { /* 第一次 */ }
+  const salt = randomBytes(24).toString("hex");
+  fs.mkdirSync(JOURNAL_DIR, { recursive: true });
+  fs.writeFileSync(JOURNAL_ALIAS_SALT_FILE, salt, { mode: 0o600 });
+  return salt;
+}
 /** 常驻录制：扩展推来的页面事件写进 ~/.tabbot/journal，adblock 规则加载好之前只用启发式识别噪声。 */
 let journal: Ingestor | undefined;
 let adblock: FiltersEngine | undefined;
@@ -76,6 +87,45 @@ async function runAct(tabId: number, cmd: Record<string, unknown>): Promise<unkn
     if (act) journal?.endAct(tabId, act, Date.now(), { detail: { ok: false, error: error instanceof Error ? error.message : String(error) } });
     throw error;
   }
+}
+/**
+ * 重放日志里的一个请求：原始内容（含 token 真值）在浏览器里，由扩展取出、应用 --set、在同源页面里原样发出（带登录态）；
+ * 这里只负责挑请求、挑标签页、把响应脱敏后记进日志。非 GET 要 `yes`（有副作用）。
+ */
+async function runReplay(params: Record<string, unknown>): Promise<unknown> {
+  const fail = (error: string) => ({ ok: false, error });
+  const seq = Number(params.seq);
+  const row = Number.isInteger(seq) ? await readEventBySeq(seq) : undefined;
+  if (!row) return fail(`找不到事件 #${String(params.seq)}（用 tabbot req find 找请求）`);
+  const base = templateFromRow(row);
+  if ("error" in base) return fail(base.error);
+  let rid: string | undefined;
+  try { rid = (JSON.parse(row.detail ?? "{}") as { rid?: string }).rid; } catch { /* 没有细节 */ }
+  if (!rid) return fail(`#${row.seq} 没有保存原始内容（是升级前录的，或不是页面里发的请求）`);
+  if (!isSafeMethod(row.method!) && params.yes !== true) return fail(`${row.method} 请求可能有副作用（下单、提交、删除）：确认要重放请加 --yes，并且先问过用户`);
+  const sets = Array.isArray(params.sets) ? params.sets.map(String) : [];
+  let tabId = Number(params.tabId);
+  if (!Number.isInteger(tabId)) {
+    const listed = (await link.siteOp("siteTabs")) as { tabs: { tabId: number; active: boolean; url: string }[] };
+    const picked = pickReplayTab(listed.tabs, row.url!);
+    if (picked === undefined) return fail(`没有和这个请求同源的标签页（${new URL(row.url!).origin}）：先 tabbot act goto 打开该站点，或用 --tab 指定`);
+    tabId = picked;
+  }
+  const ts = Date.now();
+  const res = (await link.siteOp("replay", { tabId, rawTab: row.tab, rid, sets })) as { ok?: boolean; error?: string; rejected?: string; humanIdleMs?: number; status?: number; ct?: string; size?: number; text?: string; truncated?: boolean; ms?: number; sentUrl?: string; sentMethod?: string };
+  if (res.rejected) return { ...res, ok: false, tabId };
+  const setKeys = sets.map((x) => x.split("=")[0]!);
+  const rawUrl = res.sentUrl ?? row.url!;
+  const method = res.sentMethod ?? row.method!;
+  if (res.ok === false) {
+    if (res.sentUrl) journal?.recordReplay(tabId, ts, { method, rawUrl, replayOf: seq, setKeys, error: res.error });
+    return { ...res, tabId };
+  }
+  const rec = journal?.recordReplay(tabId, ts, { method, rawUrl, replayOf: seq, setKeys, status: res.status, ct: res.ct, size: res.size, text: res.text, ms: res.ms });
+  return {
+    ok: true, tabId, status: res.status, ct: res.ct, size: res.size, ms: res.ms, truncated: res.truncated === true, replaySeq: rec?.seq, bodyFile: rec?.bodyFile,
+    method, summary: summarizeBody(rec?.preview ?? "", res.ct ?? ""), preview: (rec?.preview ?? "").slice(0, 1500), warnings: base.warnings,
+  };
 }
 /** 页面里返回的元素描述 { tag, role, text, sel } 变成日志里的 `button[提交]`。 */
 function describeTarget(t: unknown): string {
@@ -140,6 +190,7 @@ async function dispatch(req: JsonRpcRequest, conn: ConnState): Promise<unknown> 
     if (req.method === "journal.tabs") return link.siteOp("siteTabs");
     if (req.method === "journal.lease") return link.siteOp(params.op === "release" ? "leaseRelease" : "leaseAcquire", { tabId: params.tabId, reason: params.reason });
     if (req.method === "journal.act") return runAct(Number(params.tabId), (params.cmd ?? {}) as Record<string, unknown>);
+    if (req.method === "journal.replay") return runReplay(params);
     return link.siteOp("snapshot", { tabId: params.tabId, full: params.full === true });
   }
   await ensureChrome();
@@ -310,7 +361,7 @@ export async function runHolder(): Promise<void> {
   fs.rmSync(RECORDING_DIR, { recursive: true, force: true });
   const store = new JournalStore();
   await store.open();
-  journal = new Ingestor(store, { engine: () => adblock });
+  journal = new Ingestor(store, { engine: () => adblock, aliasKey: aliasSalt() });
   loadAdblockEngine().then((engine) => { adblock = engine; }).catch(warnCatch("adblock engine"));
   const retention = setInterval(() => { try { enforceCap({ today: dayOf(Date.now()) }); } catch (error) { warnCatch("retention")(error); } }, RETENTION_CHECK_MS);
   retention.unref();

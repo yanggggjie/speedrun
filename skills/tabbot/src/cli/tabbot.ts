@@ -10,14 +10,14 @@ import * as path from "node:path";
 import { ensureSessionAndRpc, restartDaemon } from "./session.ts";
 import { handleDoctor } from "./doctor.ts";
 import { runEval } from "./compose.ts";
-import { actCommand, logCommand, releaseCommand, sitesCommand, snapshotCommand, sqlCommand, statusCommand, tabsCommand, takeoverCommand, waitCommand } from "./journal.ts";
+import { actCommand, logCommand, releaseCommand, sitesCommand, snapshotCommand, sqlCommand, statusCommand, tabsCommand, reqCommand, replayCommand, takeoverCommand, waitCommand } from "./journal.ts";
 import { checkParams, invokeTaskFile, parseCliParams, taskFile, taskOutput, taskSummary, taskTimeoutMs } from "./tasks.ts";
 import { writeRunHistory } from "../run-history.ts";
 import { formatErrorStdout, formatHandshakeStdout, isHandshakeStatus } from "../protocol.ts";
 import { assertNode24 } from "../utils/node.ts";
 import { TASK_DIR, CLI_RPC_BUFFER_MS, RECORD_STOP_RPC_MS } from "../utils/constants.ts";
 
-const USAGE = "用法：tabbot run [task] [--参数 值 ...] | tabbot eval '<代码>' | tabbot record start|stop|abort | tabbot daemon restart | tabbot doctor [--json] | tabbot sites | tabs | log | sql | snapshot | wait | status | takeover | release | act";
+const USAGE = "用法：tabbot run [task] [--参数 值 ...] | tabbot eval '<代码>' | tabbot record start|stop|abort | tabbot daemon restart | tabbot doctor [--json] | tabbot sites | tabs | log | sql | snapshot | wait | status | takeover | release | act | req | replay";
 
 function print(value: unknown): void {
   console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
@@ -118,6 +118,8 @@ async function main(argv: string[]): Promise<void> {
     case "takeover": return takeoverCommand(argv.slice(1));
     case "release": return releaseCommand(argv.slice(1));
     case "act": return actCommand(argv.slice(1));
+    case "req": return reqCommand(argv.slice(1));
+    case "replay": return replayCommand(argv.slice(1));
   }
   fail(USAGE);
 }

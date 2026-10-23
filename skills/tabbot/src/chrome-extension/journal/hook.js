@@ -11,7 +11,8 @@
   const TEXTY = /json|text|xml|javascript|html|x-www-form|graphql/i;
   const SENSITIVE_FIELD = /pass|pwd|card|cvv|cvc|ssn|token|secret|otp|verif|code/i;
   const SENSITIVE_AUTOCOMPLETE = /cc-|password|one-time/i;
-  const SENSITIVE_HEADER = /^(cookie|authorization|proxy-authorization|set-cookie)$/i;
+  // 页面脚本看不到 cookie；其余请求头（包括 authorization）的真值只交给扩展：扩展存下原始内容用来重放（浏览器的会话存储，不落盘），转给 daemon 前把名字像秘密的请求头抹掉
+  const SENSITIVE_HEADER = /^(cookie|set-cookie)$/i;
 
   // ---- 发送：限流，防止异常页面把日志刷爆 ----
   let sent = 0, windowStart = Date.now();
@@ -61,13 +62,14 @@
       if (!h) continue;
       try {
         const it = h instanceof Headers ? [...h.entries()] : Array.isArray(h) ? h : Object.entries(h);
-        for (const [k, v] of it) o[String(k).toLowerCase()] = SENSITIVE_HEADER.test(k) ? "[redacted]" : String(v).slice(0, 500);
+        for (const [k, v] of it) o[String(k).toLowerCase()] = SENSITIVE_HEADER.test(k) ? "[redacted]" : String(v).slice(0, 4000);
       } catch {}
     }
     return Object.keys(o).length ? o : null;
   };
 
   let seq = 0;
+  const docId = Math.random().toString(36).slice(2, 10); // 这个页面文档的编号：rid = docId:请求序号，扩展靠它找回这个请求的原始内容
   let inflight = 0; // 在途的 fetch / XHR 数，agent 动作之后等页面稳定要用
   // ---- fetch ----
   const origFetch = window.fetch;
@@ -87,7 +89,7 @@
     p.then(() => { inflight--; }, () => { inflight--; });
     if (!fg) { bg++; return p; }
     p.then(async (res) => {
-      const rec = { k: "net", via: "fetch", id, url, finalUrl: res.url, method, reqHeaders, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0) };
+      const rec = { k: "net", via: "fetch", id, rid: docId + ":" + id, url, finalUrl: res.url, method, reqHeaders, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0) };
       try {
         if (!res.body) { rec.size = 0; rec.body = ""; }
         else if (readBodyOf(url, method, rec.ct)) {
@@ -115,7 +117,7 @@
     return xo.apply(this, arguments);
   };
   XMLHttpRequest.prototype.setRequestHeader = function (k, v) {
-    if (this.__t) (this.__t.reqHeaders ||= {})[String(k).toLowerCase()] = SENSITIVE_HEADER.test(k) ? "[redacted]" : String(v).slice(0, 500);
+    if (this.__t) (this.__t.reqHeaders ||= {})[String(k).toLowerCase()] = SENSITIVE_HEADER.test(k) ? "[redacted]" : String(v).slice(0, 4000);
     return xh.apply(this, arguments);
   };
   XMLHttpRequest.prototype.send = function (b) {
@@ -128,7 +130,7 @@
         t.reqBody = bodyStr(b);
         const t0 = performance.now();
         this.addEventListener("loadend", () => {
-          const rec = { k: "net", via: "xhr", id: ++seq, ...t, finalUrl: this.responseURL, status: this.status, ct: this.getResponseHeader("content-type"), ms: Math.round(performance.now() - t0) };
+          const xid = ++seq, rec = { k: "net", via: "xhr", id: xid, rid: docId + ":" + xid, ...t, finalUrl: this.responseURL, status: this.status, ct: this.getResponseHeader("content-type"), ms: Math.round(performance.now() - t0) };
           try {
             if (readBodyOf(t.url, t.method, rec.ct)) {
               const rt = this.responseType;
@@ -412,6 +414,29 @@
       return out;
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e), url: location.href };
+    }
+  };
+  // ---- 重放：在页面里原样发一个请求（带这个页面的登录态），由扩展经 executeScript 调用 window.__tcrReplay。----
+  // 用保存下来的原始 fetch，不经过上面包住的那个，所以这个请求不会被当成页面自己发的请求记进日志；daemon 会记一行 agent 的 replay。
+  window.__tcrReplay = async (req) => {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 20000);
+    const t0 = performance.now();
+    try {
+      const init = { method: req.method, headers: req.headers || {}, credentials: "include", redirect: "follow", signal: ctl.signal };
+      if (req.body != null && req.method !== "GET" && req.method !== "HEAD") init.body = req.body;
+      const res = await origFetch(req.url, init);
+      const ct = res.headers.get("content-type") || "";
+      const buf = await res.arrayBuffer();
+      const textual = !ct || TEXTY.test(ct);
+      return {
+        ok: true, status: res.status, ct, size: buf.byteLength, finalUrl: res.url, ms: Math.round(performance.now() - t0),
+        text: textual ? new TextDecoder().decode(buf.slice(0, 1000000)) : "", truncated: textual && buf.byteLength > 1000000,
+      };
+    } catch (e) {
+      return { ok: false, error: e && e.name === "AbortError" ? "请求超时（20 秒）" : String((e && e.message) || e) };
+    } finally {
+      clearTimeout(timer);
     }
   };
 })();

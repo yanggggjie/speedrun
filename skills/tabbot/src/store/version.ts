@@ -15,7 +15,7 @@ export type Version = {
 };
 
 /** 扩展的哈希按这个顺序拼接；chrome-extension/background.js 里的 EXTENSION_FILES 必须与它一致。 */
-export const EXTENSION_FILES = ["background.js", "manifest.json", "journal/hook.js", "journal/relay.js"];
+export const EXTENSION_FILES = ["background.js", "manifest.json", "journal/hook.js", "journal/relay.js", "journal/replay-core.js"];
 
 const short = (hash: crypto.Hash): string => hash.digest("hex").slice(0, 16);
 

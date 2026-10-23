@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FiltersEngine } from "@ghostery/adblocker";
+import { UNREPLAYABLE_BODY } from "../chrome-extension/journal/replay-core.js";
 import { RecordSanitizer } from "../record/pipeline.ts";
 import { parseUrl } from "../utils/url.ts";
 import { noiseReason, shouldStoreBody } from "./filter.ts";
@@ -17,12 +18,13 @@ const CAUSE_MS = 2_000;
 const DETAIL_BODY_MAX = 8 * 1024;
 /** 动作结束后，晚到的合成事件还算动作自己的这段时间。 */
 const ACT_GRACE_MS = 800;
+const REQ_OMITTED = "[请求体已省略：太大，或不是完整的 JSON]";
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 /** 脱敏后的地址：别名 ⟨secret_001:jwt⟩ 保持原样好读，其它参数照常编码（serializeUrl 会把别名也编码掉）。 */
 function readableUrl(sanitized: { bareUrl: string; query: Record<string, string> }): string {
-  const parts = Object.entries(sanitized.query).map(([k, v]) => `${encodeURIComponent(k)}=${/^⟨secret_\d+:\w+⟩$/.test(v) ? v : encodeURIComponent(v)}`);
+  const parts = Object.entries(sanitized.query).map(([k, v]) => `${encodeURIComponent(k)}=${/^⟨secret_[0-9a-f]+:\w+⟩$/.test(v) ? v : encodeURIComponent(v)}`);
   return parts.length ? `${sanitized.bareUrl}?${parts.join("&")}` : sanitized.bareUrl;
 }
 const hash = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 16);
@@ -44,11 +46,11 @@ function bodyText(sanitizer: RecordSanitizer, raw: string, ct: string | undefine
   return String(sanitizer.sanitizeBody(raw, "response-body").value);
 }
 
-export type IngestOptions = { engine?: () => FiltersEngine | undefined };
+export type IngestOptions = { engine?: () => FiltersEngine | undefined; aliasKey?: string };
 
 export class Ingestor {
   private readonly store: JournalStore;
-  private readonly sanitizer = new RecordSanitizer(true);
+  private readonly sanitizer: RecordSanitizer;
   private readonly engine: () => FiltersEngine | undefined;
   private readonly seen = new Map<string, { seq: number; day: string; ts: number }>();
   private readonly lastAction = new Map<number, { seq: number; ts: number }>();
@@ -57,6 +59,7 @@ export class Ingestor {
 
   constructor(store: JournalStore, options: IngestOptions = {}) {
     this.store = store;
+    this.sanitizer = new RecordSanitizer({ strictJwt: true, aliasKey: options.aliasKey });
     this.engine = options.engine ?? (() => undefined);
   }
 
@@ -91,6 +94,27 @@ export class Ingestor {
   endAct(tab: number, act: { seq: number; day: string }, ts: number, fields: { target?: string; size?: number; detail?: Record<string, unknown> }): void {
     this.actUntil.set(tab, ts + ACT_GRACE_MS);
     this.store.batch(ts, () => this.store.update(act.day, act.seq, { target: fields.target, size: fields.size, detail: fields.detail ? JSON.stringify(fields.detail) : undefined }));
+  }
+
+  /**
+   * 记一次重放：agent 的一行（来源 agent，类型 net，动作 replay），响应体脱敏后存成文件；返回给 CLI 看的预览（已脱敏）。
+   * `rawUrl` 是浏览器里实际发出的地址（含查询参数里的秘密），这里脱敏成别名再写日志（别名是加盐哈希，同一个秘密还是同一个别名）。--set 的值可能是秘密，所以只记名字不记值。
+   */
+  recordReplay(tab: number, ts: number, info: { method: string; rawUrl: string; replayOf: number; setKeys: string[]; status?: number; ct?: string; size?: number; text?: string; ms?: number; error?: string }): { seq: number; bodyFile?: string; preview: string } {
+    const url = readableUrl(this.sanitizer.sanitizeUrl(info.rawUrl).value);
+    let name: string | undefined;
+    let preview = "";
+    if (info.text) {
+      const text = bodyText(this.sanitizer, info.text, info.ct);
+      preview = text;
+      name = `${hash(text)}.${/json/i.test(info.ct ?? "") ? "json" : "txt"}`;
+      this.store.writeFile(bodiesDir(dayOf(ts), this.store.dir), name, text);
+    }
+    const seq = this.store.batch(ts, () => this.push({
+      ts, tab, frame: 0, src: "agent", kind: "net", verb: "replay", method: info.method, url, status: info.status, size: info.size, body: name,
+      detail: JSON.stringify({ replayOf: info.replayOf, set: info.setKeys, ms: info.ms, error: info.error, ct: info.ct }),
+    }));
+    return { seq, bodyFile: name ? `${dayOf(ts)}/${name}` : undefined, preview };
   }
 
   /** 租约变化（扩展上报）：人撤销记为 human，其余记为 agent。 */
@@ -138,10 +162,23 @@ export class Ingestor {
 
     const last = this.lastAction.get(base.tab);
     const detail: Record<string, unknown> = { via };
+    if (str(msg.rid)) detail.rid = str(msg.rid); // 扩展里保存的这个请求的原始内容的编号，重放要用
     if (reason) detail.noise = reason;
-    if (msg.reqHeaders && typeof msg.reqHeaders === "object") detail.reqHeaders = this.sanitizer.sanitizeHeaders(msg.reqHeaders as Record<string, string>).value;
+    if (msg.reqHeaders && typeof msg.reqHeaders === "object") {
+      // 扩展已经把名字像秘密的请求头抹成 [redacted]（真值只在浏览器里）：原样保留，不要再给它起别名
+      const kept: Record<string, string> = {}, erased: string[] = [];
+      for (const [k, v] of Object.entries(msg.reqHeaders as Record<string, string>)) (v === "[redacted]" ? erased.push(k) : (kept[k] = v));
+      detail.reqHeaders = { ...this.sanitizer.sanitizeHeaders(kept).value, ...Object.fromEntries(erased.map((k) => [k, "[redacted]"])) };
+    }
     const reqBody = str(msg.reqBody);
-    if (reqBody && !noise) detail.reqBody = this.sanitizer.sanitizeBody(reqBody.slice(0, DETAIL_BODY_MAX), "request-body", /x-www-form-urlencoded/i.test(String((msg.reqHeaders as Record<string, string> | undefined)?.["content-type"] ?? ""))).value;
+    if (reqBody && !noise) {
+      // 请求体里的秘密：JSON 必须先解析再脱敏（继承来的文本脱敏只认 key=value，认不出 "access_token":"…"）；太大或不完整的 JSON 不存内容
+      if (UNREPLAYABLE_BODY.test(reqBody)) detail.reqBody = reqBody.slice(0, 40); // 页面脚本放的占位文字（文件、二进制、没读到），原样保留
+      else if (reqBody.length > DETAIL_BODY_MAX) { detail.reqBody = REQ_OMITTED; detail.reqBodyTruncated = true; }
+      else if (/^\s*[[{]/.test(reqBody)) {
+        try { detail.reqBody = JSON.stringify(this.sanitizer.sanitizeBody(JSON.parse(reqBody), "request-body").value); } catch { detail.reqBody = REQ_OMITTED; detail.reqBodyTruncated = true; }
+      } else detail.reqBody = this.sanitizer.sanitizeBody(reqBody, "request-body", /x-www-form-urlencoded/i.test(String((msg.reqHeaders as Record<string, string> | undefined)?.["content-type"] ?? ""))).value;
+    }
     if (str(msg.err)) detail.err = str(msg.err);
     if (str(msg.ct)) detail.ct = str(msg.ct);
     if (msg.truncated) detail.truncated = true;

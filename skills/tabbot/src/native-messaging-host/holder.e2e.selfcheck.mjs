@@ -29,6 +29,7 @@ function fakeExtension(child) {
   const cdpLog = [];
   const held = new Set(); // 持有租约的 tab
   const acts = [];
+  const replays = [];
   let nextId = 10;
   let buf = Buffer.alloc(0);
   const reply = (id, result) => child.stdin.write(frame({ id, result }));
@@ -61,6 +62,11 @@ function fakeExtension(child) {
             acts.push(a.cmd);
             reply(msg.id, { ok: true, target: { tag: "input", text: "搜索" }, chars: String(a.cmd.text ?? "").length, settle: { settled: true, waitedMs: 150 } });
             break;
+          case "replay":
+            replays.push(a);
+            if (a.rid === "dz:2" && !held.has(a.tabId)) { reply(msg.id, { ok: false, rejected: "no-lease", humanIdleMs: 99999 }); break; }
+            reply(msg.id, { ok: true, status: 200, ct: "application/json", size: 98, ms: 9, text: JSON.stringify({ name: "x", token: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig12345678abcdef" }), sentUrl: "https://example.com/api/x?page=2&session_token=RAWQUERYSECRET1234567890", sentMethod: a.rid === "dz:2" ? "POST" : "GET" });
+            break;
           default: fail(msg.id, `未知操作 ${msg.name}`);
         }
       } else if (msg.op === "cdp") {
@@ -72,7 +78,7 @@ function fakeExtension(child) {
       }
     }
   });
-  return { cdpLog, acts };
+  return { cdpLog, acts, replays };
 }
 
 /** 一条长连接承载整个会话（run 状态绑定在连接上）。 */
@@ -197,6 +203,49 @@ assert.equal(fillRow.size, 4, "只记字数");
 assert.ok(!JSON.stringify(rows).includes("你好世界"), "输入的文字不进日志");
 assert.ok(rows.some((r) => r.src === "agent" && r.verb === "click" && JSON.parse(r.detail).rejected === "no-lease"), "被拒绝的动作也有记录");
 console.log("journal lease/act ok");
+
+// 请求优先：重放日志里的请求。原始内容（含 token 真值）在浏览器里，holder 只挑请求、挑标签页、把响应脱敏后记进日志
+child.stdin.write(frame({ type: "journal", events: [
+  { k: "net", t: Date.now(), tab: 77, page: "https://example.com/", via: "fetch", id: 1, rid: "dz:1", method: "GET", url: "https://example.com/api/x?page=1", status: 200, ct: "application/json", body: "{}", size: 2 },
+  { k: "net", t: Date.now() + 1, tab: 77, page: "https://example.com/", via: "fetch", id: 2, rid: "dz:2", method: "POST", url: "https://example.com/api/save", status: 200, ct: "application/json", reqBody: "{\"a\":1}", body: "{}", size: 2 },
+  { k: "net", t: Date.now() + 2, tab: 77, page: "https://example.com/", via: "fetch", id: 3, method: "GET", url: "https://example.com/api/old", status: 200, ct: "application/json", body: "{}", size: 2 },
+] }));
+let netRows;
+await waitFor(async () => (netRows = (await readEvents({ dir: journalDir, all: true, limit: 80 })).filter((r) => r.kind === "net" && r.src === "page")).length >= 3);
+const [getRow, postRow, oldRow] = netRows;
+const rep = await rpc("journal.replay", { seq: getRow.seq, sets: ["page=2"] });
+assert.equal(rep.ok, true, JSON.stringify(rep));
+assert.deepEqual(ext.replays.at(-1), { tabId: 77, rawTab: 77, rid: "dz:1", sets: ["page=2"] }, "按 rid 和原来的标签页去浏览器里取原始内容，--set 交给浏览器应用");
+assert.equal(rep.status, 200); assert.equal(rep.tabId, 77);
+assert.match(rep.summary, /JSON 对象，字段：name, token/);
+assert.ok(!rep.preview.includes("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0"), "响应里的 token 在预览里是别名：" + rep.preview);
+assert.match(rep.preview, /⟨secret_[0-9a-f]{8}:jwt⟩/);
+const replayRow = (await readEvents({ dir: journalDir, all: true, limit: 80 })).find((r) => r.verb === "replay");
+assert.equal(replayRow.src, "agent"); assert.equal(replayRow.method, "GET"); assert.equal(replayRow.status, 200);
+assert.ok(replayRow.url.includes("page=2") && /session_token=⟨secret_[0-9a-f]{8}:\w+⟩/.test(replayRow.url), "日志里的地址：秘密是别名，没有真值：" + replayRow.url);
+assert.deepEqual(JSON.parse(replayRow.detail).set, ["page"], "只记 --set 的名字，不记值");
+assert.equal(JSON.parse(replayRow.detail).replayOf, getRow.seq);
+assert.ok(replayRow.body && fs.existsSync(path.join(journalDir, "bodies", rep.bodyFile)), "响应体脱敏后存成文件");
+assert.ok(!fs.readFileSync(path.join(journalDir, "bodies", rep.bodyFile), "utf8").includes("sig12345678abcdef"));
+const everything = JSON.stringify(await readEvents({ dir: journalDir, all: true, limit: 200 }));
+assert.ok(!everything.includes("RAWQUERYSECRET1234567890"), "日志里没有地址里的 token 真值");
+// 非 GET：没有 --yes 不发；有 --yes 但没租约被扩展拒绝；拿到租约后可以发
+const callsBefore = ext.replays.length;
+const noYes = await rpc("journal.replay", { seq: postRow.seq, sets: [] });
+assert.equal(noYes.ok, false); assert.match(noYes.error, /--yes/);
+assert.equal(ext.replays.length, callsBefore, "没有 --yes 不会请求扩展");
+const noLeaseRep = await rpc("journal.replay", { seq: postRow.seq, sets: [], yes: true });
+assert.equal(noLeaseRep.rejected, "no-lease");
+await rpc("journal.lease", { op: "acquire", tabId: 77 });
+const post2 = await rpc("journal.replay", { seq: postRow.seq, sets: ["body.a=2"], yes: true });
+assert.equal(post2.ok, true); assert.equal(post2.method, "POST");
+await rpc("journal.lease", { op: "release", tabId: 77 });
+// 没有 rid（旧版录的）、不存在的编号、不是请求的行
+assert.match((await rpc("journal.replay", { seq: oldRow.seq })).error, /没有保存原始内容/);
+assert.match((await rpc("journal.replay", { seq: 999999 })).error, /找不到事件/);
+const leaseRowSeq = (await readEvents({ dir: journalDir, all: true, limit: 80 })).find((r) => r.kind === "lease").seq;
+assert.match((await rpc("journal.replay", { seq: leaseRowSeq })).error, /不是一个请求/);
+console.log("journal replay ok");
 closeRpc();
 
 const daemonPid = ping.pid;

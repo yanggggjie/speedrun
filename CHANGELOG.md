@@ -6,6 +6,8 @@
 - 新增常驻录制：默认录制**所有 http/https 站点**，一直记录人的操作、页面请求和响应、页面状态，落在 `~/.tabbot/journal`，总大小上限 1GB。内置排除银行、支付、密码管理、统一登录、网页邮箱等敏感站点；`tabbot sites exclude <域名>` 再排除，`sites include <域名>` 重新打开，`sites only <域名> ...` 改成只录点名的站点，`sites all` 改回来。
 - 新增只读观察命令：`tabbot log`、`sql`、`snapshot`、`tabs`、`wait`、`status`。埋点和广告自动识别为噪声，token、Cookie、密码脱敏。
 - 新增在原页面上操作：`tabbot takeover`、`release`、`act click|fill|select|check|press|scroll|goto`。agent 的动作是页面内的合成事件（不弹调试横幅）；元素用稳定引用 `@e12`；每个动作自带等页面稳定，并返回引发的请求。**人一动手（点击、按键、输入）租约立刻撤销**，agent 的动作都记在日志里（来源 `agent`）。
+- 新增请求优先：`tabbot req find`（在响应体里找页面上看到的值）、`req show`、`replay <编号> [--set ...] [--yes]`，在浏览器里把录下来的请求原样再发一次（带登录态），比点页面快。token 等真值只留在浏览器里，日志里是别名；别名改成加盐哈希，重启不变。
+- 修复：JSON 请求体里的 token 之前会原样写进日志，现在先解析再脱敏；太大或不完整的 JSON 不存内容。
 - 扩展新增 `scripting` 和 `<all_urls>` 权限；内容脚本按录制范围动态注册，被排除的站点不注入。更新后需要在 `chrome://extensions` 里刷新一次扩展。
 
 ## v2.0.1

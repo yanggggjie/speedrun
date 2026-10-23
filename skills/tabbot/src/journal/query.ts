@@ -39,6 +39,49 @@ export async function readEvents(q: LogQuery = {}): Promise<EventRow[]> {
   return rows.reverse();
 }
 
+/** 按 seq 取一行（跨天找）。 */
+export async function readEventBySeq(seq: number, dir = JOURNAL_DIR): Promise<EventRow | undefined> {
+  for (const day of listDays(dir).reverse()) {
+    const db = await openDb(dbFile(day, dir), { readOnly: true });
+    try {
+      const row = db.prepare("SELECT * FROM events WHERE seq = ?").get(seq) as EventRow | undefined;
+      if (row) return row;
+    } catch { /* 空库 */ } finally { db.close(); }
+  }
+  return undefined;
+}
+
+export type BodyHit = { row: EventRow; snippet: string };
+
+/**
+ * 在存下来的响应体里找一段文字（页面上看到的值），返回是哪个请求返回的。最近几天、最多 limit 个。
+ * 响应体是普通文件，这里不依赖外部的 rg。
+ */
+export async function findInBodies(needle: string, options: { limit?: number; days?: number; dir?: string } = {}): Promise<BodyHit[]> {
+  const dir = options.dir ?? JOURNAL_DIR;
+  const limit = options.limit ?? 20;
+  const hits: BodyHit[] = [];
+  for (const day of listDays(dir).slice(-(options.days ?? 7)).reverse()) {
+    const bodies = path.join(dir, "bodies", day);
+    if (!fs.existsSync(bodies)) continue;
+    const found: { name: string; snippet: string }[] = [];
+    for (const name of fs.readdirSync(bodies)) {
+      const text = fs.readFileSync(path.join(bodies, name), "utf8");
+      const at = text.indexOf(needle);
+      if (at >= 0) found.push({ name, snippet: text.slice(Math.max(0, at - 30), at + needle.length + 30).replace(/\s+/g, " ") });
+    }
+    if (found.length === 0) continue;
+    const db = await openDb(dbFile(day, dir), { readOnly: true });
+    try {
+      for (const f of found) {
+        const rows = db.prepare("SELECT * FROM events WHERE body = ? AND kind = 'net' ORDER BY seq DESC").all(f.name) as EventRow[];
+        for (const row of rows) { hits.push({ row, snippet: f.snippet }); if (hits.length >= limit) return hits; }
+      }
+    } catch { /* 空库 */ } finally { db.close(); }
+  }
+  return hits;
+}
+
 export async function lastSeq(dir = JOURNAL_DIR): Promise<number> {
   for (const day of listDays(dir).reverse()) {
     const db = await openDb(dbFile(day, dir), { readOnly: true });

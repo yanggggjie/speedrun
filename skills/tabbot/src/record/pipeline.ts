@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { FiltersEngine, Request as FilterRequest, type RequestType } from "@ghostery/adblocker";
 import { isSameSite, parseUrl, type TabBotUrl } from "../utils/url.ts";
 import type {
@@ -76,10 +77,17 @@ export class RecordSanitizer {
   private readonly aliases = new Map<string, string>();
   private nextAlias = 1;
   private readonly strictJwt: boolean;
+  private readonly aliasKey: string | undefined;
 
-  /** strictJwt：只把 eyJ 开头的当 JWT（常驻录制）；默认沿用宽松规则，任何 a.b.c 都算（录制和 task 的既有行为）。 */
-  constructor(strictJwt = false) {
-    this.strictJwt = strictJwt;
+  /**
+   * strictJwt：只把 eyJ 开头的当 JWT（常驻录制）；默认沿用宽松规则，任何 a.b.c 都算（录制和 task 的既有行为）。
+   * aliasKey：别名用"密钥 + 真值"的哈希（常驻录制）：同一个秘密永远是同一个别名，重启也不变，不能还原真值。不给就按出现顺序编号（录制和 task）。
+   * 旧的写法 `new RecordSanitizer(true)` 仍然可用。
+   */
+  constructor(options: boolean | { strictJwt?: boolean; aliasKey?: string } = false) {
+    const o = typeof options === "boolean" ? { strictJwt: options } : options;
+    this.strictJwt = o.strictJwt ?? false;
+    this.aliasKey = o.aliasKey;
   }
 
   private isJwt(value: string): boolean {
@@ -94,7 +102,9 @@ export class RecordSanitizer {
   ): string {
     let alias = this.aliases.get(raw);
     if (!alias) {
-      alias = `secret_${String(this.nextAlias++).padStart(3, "0")}`;
+      alias = this.aliasKey
+        ? `secret_${createHmac("sha256", this.aliasKey).update(raw).digest("hex").slice(0, 8)}`
+        : `secret_${String(this.nextAlias++).padStart(3, "0")}`;
       this.aliases.set(raw, alias);
     }
     const kind = shape(raw);

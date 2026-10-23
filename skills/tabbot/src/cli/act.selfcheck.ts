@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseAct } from "./journal.ts";
+import { parseAct, parseReplayArgs } from "./journal.ts";
 
 const ok = (args: string[]) => { const r = parseAct(args); assert.ok("cmd" in r, JSON.stringify(r)); return r.cmd; };
 const bad = (args: string[]) => { const r = parseAct(args); assert.ok("error" in r, JSON.stringify(r)); return r.error; };
@@ -32,5 +32,14 @@ assert.match(bad(["goto", "javascript:alert(1)"]), /不是有效的网址/);
 assert.match(bad(["goto", "file:///etc/passwd"]), /不是有效的网址/, "只允许 http / https");
 assert.match(bad(["dance"]), /用法：tabbot act click/);
 assert.match(bad([]), /用法：tabbot act click/);
+
+// replay 参数：编号、可重复的 --set、--tab、--yes
+const rp = (args: string[]) => { const r = parseReplayArgs(args); assert.ok(!("error" in r), JSON.stringify(r)); return r; };
+assert.deepEqual(rp(["210"]), { seq: 210, sets: [], yes: false });
+assert.deepEqual(rp(["#210", "--set", "page=2", "--set=body.filter.on=false", "--tab", "5", "--yes"]), { seq: 210, sets: ["page=2", "body.filter.on=false"], tabId: 5, yes: true });
+assert.deepEqual(rp(["--set", "q=a b", "7"]), { seq: 7, sets: ["q=a b"], yes: false }, "编号可以放在后面");
+for (const [args, re] of [[[], /用法：tabbot replay/], [["abc"], /请求编号要是整数/], [["1", "2"], /多余的参数/], [["1", "--set"], /缺少值/], [["1", "--tab", "x"], /非负整数/], [["1", "--wat"], /不认识的参数/]] as [string[], RegExp][]) {
+  const r = parseReplayArgs(args); assert.ok("error" in r && re.test(r.error), JSON.stringify([args, r]));
+}
 
 console.log("act cli selfcheck ok");

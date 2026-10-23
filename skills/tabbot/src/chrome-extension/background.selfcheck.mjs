@@ -78,7 +78,7 @@ globalThis.chrome = {
 };
 
 // 扩展用 fetch(chrome.runtime.getURL(...)) 读自己的文件算 buildId；这里用固定内容代替
-const extensionFiles = { "background.js": Buffer.from("bg-bytes\n"), "manifest.json": Buffer.from("{}\n"), "hook.js": Buffer.from("hook\n"), "relay.js": Buffer.from("relay\n") };
+const extensionFiles = { "background.js": Buffer.from("bg-bytes\n"), "manifest.json": Buffer.from("{}\n"), "hook.js": Buffer.from("hook\n"), "relay.js": Buffer.from("relay\n"), "replay-core.js": Buffer.from("core\n") };
 globalThis.fetch = async (url) => {
   const name = String(url).split("/").pop();
   if (!(name in extensionFiles)) throw new Error("not found");
@@ -94,7 +94,7 @@ assert.equal(posted[0].type, "hello");
 assert.equal(posted[0].protocolVersion, 1);
 // hello 带 buildId，算法和 store/version.ts 里的 extension 一致
 const { createHash } = await import("node:crypto");
-const expectedBuild = createHash("sha256").update(extensionFiles["background.js"]).update(extensionFiles["manifest.json"]).update(extensionFiles["hook.js"]).update(extensionFiles["relay.js"]).digest("hex").slice(0, 16);
+const expectedBuild = createHash("sha256").update(extensionFiles["background.js"]).update(extensionFiles["manifest.json"]).update(extensionFiles["hook.js"]).update(extensionFiles["relay.js"]).update(extensionFiles["replay-core.js"]).digest("hex").slice(0, 16);
 assert.equal(posted[0].buildId, expectedBuild);
 assert.deepEqual(calls.find((c) => c[0] === "alarm"), ["alarm", "tabbot-keepalive", 0.5]);
 
@@ -345,5 +345,56 @@ await host({ id: 55, op: "tab", name: "siteTabs", args: {} }); await settle();
 const t8003 = last().result.tabs.find((t) => t.tabId === T8003);
 assert.equal(t8003.lease, false); assert.equal(typeof t8003.humanIdleMs, "number");
 delete globalThis.__tcrAct; delete globalThis.window;
+
+// 13. 原始请求只留在浏览器里：转给 daemon 的请求头抹掉了真值；重放用浏览器里的原始内容，在同源页面里发，--set 在这里应用
+tabs.set(8005, { id: 8005, windowId: 1, url: "https://www.example.com/page", title: "示例", active: true });
+const T8005 = 8005;
+const net13 = (id, extra) => listeners.runtimeMessage({ __tcrl: 1, top: true, page: "https://www.example.com/page", msg: { k: "net", t: Date.now(), via: "fetch", id, rid: `docA:${id}`, method: "GET", status: 200, ...extra } }, { id: "fake-extension-id", tab: { id: T8005 }, frameId: 0 });
+const beforeNet = journalPosts().flatMap((m) => m.events).length;
+net13(1, { url: "https://www.example.com/api/list?page=1&token=RAWTOKEN", reqHeaders: { authorization: "Bearer RAWSECRET", "x-api-version": "3.0", "x-csrf-token": "CSRF123" } });
+net13(2, { method: "POST", url: "https://www.example.com/api/save", reqHeaders: { "content-type": "application/json" }, reqBody: JSON.stringify({ filter: { page: 1 }, note: "a" }) });
+net13(3, { url: "https://api.example.com/v1/other", reqHeaders: {} }); // 同站不同源
+net13(4, { url: "https://cdn.other.net/x.json", reqHeaders: {} }); // 第三方：不存原始内容
+net13(5, { method: "POST", url: "https://www.example.com/api/upload", reqBody: "[FormData]" });
+await new Promise((r2) => setTimeout(r2, 350));
+const forwardedNet = journalPosts().flatMap((m) => m.events).slice(beforeNet).filter((e) => e.k === "net");
+assert.equal(forwardedNet.length, 5, "请求照常转给 daemon");
+assert.deepEqual(forwardedNet[0].reqHeaders, { authorization: "[redacted]", "x-api-version": "3.0", "x-csrf-token": "[redacted]" }, "名字像秘密的请求头真值不转给 daemon");
+assert.ok(!JSON.stringify(journalPosts()).includes("RAWSECRET") && !JSON.stringify(journalPosts()).includes("CSRF123"), "真值没有出现在任何发给 daemon 的消息里");
+const sentToPage = [];
+globalThis.window = globalThis;
+globalThis.__tcrReplay = async (req) => { sentToPage.push(req); return { ok: true, status: 200, ct: "application/json", size: 2, text: "{}", ms: 12 }; };
+const replayOp = async (id, args) => { await host({ id, op: "tab", name: "replay", args: { tabId: T8005, rawTab: T8005, ...args } }); await settle(); return last().result ?? { threw: last().error.message }; };
+// GET：不需要租约；原始请求头（含真值）带上，浏览器自己管的头去掉；--set 应用到查询参数
+let rr = await replayOp(60, { rid: "docA:1", sets: ["page=2", "header.x-extra=1"] });
+assert.equal(rr.ok, true); assert.equal(rr.status, 200);
+assert.equal(sentToPage[0].method, "GET");
+assert.equal(new URL(sentToPage[0].url).searchParams.get("page"), "2");
+assert.equal(new URL(sentToPage[0].url).searchParams.get("token"), "RAWTOKEN", "地址里的 token 真值原样带上");
+assert.equal(sentToPage[0].headers.authorization, "Bearer RAWSECRET", "请求头真值只在浏览器里使用");
+assert.equal(sentToPage[0].headers["x-extra"], "1");
+assert.equal(rr.sentUrl, sentToPage[0].url);
+// 非 GET 要租约
+rr = await replayOp(61, { rid: "docA:2", sets: ["body.filter.page=3"] });
+assert.equal(rr.rejected, "no-lease");
+await new Promise((r2) => setTimeout(r2, 1600)); // 前面的真人输入要静默 1.5s 才能拿租约
+await host({ id: 62, op: "tab", name: "leaseAcquire", args: { tabId: T8005 } }); await settle();
+assert.equal(last().result.granted, true);
+rr = await replayOp(63, { rid: "docA:2", sets: ["body.filter.page=3", "body.note=改了"] });
+assert.equal(rr.ok, true);
+assert.deepEqual(JSON.parse(sentToPage.at(-1).body), { filter: { page: 3 }, note: "改了" });
+// 不同源、第三方、没存、占位的请求体、--set 写错，都不会发出请求
+const sentBefore = sentToPage.length;
+assert.match((await replayOp(64, { rid: "docA:3", sets: [] })).error, /不同源/);
+assert.match((await replayOp(65, { rid: "docA:4", sets: [] })).error, /不在浏览器里了/);
+assert.match((await replayOp(66, { rid: "docA:5", sets: [] })).error, /文件、二进制或表单/);
+assert.match((await replayOp(67, { rid: "docA:99", sets: [] })).error, /不在浏览器里了/);
+assert.match((await replayOp(68, { rid: "docA:1", sets: ["page"] })).error, /名字=值/);
+assert.equal(sentToPage.length, sentBefore, "这些情况都没有发请求");
+// 原始请求存进了 chrome.storage.session（浏览器自己的会话存储）
+await new Promise((r2) => setTimeout(r2, 900));
+assert.ok(storage.rawReqs && storage.rawReqs[`${T8005}:docA:1`]?.h.authorization === "Bearer RAWSECRET", "原始内容在会话存储里（不落盘）");
+assert.equal(storage.rawReqs[`${T8005}:docA:4`], undefined, "第三方请求不存");
+delete globalThis.__tcrReplay; delete globalThis.window;
 
 console.log("extension smoke ok");

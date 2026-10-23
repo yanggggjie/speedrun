@@ -54,3 +54,7 @@ export const JOURNAL_CAP_BYTES = 1024 * 1024 * 1024;
 export const JOURNAL_THIN_RATIO = 0.8;
 /** 单个响应体写盘上限，hook 里读到这个大小就截断。 */
 export const JOURNAL_BODY_MAX_BYTES = 256 * 1024;
+
+/** 别名的盐：别名是"盐 + 真值"的哈希，同一个秘密永远是同一个别名（重启 daemon 也是），但不能由别名还原真值。 */
+export const JOURNAL_ALIAS_SALT_FILE = path.join(JOURNAL_DIR, "alias-salt");
+

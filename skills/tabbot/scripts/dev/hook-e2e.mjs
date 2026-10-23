@@ -29,6 +29,7 @@ q.addEventListener("input",()=>{window.__q=q.value});
 </script>`;
 const server = http.createServer((req, res) => {
   if (req.url === "/slow") { setTimeout(() => { res.end("ok"); }, 700); return; }
+  if (req.url.split("?")[0] === "/echo") { let body = ""; req.on("data", (c) => (body += c)); req.on("end", () => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ method: req.method, headers: req.headers, body })); }); return; }
   res.writeHead(200, { "content-type": "text/html" });
   res.end(req.url.startsWith("/submit") ? "<title>submitted</title>已提交" : req.url === "/next" ? "<title>next</title>下一页" : PAGE);
 }).listen(8793, "127.0.0.1");
@@ -50,7 +51,7 @@ try {
   const { sessionId: S } = await send("Target.attachToTarget", { targetId, flatten: true });
   const ev = async (e) => { const r = await send("Runtime.evaluate", { expression: e, returnByValue: true, awaitPromise: true }, S); if (r.exceptionDetails) throw new Error(r.exceptionDetails.text); return r.result?.value; };
   await send("Page.enable", {}, S);
-  await send("Page.addScriptToEvaluateOnNewDocument", { source: HOOK }, S);
+  await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__msgs=[];addEventListener("message",(e)=>{if(e.data&&e.data.__tcrl===1)window.__msgs.push(e.data)});` + HOOK }, S);
   const open = async (p) => { await send("Page.navigate", { url: `http://127.0.0.1:8793${p}` }, S); await sleep(700); };
   const snapRefs = async () => { const s = await ev("JSON.stringify(__tcrSnap('live', true))"); const snap = JSON.parse(s); const byId = {}; for (const i of snap.items) byId[i.s.split(">").pop()] = i.ref; return { snap, byId }; };
   // 动作引发页面跳转时，页面里等"稳定"的脚本会被打断（Inspected target navigated）：这是成功，扩展里也按同样方式处理
@@ -110,6 +111,33 @@ try {
   // 引用失效：元素被页面移除
   await ev("b.remove()"); r = await act({ kind: "click", ref: ref("#b") }); assert.equal(r.ok, false); assert.match(r.error, /已不在页面上/);
   r = await act({ kind: "click", ref: "@e99999" }); assert.equal(r.ok, false);
+
+  // 重放：在页面里原样发请求（带这个页面的登录态和请求头），不会被当成页面自己发的请求记进日志
+  await open("/");
+  await ev(`document.cookie = "sid=abc123; path=/"`);
+  const replay = (req) => ev(`__tcrReplay(${JSON.stringify(req)}).then(JSON.stringify)`).then(JSON.parse);
+  r = await replay({ method: "POST", url: "http://127.0.0.1:8793/echo", headers: { "x-token": "RAW-VALUE", "content-type": "application/json" }, body: "{\"a\":1}" });
+  assert.equal(r.ok, true, JSON.stringify(r)); assert.equal(r.status, 200);
+  const echoed = JSON.parse(r.text);
+  assert.equal(echoed.method, "POST"); assert.equal(echoed.body, "{\"a\":1}");
+  assert.equal(echoed.headers["x-token"], "RAW-VALUE", "自定义请求头原样带上");
+  assert.match(echoed.headers.cookie, /sid=abc123/, "带着这个页面的登录态（cookie）");
+  r = await replay({ method: "GET", url: "http://127.0.0.1:8793/echo?x=1", headers: {} });
+  assert.equal(JSON.parse(r.text).method, "GET");
+  r = await replay({ method: "GET", url: "http://127.0.0.1:8793/missing", headers: {} });
+  assert.equal(r.ok, true); assert.equal(r.status, 200, "夹具对未知路径返回页面，状态码原样返回");
+  r = await replay({ method: "GET", url: "http://127.0.0.1:1/", headers: {} });
+  assert.equal(r.ok, false); assert.ok(r.error, "连不上：返回错误，不抛异常");
+  await sleep(400);
+  const nets = JSON.parse(await ev("JSON.stringify(__msgs.filter((m) => m.k === 'net' && /\\/echo/.test(m.url)))"));
+  assert.equal(nets.length, 0, "重放用的是原始 fetch，不会被当成页面自己发的请求：" + JSON.stringify(nets));
+  // 页面自己发的请求带 rid（docId:序号），扩展靠它找回原始内容
+  await ev(`fetch("/echo", { method: "POST", headers: { authorization: "Bearer PAGE-RAW" }, body: JSON.stringify({ z: 1 }) }).then((x) => x.text())`);
+  await sleep(500);
+  const own = JSON.parse(await ev("JSON.stringify(__msgs.filter((m) => m.k === 'net' && /\\/echo/.test(m.url)))"));
+  assert.equal(own.length, 1); assert.match(own[0].rid, /^[a-z0-9]{1,8}:\d+$/);
+  assert.equal(own[0].reqHeaders.authorization, "Bearer PAGE-RAW", "页面脚本把请求头的真值交给扩展（扩展转给 daemon 前会抹掉）");
+  assert.equal(own[0].reqBody, "{\"z\":1}");
 
   console.log("hook e2e ok");
 } finally {
