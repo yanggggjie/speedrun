@@ -1,7 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <!-- 头：浏览器标签页的轮廓。标签右侧与窗口栏之间是外翻的圆角（Chrome 标签的样子），不是文件夹的直角凸起 -->
-  <path d="M10 90V22A14 14 0 0 1 24 8H54A14 14 0 0 1 68 22A8 8 0 0 0 76 30H90A28 28 0 0 1 118 58V90A28 28 0 0 1 90 118H38A28 28 0 0 1 10 90Z" fill="#FFB020"/>
-  <!-- 眼睛：两条竖条 -->
-  <rect x="40" y="58" width="16" height="36" rx="8" fill="#3B2314"/>
-  <rect x="72" y="58" width="16" height="36" rx="8" fill="#3B2314"/>
+  <defs><clipPath id="mouth"><path d="M30 68H98A34 34 0 0 1 30 68Z"/></clipPath></defs>
+  <!-- 头：浏览器标签页的轮廓（标签与窗口栏之间是外翻圆角），粉色 -->
+  <path d="M10 90V22A14 14 0 0 1 24 8H54A14 14 0 0 1 68 22A8 8 0 0 0 76 30H90A28 28 0 0 1 118 58V90A28 28 0 0 1 90 118H38A28 28 0 0 1 10 90Z" fill="#FF8FAE"/>
+  <!-- 眼睛：两个小点 -->
+  <circle cx="45" cy="50" r="7.5" fill="#5A1730"/>
+  <circle cx="83" cy="50" r="7.5" fill="#5A1730"/>
+  <!-- 大嘴：张开的半圆，里面是舌头 -->
+  <path d="M30 68H98A34 34 0 0 1 30 68Z" fill="#7B1E3C"/>
+  <ellipse cx="64" cy="98" rx="19" ry="12" fill="#FF6F91" clip-path="url(#mouth)"/>
 </svg>
