@@ -1,5 +1,5 @@
 // 重新生成扩展图标：node scripts/dev/make-icons.mjs（本机要装 Chrome；路径不同时用 CHROME 环境变量指定）。
-// 源文件是 scripts/dev/icons 下的 SVG；16 像素用简化版（大眼睛，去掉嘴和腮红），其余用完整版。
+// 源文件是 scripts/dev/icons/icon.svg，所有尺寸共用一份。
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.resolve(HERE, "../../src/chrome-extension/icons");
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const SIZES = [[16, "icon-small.svg"], [32, "icon.svg"], [48, "icon.svg"], [128, "icon.svg"]];
+const SIZES = [[16, "icon.svg"], [32, "icon.svg"], [48, "icon.svg"], [128, "icon.svg"]];
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tabbot-icons-"));
 try {

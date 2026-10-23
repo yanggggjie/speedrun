@@ -63,7 +63,7 @@ ping
 `src/chrome-extension/` 是薄层 CDP 代理，约 220 行。协议见 `src/browser/extension.ts`。
 
 - run / 录制只操作由 holder 创建的窗口和 tab，以及两类新 tab（常驻录制的只读操作是例外，见第 7 节）：opener 属于 TabBot 的 tab；开在录制窗口里的 tab（用户在录制窗口自己按 Cmd+T 开的 tab 没有 opener）。`openWindow` 的 `kind: "record"` 标记录制窗口，run 窗口不放宽。
-- 工具栏图标：manifest 声明了 `icons` 与 `action`；点击图标会唤醒 service worker 并立即尝试连接（`need-extension` 的提示让用户点一下它）。图标是粉色的浏览器标签页轮廓（标签与窗口栏之间是外翻圆角，区别于文件夹），两个小点眼睛和一张大大张开的笑嘴；源文件在 `scripts/dev/icons/`（`icon.svg`，`icon-small.svg` 是 16 像素用的：眼睛和嘴更大、没有舌头），改动后运行 `node scripts/dev/make-icons.mjs` 重新生成 PNG（需要本机的 Chrome）。
+- 工具栏图标：manifest 声明了 `icons` 与 `action`；点击图标会唤醒 service worker 并立即尝试连接（`need-extension` 的提示让用户点一下它）。图标是圆角方块上一个白色粗圆头的 `t`：粉色、深莓色、蜜桃粉三块撞色，色块的分界线沿着 `t` 的笔画（手法同 yodo，配色不同，避免混淆）；源文件是 `scripts/dev/icons/icon.svg`，所有尺寸共用，改动后运行 `node scripts/dev/make-icons.mjs` 重新生成 PNG（需要本机的 Chrome）。
 - 操作：`openWindow`、`openTab`、`closeTab`、`closeWindow`、`listOwned`、`windowOf`、`attach`、`detach`、`send`。
 - 事件：`debuggerEvent`、`debuggerDetach`、`tab.created`、`tab.updated`、`tab.removed`。
 

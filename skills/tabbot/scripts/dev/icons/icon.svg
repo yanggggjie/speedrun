@@ -1,11 +1,19 @@
+<!-- TabBot 图标：整个图标面就是一个 t（手法同 yodo：圆角方块 + 三块渐变色块 + 白色粗圆头笔画，笔画同时是色块的分界线）。用 scripts/dev/make-icons.mjs 生成 PNG。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <defs><clipPath id="mouth"><path d="M30 68H98A34 34 0 0 1 30 68Z"/></clipPath></defs>
-  <!-- 头：浏览器标签页的轮廓（标签与窗口栏之间是外翻圆角），粉色 -->
-  <path d="M10 90V22A14 14 0 0 1 24 8H54A14 14 0 0 1 68 22A8 8 0 0 0 76 30H90A28 28 0 0 1 118 58V90A28 28 0 0 1 90 118H38A28 28 0 0 1 10 90Z" fill="#FF8FAE"/>
-  <!-- 眼睛：两个小点 -->
-  <circle cx="45" cy="50" r="7.5" fill="#5A1730"/>
-  <circle cx="83" cy="50" r="7.5" fill="#5A1730"/>
-  <!-- 大嘴：张开的半圆，里面是舌头 -->
-  <path d="M30 68H98A34 34 0 0 1 30 68Z" fill="#7B1E3C"/>
-  <ellipse cx="64" cy="98" rx="19" ry="12" fill="#FF6F91" clip-path="url(#mouth)"/>
+  <defs>
+    <!-- 三块区域各一条渐变：上方粉色，左下深莓色，右侧蜜桃粉 -->
+    <linearGradient id="top" gradientUnits="userSpaceOnUse" x1="120" y1="0" x2="30" y2="60"><stop offset="0" stop-color="#FF6FA8"/><stop offset="1" stop-color="#FF8FB4"/></linearGradient>
+    <linearGradient id="left" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="70" y2="128"><stop offset="0" stop-color="#7A1E5C"/><stop offset="1" stop-color="#D32A7A"/></linearGradient>
+    <linearGradient id="right" gradientUnits="userSpaceOnUse" x1="130" y1="44" x2="60" y2="120"><stop offset="0" stop-color="#FFC7A6"/><stop offset="1" stop-color="#FF8CA8"/></linearGradient>
+    <clipPath id="tile"><rect width="128" height="128" rx="30"/></clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <!-- 底色即上方区域；左下、右侧两块盖在上面，边界沿着 t 的笔画中线 -->
+    <rect width="128" height="128" fill="url(#top)"/>
+    <path d="M-12 46H62V84C62 100 70 108 86 108C100 108 110 118 112 150H-12Z" fill="url(#left)"/>
+    <path d="M62 46H150V150H112C110 118 100 108 86 108C70 108 62 100 62 84Z" fill="url(#right)"/>
+    <!-- 两条白线画出 t：竖笔（带向右的弯脚）和横笔 -->
+    <path d="M62 16V84C62 100 70 108 86 108" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <path d="M28 46H100" stroke="#fff" stroke-width="22" stroke-linecap="round" fill="none"/>
+  </g>
 </svg>
