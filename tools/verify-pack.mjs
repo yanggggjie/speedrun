@@ -1,5 +1,5 @@
 // 分发烟测：导出 git 认的 skill 文件，用 `skills add --copy` 装进隔离 HOME，再从安装位跑 setup（镜像 + npm install）+ doctor，
-// 断言 ~/.tabcobot 是 skill 目录的逐字节镜像、本机数据没被碰。
+// 断言 ~/.tabbot 是 skill 目录的逐字节镜像、本机数据没被碰。
 // 用法：npm run verify:pack
 import * as assert from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { exportPayload } from "./export-payload.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "tabcobot-pack-"));
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "tabbot-pack-"));
 const env = { ...process.env, HOME, USERPROFILE: HOME };
 
 function findSkillDir() {
@@ -26,7 +26,7 @@ function findSkillDir() {
     for (const e of ents) {
       if (!e.isDirectory()) continue;
       const p = path.join(d, e.name);
-      if (e.name === "tabcobot" && path.basename(d) === "skills") hits.push(p);
+      if (e.name === "tabbot" && path.basename(d) === "skills") hits.push(p);
       else walk(p, depth + 1);
     }
   };
@@ -40,12 +40,12 @@ try {
   exportPayload(REPO, exported);
   execFileSync(
     "npx",
-    ["-y", "skills@latest", "add", exported, "-s", "tabcobot", "--copy", "-g", "-a", "*", "-y"],
+    ["-y", "skills@latest", "add", exported, "-s", "tabbot", "--copy", "-g", "-a", "*", "-y"],
     { env, stdio: "ignore" },
   );
 
   const skillDir = findSkillDir();
-  assert.ok(skillDir, "skills add 后未找到已安装的 tabcobot skill 目录");
+  assert.ok(skillDir, "skills add 后未找到已安装的 tabbot skill 目录");
 
   for (const rel of [
     "SKILL.md",
@@ -53,7 +53,7 @@ try {
     "setup.js",
     "src/sdk.ts",
     "src/holder.ts",
-    "src/cli/tabcobot.ts",
+    "src/cli/tabbot.ts",
     "src/cli/shim.ts",
     "src/store/deploy.ts",
     "src/templates/task-lib/index.js",
@@ -69,7 +69,7 @@ try {
   }
 
   // 本机数据：镜像不能碰
-  const keep = path.join(HOME, ".tabcobot", "task", "keep.js");
+  const keep = path.join(HOME, ".tabbot", "task", "keep.js");
   fs.mkdirSync(path.dirname(keep), { recursive: true });
   fs.writeFileSync(keep, "// 用户 task\n");
 
@@ -78,19 +78,19 @@ try {
     encoding: "utf8",
   });
   assert.equal(setup.status, 0, `setup 失败：${setup.stderr || setup.stdout}`);
-  const dest = path.join(HOME, ".tabcobot", "src");
-  assert.ok(fs.existsSync(path.join(dest, "sdk.ts")), "~/.tabcobot/src 未建好");
-  assert.equal(fs.readFileSync(keep, "utf8"), "// 用户 task\n", "setup 不应动 ~/.tabcobot/task");
-  // ~/.tabcobot 是 skill 目录的镜像：除 node_modules 和 .version（本机生成）外，每个文件内容都相同；自检、夹具、scripts、文档都在
+  const dest = path.join(HOME, ".tabbot", "src");
+  assert.ok(fs.existsSync(path.join(dest, "sdk.ts")), "~/.tabbot/src 未建好");
+  assert.equal(fs.readFileSync(keep, "utf8"), "// 用户 task\n", "setup 不应动 ~/.tabbot/task");
+  // ~/.tabbot 是 skill 目录的镜像：除 node_modules 和 .version（本机生成）外，每个文件内容都相同；自检、夹具、scripts、文档都在
   const listFiles = (dir, rel = "") => fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).flatMap((e) => {
     const r = path.join(rel, e.name);
     if (e.name === "node_modules") return [];
     return e.isDirectory() ? listFiles(dir, r) : [r];
   });
   for (const rel of listFiles(skillDir)) {
-    const mirrored = path.join(HOME, ".tabcobot", rel);
-    assert.ok(fs.existsSync(mirrored), `~/.tabcobot 缺 ${rel}`);
-    assert.ok(fs.readFileSync(mirrored).equals(fs.readFileSync(path.join(skillDir, rel))), `~/.tabcobot/${rel} 与 skill 目录不同`);
+    const mirrored = path.join(HOME, ".tabbot", rel);
+    assert.ok(fs.existsSync(mirrored), `~/.tabbot 缺 ${rel}`);
+    assert.ok(fs.readFileSync(mirrored).equals(fs.readFileSync(path.join(skillDir, rel))), `~/.tabbot/${rel} 与 skill 目录不同`);
   }
   assert.ok(fs.existsSync(path.join(dest, "record", "dom.selfcheck.ts")), "自检应随源码分发");
   assert.ok(fs.existsSync(path.join(dest, "dev", "rpc.ts")), "镜像缺 dev/rpc.ts");
@@ -111,12 +111,12 @@ try {
 
   const doctor = spawnSync(
     process.execPath,
-    [path.join(dest, "cli", "tabcobot.ts"), "doctor"],
+    [path.join(dest, "cli", "tabbot.ts"), "doctor"],
     { env, encoding: "utf8" },
   );
   assert.equal(doctor.status, 0, `doctor 失败：${doctor.stderr || doctor.stdout}`);
 
-  console.log("[verify:pack] ok — payload 完整，~/.tabcobot 是它的镜像，setup + npm install 可运行");
+  console.log("[verify:pack] ok — payload 完整，~/.tabbot 是它的镜像，setup + npm install 可运行");
 } finally {
   fs.rmSync(HOME, { recursive: true, force: true });
 }

@@ -7,10 +7,10 @@ import { fileURLToPath } from "node:url";
 import { exportPayload } from "./export-payload.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tabcobot-install-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tabbot-install-"));
 try {
   exportPayload(REPO, tmp);
-  execFileSync("npx", ["-y", "skills", "add", tmp, "-s", "tabcobot", "--copy", "-g", "-a", "*", "-y"], { stdio: "inherit" });
+  execFileSync("npx", ["-y", "skills", "add", tmp, "-s", "tabbot", "--copy", "-g", "-a", "*", "-y"], { stdio: "inherit" });
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

@@ -1,1 +1,1 @@
-skills/tabcobot/AGENTS.md
+skills/tabbot/AGENTS.md

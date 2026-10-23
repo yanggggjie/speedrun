@@ -1,12 +1,12 @@
 # 项目上下文（换机器继续用）
 
 ## 这是什么
-TabCobot（原名 TwoCursor）：人和 agent 共用同一个 Chrome。常驻录制用户点名的站点，agent 读日志了解现场；人可随时插手。设计见 [DESIGN.md](DESIGN.md)，实验记录见 [EXPERIMENTS.md](EXPERIMENTS.md)。
+TabBot（曾用名 TwoCursor、TabCobot）：人和 agent 共用同一个 Chrome。常驻录制用户点名的站点，agent 读日志了解现场；人可随时插手。设计见 [DESIGN.md](DESIGN.md)，实验记录见 [EXPERIMENTS.md](EXPERIMENTS.md)。
 
 ## 仓库
-- GitHub 仓库 `yanggggjie/TwoCursor`（私有，Apache-2.0；仓库名还没改成 TabCobot，见 DESIGN.md 的 TODO）。代码起点是 yodo 的源码，已改名并大幅改造，历史已清空，与 yodo 仓库无关联。
-- 命名：产品名 TabCobot，命令、skill、数据目录都是小写 `tabcobot`（`~/.tabcobot`），native host 是 `com.tabcobot.connect`。和 yodo 完全独立：skill 名、命令、数据目录、native host、扩展 ID 都不同，可以同时安装使用。
-- 产品代码在 `skills/tabcobot/`（运行时、扩展、文档），开发约束、检查和测试、分发见 `skills/tabcobot/AGENTS.md`，运行时架构见 `skills/tabcobot/ARCHITECTURE.md`（第 7 节是常驻录制）。
+- GitHub 仓库 `yanggggjie/TwoCursor`（私有，Apache-2.0；仓库名还没改成 TabBot，见 DESIGN.md 的 TODO）。代码起点是 yodo 的源码，已改名并大幅改造，历史已清空，与 yodo 仓库无关联。
+- 命名规则：**要书写、打字、匹配的地方一律小写 `tabbot`**（命令、skill 名和触发词、数据目录 `~/.tabbot`、native host `com.tabbot.connect`、环境变量 `TABBOT_*`、Chrome 窗口标题 `tabbot run`/`tabbot record`）；**给用户看的地方写 `TabBot`**（产品名、文档正文、扩展显示名、提示文案）。和 yodo 完全独立：skill 名、命令、数据目录、native host、扩展 ID 都不同，可以同时安装使用。
+- 产品代码在 `skills/tabbot/`（运行时、扩展、文档），开发约束、检查和测试、分发见 `skills/tabbot/AGENTS.md`，运行时架构见 `skills/tabbot/ARCHITECTURE.md`（第 7 节是常驻录制）。
 - 实验代码（原 `lab/`）已删除，需要时 `git log --stat -- lab`。
 
 ## 已定决策
@@ -20,8 +20,8 @@ TabCobot（原名 TwoCursor）：人和 agent 共用同一个 Chrome。常驻录
 - 仓库先私有；许可证沿用 Apache-2.0。
 
 ## 开发与测试
-- Node ≥24（直接运行 `.ts`）。`npm install --prefix skills/tabcobot/src --omit=optional` 之后：`npm run check`（tsc）、`npm test`（全部自检）、`npm run verify:pack`（隔离 HOME 真实安装）。
-- 在真实 Chrome 里测：`npm run dev:install` 本地安装（会写 `~/.tabcobot`、注册 Chrome 的 native messaging host），再在 `chrome://extensions` 加载 `~/.tabcobot/src/chrome-extension`，`tabcobot sites add <域名>` 点名站点。品牌版 Chrome 不支持 `--load-extension`，必须手动加载。
+- Node ≥24（直接运行 `.ts`）。`npm install --prefix skills/tabbot/src --omit=optional` 之后：`npm run check`（tsc）、`npm test`（全部自检）、`npm run verify:pack`（隔离 HOME 真实安装）。
+- 在真实 Chrome 里测：`npm run dev:install` 本地安装（会写 `~/.tabbot`、注册 Chrome 的 native messaging host），再在 `chrome://extensions` 加载 `~/.tabbot/src/chrome-extension`，`tabbot sites add <域名>` 点名站点。品牌版 Chrome 不支持 `--load-extension`，必须手动加载。
 - 用 Claude in Chrome 在专用 tab 里操作页面，产品的轻量层同时记录；它的截图只截页面内容，截不到浏览器界面和横幅。
 - 本机的 8766 端口曾被一个无关服务占用；产品不用固定端口，走 Unix socket 和 native messaging。
 
@@ -29,4 +29,4 @@ TabCobot（原名 TwoCursor）：人和 agent 共用同一个 Chrome。常驻录
 见 `DESIGN.md` 第 9、10 节：先在日常 Chrome 里端到端验证第一阶段（`hook.js` 兼容性、体积统计），再做第二阶段（先验证构造法的两个假设）。
 
 ## 隐私提醒
-日常 Chrome 里测试时，日志含登录态内容（响应体等），在 `~/.tabcobot/journal`；测完用 `tabcobot sites rm` 停止录制，需要时删除该目录。
+日常 Chrome 里测试时，日志含登录态内容（响应体等），在 `~/.tabbot/journal`；测完用 `tabbot sites rm` 停止录制，需要时删除该目录。

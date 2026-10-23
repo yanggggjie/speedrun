@@ -1,12 +1,12 @@
 {
-  "name": "tabcobot-skill-repo",
+  "name": "tabbot-skill-repo",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Dev harness for the tabcobot skill; the shippable package lives in skills/tabcobot/src.",
+  "description": "Dev harness for the tabbot skill; the shippable package lives in skills/tabbot/src.",
   "scripts": {
-    "check": "npm --prefix skills/tabcobot/src run check",
-    "test": "npm --prefix skills/tabcobot/src run test",
+    "check": "npm --prefix skills/tabbot/src run check",
+    "test": "npm --prefix skills/tabbot/src run test",
     "dev:install": "node tools/dev-install.mjs",
     "verify:pack": "node tools/verify-pack.mjs"
   },

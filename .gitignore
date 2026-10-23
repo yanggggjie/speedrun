@@ -1,5 +1,5 @@
 # 运行时 / 本地数据
-.tabcobot/
+.tabbot/
 *.har
 node_modules/
 dist/
