@@ -28,7 +28,7 @@ async function cdpPage() {
 if (cmd === "up") {
   fs.rmSync(path.join(OUT, "events.jsonl"), { force: true });
   http.createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/ev") {
+    if (req.method === "POST" && (req.url === "/ev" || req.url === "/page-ev")) {
       let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => {
         const recvAt = Date.now();
         for (const e of JSON.parse(b)) fs.appendFileSync(path.join(OUT, "events.jsonl"), JSON.stringify({ ...e, recvAt }) + "\n");
