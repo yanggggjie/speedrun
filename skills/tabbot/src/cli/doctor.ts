@@ -8,7 +8,7 @@ import {
 } from "../utils/constants.ts";
 import { tryPing } from "./session.ts";
 import { status as journalStatus } from "../journal/query.ts";
-import { readSites } from "../journal/sites.ts";
+import { readConfig } from "../journal/sites.ts";
 import { readVersion } from "../store/version.ts";
 import { chromeRunning } from "../browser/connect.ts";
 import { EXTENSION_ID, HOLDER_ENTRY, RELAY_ENTRY, launcherPath, manifestPath, nativeHostInstalled } from "../native-messaging-host/install.ts";
@@ -88,14 +88,15 @@ async function collectChecks(): Promise<Check[]> {
     optional: true,
   });
 
-  // 常驻录制：有没有点名要录的站点、日志占了多少。没有站点只是提示，不影响退出码。
-  const sites = readSites();
+  // 常驻录制：录制范围、日志占了多少。只录点名站点却一个也没点名时只是提示，不影响退出码。
+  const sites = readConfig();
   const journal = await journalStatus().catch(() => null);
+  const scope = sites.mode === "all" ? "录制所有站点（内置排除敏感站点）" : sites.only.length ? `只录 ${sites.only.length} 个站点` : "没有要录制的站点";
   add({
     name: "journal",
-    ok: sites.length > 0,
-    detail: sites.length ? `${sites.length} 个站点，${journal?.days.length ?? 0} 天日志，${((journal?.bytes ?? 0) / 1024 / 1024).toFixed(1)}MB` : "没有要录制的站点",
-    fix: "tabbot sites add <域名>",
+    ok: sites.mode === "all" || sites.only.length > 0,
+    detail: `${scope}，${journal?.days.length ?? 0} 天日志，${((journal?.bytes ?? 0) / 1024 / 1024).toFixed(1)}MB`,
+    fix: "tabbot sites all",
     optional: true,
   });
 

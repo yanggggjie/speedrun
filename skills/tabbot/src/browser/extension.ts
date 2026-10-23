@@ -38,7 +38,7 @@ export class ExtensionLink {
   write: (message: Record<string, unknown>) => void = () => {};
   readonly raw: RawCdpConnection;
   readonly ops: TabOps;
-  /** 常驻录制用的扩展操作（setSites、siteTabs、snapshot）；不要求 tab 由 TabBot 创建，扩展一侧只放行白名单站点。 */
+  /** 常驻录制用的扩展操作（setSites、siteTabs、snapshot）；不要求 tab 由 TabBot 创建，扩展一侧只放行录制范围内的站点。 */
   readonly siteOp: (name: string, args?: Record<string, unknown>) => Promise<unknown>;
   chromeVersion = "";
   private nextId = 1;

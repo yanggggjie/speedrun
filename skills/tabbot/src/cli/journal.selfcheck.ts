@@ -58,12 +58,21 @@ const done = run("wait", "--since", "0", "--idle", "1", "--timeout", "5");
 assert.match(done.stdout, /^人已停手（静默 1s），新增 2 条（游标 2）/);
 
 // status、sites（没有 daemon 时只保存，并说明）
-assert.match(run("status").stdout, /录制：0 个站点，1 天 3 条事件/);
-const add = run("sites", "add", "https://www.zhihu.com/hot", "ithome.com");
-assert.equal(add.status, 0, add.stdout + add.stderr);
-assert.match(add.stdout, /已加入，现在录制 2 个站点：ithome\.com, zhihu\.com。扩展没连上，连上后自动生效。/);
-assert.match(run("sites").stdout, /录制 2 个站点：ithome\.com, zhihu\.com/);
-assert.match(run("sites", "rm", "zhihu.com").stdout, /已移除，现在录制 1 个站点：ithome\.com/);
-assert.equal(JSON.parse(run("sites", "add").stdout).status, "failure");
+assert.match(run("status").stdout, /录制：1 天 3 条事件/);
+assert.match(run("status").stdout, /范围：录制所有 http\/https 站点，内置排除 \d+ 个敏感站点/);
+assert.match(run("sites").stdout, /^录制所有 http\/https 站点/);
+assert.match(run("sites", "--builtin").stdout, /mail\.google\.com/);
+const ex = run("sites", "exclude", "https://www.news.example.com/a", "shop.example.org");
+assert.equal(ex.status, 0, ex.stdout + ex.stderr);
+assert.match(ex.stdout, /已排除 news\.example\.com, shop\.example\.org。现在：录制所有 http\/https 站点.*你另外排除了 news\.example\.com, shop\.example\.org。扩展没连上，连上后自动生效。/);
+assert.match(run("sites", "include", "shop.example.org").stdout, /已重新打开 shop\.example\.org。现在：.*你另外排除了 news\.example\.com(?!, shop)/);
+// 内置排除的站点可以重新打开
+assert.match(run("sites", "include", "mail.google.com").stdout, /并重新打开了 mail\.google\.com/);
+assert.match(run("sites", "only", "zhihu.com", "ithome.com").stdout, /已切换到只录点名的站点。现在：只录 2 个站点：ithome\.com, zhihu\.com/);
+assert.match(run("status").stdout, /范围：只录 2 个站点/);
+assert.match(run("sites", "all").stdout, /已切换到录制所有站点/);
+assert.equal(JSON.parse(run("sites", "exclude").stdout).status, "failure");
+assert.equal(JSON.parse(run("sites", "exclude", "notadomain").stdout).status, "failure");
+assert.equal(JSON.parse(run("sites", "bogus").stdout).status, "failure");
 
 console.log("journal cli selfcheck ok");

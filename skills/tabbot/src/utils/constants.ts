@@ -45,7 +45,7 @@ export const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB
 /** 响应体超过此值拆到 *.response.json / *.response.html */
 export const RESPONSE_SPLIT_BYTES = 1024;
 
-/** 常驻录制的日志：按天一个 SQLite 文件，响应体、快照按天放目录；sites.json 是录制白名单。 */
+/** 常驻录制的日志：按天一个 SQLite 文件，响应体、快照按天放目录；sites.json 是录制范围的配置。 */
 export const JOURNAL_DIR = path.join(TABBOT_HOME, "journal");
 export const JOURNAL_SITES_FILE = path.join(JOURNAL_DIR, "sites.json");
 /** 日志目录总大小硬上限（索引、响应体、快照合计）。 */

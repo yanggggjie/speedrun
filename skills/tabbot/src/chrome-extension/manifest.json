@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "TabBot",
   "version": "0.1.0",
-  "description": "TabBot 的 Chrome 连接扩展：常驻录制你点名的站点，并只操作它自己打开的标签页。",
+  "description": "TabBot 的 Chrome 连接扩展：常驻录制你浏览的站点（排除敏感站点），并只操作它自己打开的标签页。",
   "icons": {
     "16": "icons/16.png",
     "32": "icons/32.png",

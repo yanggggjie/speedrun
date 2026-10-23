@@ -3,9 +3,9 @@
 ## 未发布
 
 - 新图标：整个图标面就是一个 t（手法同 yodo，配色不同）：白色的曲线（没有直线）组成 t，笔画延伸出图标边缘，把图标切成粉色、深莓色、蜜桃粉三块。替换原来继承的图标。
-- 新增常驻录制：对你点名的站点（`tabbot sites add <域名>`）一直记录人的操作、页面请求和响应、页面状态，落在 `~/.tabbot/journal`，总大小上限 1GB。
+- 新增常驻录制：默认录制**所有 http/https 站点**，一直记录人的操作、页面请求和响应、页面状态，落在 `~/.tabbot/journal`，总大小上限 1GB。内置排除银行、支付、密码管理、统一登录、网页邮箱等敏感站点；`tabbot sites exclude <域名>` 再排除，`sites include <域名>` 重新打开，`sites only <域名> ...` 改成只录点名的站点，`sites all` 改回来。
 - 新增只读观察命令：`tabbot log`、`sql`、`snapshot`、`tabs`、`wait`、`status`。埋点和广告自动识别为噪声，token、Cookie、密码脱敏。
-- 扩展新增 `scripting` 和 `<all_urls>` 权限；只对白名单站点注入脚本。更新后需要在 `chrome://extensions` 里刷新一次扩展。
+- 扩展新增 `scripting` 和 `<all_urls>` 权限；内容脚本按录制范围动态注册，被排除的站点不注入。更新后需要在 `chrome://extensions` 里刷新一次扩展。
 
 ## v2.0.1
 

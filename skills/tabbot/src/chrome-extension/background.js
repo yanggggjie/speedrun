@@ -210,8 +210,8 @@ async function runTab(name, args) {
       return {};
     }
     case "setSites": {
-      await applySites(Array.isArray(args.sites) ? args.sites.filter((x) => typeof x === "string") : []);
-      return { sites };
+      await applySites({ mode: args.mode, sites: Array.isArray(args.sites) ? args.sites.filter((x) => typeof x === "string") : [], exclude: Array.isArray(args.exclude) ? args.exclude.filter((x) => typeof x === "string") : [] });
+      return { mode: config.mode, sites: config.sites, exclude: config.exclude };
     }
     case "siteTabs": {
       await sitesReady;
@@ -291,26 +291,35 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
 });
 
 // ---- 常驻录制（journal）----
-// 对用户在白名单里点名的站点，注册内容脚本（hook.js 在页面里，relay.js 在隔离世界），把观察到的事件批量交给 daemon。
-// 白名单由 daemon 经 setSites 下发并存在 storage.local；脚本注册是动态的，manifest 不变，改站点不需要重新加载扩展。
-// 只读操作（tabs、snapshot）只对白名单站点的 tab 生效，不要求 tab 由 TabBot 创建。
+// 在录制范围内的站点注册内容脚本（hook.js 在页面里，relay.js 在隔离世界），把观察到的事件批量交给 daemon。
+// 范围由 daemon 经 setSites 下发并存在 storage.local：默认录所有 http/https 站点但排除敏感站点（mode "all" + exclude），
+// 或只录点名的站点（mode "only"）。脚本注册是动态的，manifest 不变，改范围不需要重新加载扩展。
+// 只读操作（tabs、snapshot）只对范围内站点的 tab 生效，不要求 tab 由 TabBot 创建。
 const JOURNAL_SCRIPTS = [
   { id: "tc-hook", js: ["journal/hook.js"], world: "MAIN" },
   { id: "tc-relay", js: ["journal/relay.js"], world: "ISOLATED" },
 ];
 const JOURNAL_BUFFER_MAX = 2000;
 const JOURNAL_FLUSH_MS = 300;
-let sites = [];
+// 还没收到 daemon 下发的范围之前，什么都不录（只录点名站点，但一个也没有）。
+let config = { mode: "only", sites: [], exclude: [] };
 let journalBuffer = [];
 let journalTimer = null;
-const siteTabs = new Map(); // tabId -> 最近一次的 URL（只放白名单站点的 tab，用来在关闭时记一条 closed）
+const siteTabs = new Map(); // tabId -> 最近一次的 URL（只放录制范围内的 tab，用来在关闭时记一条 closed）
 
-const sitesReady = chrome.storage.local.get("sites").then((saved) => { sites = Array.isArray(saved.sites) ? saved.sites : []; });
+const sitesReady = chrome.storage.local.get(["journalConfig", "sites"]).then((saved) => {
+  if (saved.journalConfig && (saved.journalConfig.mode === "all" || saved.journalConfig.mode === "only")) config = saved.journalConfig;
+  else if (Array.isArray(saved.sites)) config = { mode: "only", sites: saved.sites, exclude: [] }; // 旧版存的是只录点名站点的列表
+});
+
+const hostMatches = (host, domain) => host === domain || host.endsWith("." + domain);
 
 function matchSite(url) {
   try {
-    const host = new URL(url).hostname;
-    return sites.some((d) => host === d || host.endsWith("." + d));
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    if (config.mode === "all") return !config.exclude.some((d) => hostMatches(u.hostname, d));
+    return config.sites.some((d) => hostMatches(u.hostname, d));
   } catch {
     return false;
   }
@@ -330,14 +339,25 @@ function flushJournal() {
   postToHost({ type: "journal", events });
 }
 
-async function applySites(list) {
-  sites = [...new Set(list)];
-  await chrome.storage.local.set({ sites });
+async function applySites(next) {
+  config = { mode: next.mode === "all" ? "all" : "only", sites: [...new Set(next.sites ?? [])], exclude: [...new Set(next.exclude ?? [])] };
+  await chrome.storage.local.set({ journalConfig: config });
   await chrome.scripting.unregisterContentScripts({ ids: JOURNAL_SCRIPTS.map((s) => s.id) }).catch(() => {});
-  if (sites.length === 0) return;
-  const matches = sites.flatMap((d) => [`*://${d}/*`, `*://*.${d}/*`]);
+  const domainPatterns = (list) => list.flatMap((d) => [`*://${d}/*`, `*://*.${d}/*`]);
+  let matches;
+  let excludeMatches = [];
+  if (config.mode === "all") {
+    matches = ["http://*/*", "https://*/*"];
+    excludeMatches = domainPatterns(config.exclude);
+  } else {
+    if (config.sites.length === 0) return;
+    matches = domainPatterns(config.sites);
+  }
   await chrome.scripting.registerContentScripts(
-    JOURNAL_SCRIPTS.map((s) => ({ ...s, matches, runAt: "document_start", allFrames: true, matchOriginAsFallback: true, persistAcrossSessions: true })),
+    JOURNAL_SCRIPTS.map((s) => ({
+      ...s, matches, ...(excludeMatches.length ? { excludeMatches } : {}),
+      runAt: "document_start", allFrames: true, matchOriginAsFallback: true, persistAcrossSessions: true,
+    })),
   );
   // 已经打开的 tab 不会重新加载，补注入一次（两个脚本都是幂等的）。
   for (const tab of await chrome.tabs.query({})) {
@@ -352,7 +372,7 @@ async function applySites(list) {
 async function siteTab(tabId) {
   await sitesReady;
   const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (!tab || !tab.url || !matchSite(tab.url)) throw new Error(`tab ${tabId} 不在录制白名单的站点里`);
+  if (!tab || !tab.url || !matchSite(tab.url)) throw new Error(`tab ${tabId} 不在录制范围内（站点被排除，或不是 http/https 页面）`);
   return tab;
 }
 

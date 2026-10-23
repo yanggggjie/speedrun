@@ -5,7 +5,7 @@ import { finishRecord, liveRecordName, startRecord } from "./record/index.ts";
 import { devRpc } from "./dev/rpc.ts";
 import { Ingestor, type HookMsg } from "./journal/ingest.ts";
 import { enforceCap } from "./journal/retention.ts";
-import { readSites } from "./journal/sites.ts";
+import { extensionConfig, readConfig } from "./journal/sites.ts";
 import { dayOf, JournalStore } from "./journal/store.ts";
 import { loadAdblockEngine } from "./record/pipeline.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
@@ -56,8 +56,8 @@ link.raw.on("journal", (params) => {
   const events = (params as { events?: HookMsg[] }).events;
   if (Array.isArray(events)) journal?.handleBatch(events);
 });
-/** 白名单推给扩展：扩展每次 hello 之后、CLI 改了站点之后各推一次。 */
-function pushSites(): Promise<unknown> { return link.siteOp("setSites", { sites: readSites() }); }
+/** 录制范围推给扩展：扩展每次 hello 之后、CLI 改了范围之后各推一次。 */
+function pushSites(): Promise<unknown> { return link.siteOp("setSites", extensionConfig(readConfig())); }
 /** ponytail: 没有 relay 且没有 run/record 超过 10 分钟才退出；忙时不重试，下次 relay 断开再判断。 */
 const IDLE_EXIT_MS = 10 * 60_000;
 

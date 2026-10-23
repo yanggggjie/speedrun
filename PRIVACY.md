@@ -26,10 +26,13 @@ Authorization: Bearer ⟨secret_001:jwt⟩
 
 # 常驻录制
 
-你用 `tabbot sites add <域名>` 点名的站点，会被扩展一直录在本机 `~/.tabbot/journal`：你的点击、输入框的长度（不记内容）、特殊键、滚动，页面的请求和响应，页面上的可交互元素。没点名的站点既不注入脚本，也不上报任何东西。
+**默认录制你浏览的所有 http/https 站点**，一直录在本机 `~/.tabbot/journal`：你的点击、输入框的长度（不记内容）、特殊键、滚动，页面的请求和响应，页面上的可交互元素。无痕窗口、`chrome://` 等浏览器页面、被排除的站点，既不注入脚本，也不上报任何东西。
+
+**内置排除的敏感站点**：银行和支付（支付宝、PayPal、Stripe、各大银行等）、密码管理（1Password、Bitwarden 等）、统一登录（Google、Microsoft、Apple 账号页）、网页邮箱（Gmail、Outlook、QQ 邮箱、163 等）。完整列表：`tabbot sites --builtin`。银行等列表不可能穷尽，**没有覆盖到的敏感站点请你自己用 `tabbot sites exclude <域名>` 排除**。
 
 - token、Cookie、密码在写盘前脱敏，同一个值是同一个别名；密码框和 `autocomplete` 为信用卡、验证码的输入框，快照里不取值。
 - 数据只在本机，不上传。总大小上限 1GB，旧的响应体先被清掉。
-- 扩展为此需要读取所有站点的权限（`<all_urls>`），但只对你点名的站点注入脚本、读取标签页。要停止录制某个站点：`tabbot sites rm <域名>`；清掉历史：删除 `~/.tabbot/journal`。
+- 扩展需要读取所有站点的权限（`<all_urls>`）。排除某个站点：`tabbot sites exclude <域名>`；把内置排除的某个重新打开：`tabbot sites include <域名>`；改成只录点名的站点：`tabbot sites only <域名> ...`（`tabbot sites all` 改回来）。清掉历史：删除 `~/.tabbot/journal`。
+- 脱敏只处理 token、Cookie、密码这类明显的秘密；响应体里的正文（比如论坛帖子、聊天内容）原样写盘。
 - 页面内容和响应体写进日志后，agent 能读到它们；日志里的网页内容对 agent 是不可信数据。
 

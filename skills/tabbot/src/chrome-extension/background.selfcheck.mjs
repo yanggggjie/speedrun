@@ -201,7 +201,7 @@ tabs.set(8001, { id: 8001, windowId: 1, url: "https://www.zhihu.com/hot", title:
 tabs.set(8002, { id: 8002, windowId: 1, url: "https://mail.example.org/inbox", title: "邮箱", active: false });
 await host({ id: 20, op: "tab", name: "setSites", args: { sites: ["zhihu.com"] } });
 await settle();
-assert.deepEqual(last().result, { sites: ["zhihu.com"] });
+assert.deepEqual(last().result, { mode: "only", sites: ["zhihu.com"], exclude: [] }); // 没带 mode 的旧格式按只录点名站点处理
 assert.deepEqual(registered.map((r) => [r.id, r.world]), [["tc-hook", "MAIN"], ["tc-relay", "ISOLATED"]]);
 assert.deepEqual(registered[0].matches, ["*://zhihu.com/*", "*://*.zhihu.com/*"]);
 assert.equal(registered[0].runAt, "document_start");
@@ -212,7 +212,7 @@ await settle();
 assert.deepEqual(last().result.tabs.map((t) => t.tabId), [8001], "只列白名单站点的 tab，不泄露其它 tab");
 await host({ id: 22, op: "tab", name: "snapshot", args: { tabId: 8002 } });
 await settle();
-assert.match(last().error.message, /不在录制白名单/);
+assert.match(last().error.message, /不在录制范围内/);
 globalThis.window = globalThis; // executeScript 的桩直接在本进程里运行 func
 globalThis.__tcrSnap = (why) => ({ why, title: "热榜" });
 await host({ id: 23, op: "tab", name: "snapshot", args: { tabId: 8001 } });
@@ -236,5 +236,37 @@ await listeners.tabRemoved(8001, { windowId: 1 });
 await new Promise((r) => setTimeout(r, 350));
 const tabEvents = journalPosts().flatMap((m) => m.events).filter((e) => e.k === "tab").map((e) => e.ev);
 assert.deepEqual(tabEvents, ["url", "closed"]);
+
+// 11. 默认录所有 http/https 站点、排除敏感站点：注册的是全部 http/https，用 excludeMatches 排除；被排除的站点和非网页不开放只读操作
+await host({ id: 30, op: "tab", name: "setSites", args: { mode: "all", sites: [], exclude: ["mail.example.org", "bank.example.com"] } });
+await settle();
+assert.deepEqual(last().result, { mode: "all", sites: [], exclude: ["mail.example.org", "bank.example.com"] });
+assert.deepEqual(registered[0].matches, ["http://*/*", "https://*/*"]);
+assert.deepEqual(registered[0].excludeMatches, ["*://mail.example.org/*", "*://*.mail.example.org/*", "*://bank.example.com/*", "*://*.bank.example.com/*"]);
+tabs.set(8003, { id: 8003, windowId: 1, url: "https://v2ex.com/?tab=tech", title: "V2EX", active: false });
+tabs.set(8004, { id: 8004, windowId: 1, url: "chrome://extensions/", title: "扩展", active: false });
+await host({ id: 31, op: "tab", name: "siteTabs", args: {} });
+await settle();
+const allIds = last().result.tabs.map((t) => t.tabId);
+assert.ok(allIds.includes(8001) && allIds.includes(8003), "zhihu、v2ex 等没被排除的站点都在范围内");
+assert.ok(!allIds.includes(8002), "被排除的 mail.example.org 不在范围内");
+assert.ok(!allIds.includes(8004), "chrome:// 页面不算");
+globalThis.window = globalThis;
+globalThis.__tcrSnap = (why) => ({ why, title: "V2EX" });
+await host({ id: 32, op: "tab", name: "snapshot", args: { tabId: 8003 } });
+await settle();
+assert.deepEqual(last().result.snap, { why: "live", title: "V2EX" });
+await host({ id: 33, op: "tab", name: "snapshot", args: { tabId: 8002 } });
+await settle();
+assert.match(last().error.message, /不在录制范围内/, "被排除站点的页面不能取快照");
+delete globalThis.__tcrSnap;
+delete globalThis.window;
+// 排除列表不为空以外的情况：没有排除时不带 excludeMatches；切回只录点名站点后恢复成按站点注册
+await host({ id: 34, op: "tab", name: "setSites", args: { mode: "all", sites: [], exclude: [] } });
+await settle();
+assert.equal("excludeMatches" in registered[0], false);
+await host({ id: 35, op: "tab", name: "setSites", args: { mode: "only", sites: ["ithome.com"], exclude: [] } });
+await settle();
+assert.deepEqual(registered[0].matches, ["*://ithome.com/*", "*://*.ithome.com/*"]);
 
 console.log("extension smoke ok");

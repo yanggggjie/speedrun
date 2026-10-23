@@ -110,7 +110,7 @@ ping
 
 ## 7. 常驻录制（journal）
 
-和 run / 录制互不相干：不用 CDP、不开窗口、不进 `Mode`，只读观察。用户点名的站点上常驻，数据落在 `~/.tabbot/journal`。
+和 run / 录制互不相干：不用 CDP、不开窗口、不进 `Mode`，只读观察。默认在所有 http/https 站点上常驻（内置排除敏感站点），数据落在 `~/.tabbot/journal`。
 
 ```text
 页面 hook.js (MAIN) ─postMessage→ relay.js (隔离世界) ─runtime.sendMessage→ 扩展 background.js
@@ -118,7 +118,7 @@ ping
 CLI: 直接开只读 SQLite（log / sql / wait / status）；tabs、snapshot、sites 生效经 holder 问扩展
 ```
 
-- **扩展权限变了**：`host_permissions: <all_urls>` 加 `scripting`。内容脚本不写在 manifest 里，由 `setSites` 按白名单用 `chrome.scripting.registerContentScripts` 动态注册（`persistAcrossSessions`），所以改站点不需要重新加载扩展；白名单之外的页面既不注入脚本、也不上报任何事件。`siteTabs`、`snapshot` 这两个只读操作也只对白名单站点的 tab 开放，**不要求 tab 由 TabBot 创建**（run / 录制仍然只操作自己的窗口）。白名单在 `~/.tabbot/journal/sites.json`，holder 每次扩展 `hello` 后和 `tabbot sites add|rm` 之后下发。
+- **扩展权限变了**：`host_permissions: <all_urls>` 加 `scripting`。内容脚本不写在 manifest 里，由 `setSites` 按录制范围用 `chrome.scripting.registerContentScripts` 动态注册（`persistAcrossSessions`），所以改范围不需要重新加载扩展：`mode: "all"` 注册 `http://*/*`、`https://*/*` 并用 `excludeMatches` 排除敏感站点，`mode: "only"` 只按点名站点注册；被排除的页面、无痕窗口、`chrome://` 等既不注入脚本、也不上报任何事件。`siteTabs`、`snapshot` 这两个只读操作也只对范围内的 tab 开放，**不要求 tab 由 TabBot 创建**（run / 录制仍然只操作自己的窗口）。范围配置在 `~/.tabbot/journal/sites.json`（`mode`、`only`、`exclude`、`allow`；内置排除列表在 `src/journal/sites.ts` 的 `BUILTIN_EXCLUDE`，用户的 `allow` 可以重新打开其中某个），holder 每次扩展 `hello` 后和 `tabbot sites ...` 之后把解析好的 `{ mode, sites, exclude }` 下发。旧版只存点名站点列表的 `sites.json` 按默认的 `all` 处理。
 - **hook.js**（`src/chrome-extension/journal/`）：包住 fetch / XHR / sendBeacon / WebSocket；`foreground()`（页面可见，或离开前台不到 8 秒）为假时请求只计数，不读响应体；只对同站、非埋点、文本类的响应读体（上限 256KB，页面里只有粗判，最终判断在 holder）；输入只记长度；普通字符键不记，只记 Enter / Escape / Tab / Cmd 或 Ctrl 组合；滚动合并成一条；每分钟最多 3000 条。`__tcrSnap` 生成元素快照（默认视图内最多 60 个，密码和敏感字段的值不取）。页面脚本也能往 window 发消息，所以日志只是观察记录，不能当权限依据。
 - **日志**（`src/journal/`）：`<日期>.db` 一天一个 SQLite（WAL），表 `events`，`seq` 跨天单调递增；响应体 `bodies/<日期>/<哈希>.json|txt`（脱敏后缩进展开，方便 `rg`），快照 `snapshots/<日期>/`。同一天内按内容去重。`node:sqlite` 在 Node 24 里还是实验性的，`journal/sqlite.ts` 动态加载并过滤这一条警告（CLI 输出必须干净）。
 - **过滤**（`filter.ts`、`ingest.ts`）：`@ghostery/adblocker` 规则（沿用 `record/pipeline.ts` 的引擎）加第一方埋点启发式（只对非 GET：host 含 analytics / apm / datahub 等、路径含 collect / events / logs 等、204）标 `noise`，噪声只留索引、默认视图隐藏；非噪声的第三方请求只留索引；失败的请求只留小于 4KB 的响应体。`RecordSanitizer`（与 record 共用）负责脱敏：同一个秘密稳定别名，别名在 URL 里保持可读。同一个请求（方法 + 地址 + 响应内容哈希）5 分钟内重复出现只给上一行 `dup` 加一。人或 agent 的动作之后 2 秒内的请求，`cause` 指向这个动作。
