@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>tcr probe</title>
+<style>body{font:14px system-ui;margin:20px}button,input{font-size:16px;padding:10px;margin:6px}#s{height:120px;width:300px;overflow:auto;border:1px solid #888}#s div{height:600px}#st{position:fixed;top:8px;right:12px;padding:6px 10px;background:#eee}</style>
+<div id="st">idle</div>
+<button id="b1">button 1</button><button id="b2">button 2</button><br>
+<input id="t" placeholder="type here"><br>
+<div id="s"><div>scroll me</div></div>
+<script>
+const buf=[];let seq=0;
+const win=()=>({sx:screenX,sy:screenY,ow:outerWidth,oh:outerHeight,iw:innerWidth,ih:innerHeight,dpr:devicePixelRatio});
+function rec(e){
+  const o={n:seq++,wall:performance.timeOrigin+e.timeStamp,type:e.type,trusted:e.isTrusted,
+    target:e.target&&e.target.id||e.target&&e.target.nodeName,
+    cx:e.clientX,cy:e.clientY,scx:e.screenX,scy:e.screenY,px:e.pageX,py:e.pageY,mx:e.movementX,my:e.movementY,
+    btn:e.button,btns:e.buttons,ptype:e.pointerType,pid:e.pointerId,prim:e.isPrimary,pressure:e.pressure,w:e.width,h:e.height,
+    det:e.detail,key:e.key,code:e.code,rep:e.repeat,dy:e.deltaY,dx:e.deltaX,dmode:e.deltaMode,
+    sc:e.sourceCapabilities?{touch:e.sourceCapabilities.firesTouchEvents}:null,win:win()};
+  buf.push(o);
+}
+for(const t of ['pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','keydown','keyup','input','wheel','scroll'])
+  addEventListener(t,rec,{capture:true,passive:true});
+setInterval(()=>{if(!buf.length)return;const b=buf.splice(0);fetch('/ev',{method:'POST',body:JSON.stringify(b),keepalive:true}).catch(()=>{});},150);
+window.__setStatus=s=>{document.getElementById('st').textContent=s};
+</script>

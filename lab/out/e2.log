@@ -1,0 +1,22 @@
+armed, waiting for first human input...
+{
+ "pointerdown": {
+  "human": 43,
+  "agent": 0,
+  "humanAsAgent": 30,
+  "agentAsHuman": 0
+ },
+ "wheel": {
+  "human": 0,
+  "agent": 20,
+  "humanAsAgent": 0,
+  "agentAsHuman": 0
+ },
+ "keydown": {
+  "human": 98,
+  "agent": 34,
+  "humanAsAgent": 14,
+  "agentAsHuman": 0
+ }
+}
+agent cmds 67
