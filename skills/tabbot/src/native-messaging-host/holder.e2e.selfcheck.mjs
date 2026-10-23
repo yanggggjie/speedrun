@@ -55,7 +55,7 @@ function fakeExtension(child) {
           // 常驻录制：范围、租约、在原页面上的动作（不要求 tab 由 tabbot 创建）
           case "setSites": reply(msg.id, { mode: a.mode, sites: a.sites, exclude: a.exclude }); break;
           case "siteTabs": reply(msg.id, { tabs: [{ tabId: 77, windowId: 1, active: true, url: "https://example.com/", title: "示例", lease: held.has(77), humanIdleMs: null }] }); break;
-          case "leaseAcquire": held.add(a.tabId); child.stdin.write(frame({ type: "lease", tab: a.tabId, state: "acquired", t: Date.now() })); reply(msg.id, { granted: true }); break;
+          case "leaseAcquire": if (a.tabId === 88) { fail(msg.id, "未知操作 leaseAcquire"); break; } held.add(a.tabId); child.stdin.write(frame({ type: "lease", tab: a.tabId, state: "acquired", t: Date.now() })); reply(msg.id, { granted: true }); break;
           case "leaseRelease": held.delete(a.tabId); child.stdin.write(frame({ type: "lease", tab: a.tabId, state: "released", reason: a.reason, t: Date.now() })); reply(msg.id, { released: true }); break;
           case "act":
             if (!held.has(a.tabId)) { reply(msg.id, { ok: false, rejected: "no-lease", humanIdleMs: 99999 }); break; }
@@ -121,7 +121,8 @@ const waitFor = async (fn, ms = 8000) => { const end = Date.now() + ms; for (;;)
 const child = spawn(process.execPath, [RELAY], { env, stdio: ["pipe", "pipe", "pipe"], cwd: SRC });
 child.stderr.on("data", (d) => { if (process.env.E2E_DEBUG) process.stderr.write(d); });
 const ext = fakeExtension(child);
-child.stdin.write(frame({ type: "hello", protocolVersion: 1, chromeVersion: "Chrome/e2e", buildId: "ext-build-1" }));
+const EXT_OPS = ["setSites", "siteTabs", "snapshot", "leaseAcquire", "leaseRelease", "act", "replay"];
+child.stdin.write(frame({ type: "hello", protocolVersion: 1, chromeVersion: "Chrome/e2e", buildId: "ext-build-1", ops: EXT_OPS }));
 
 await waitFor(() => fs.existsSync(SOCK));
 await waitFor(async () => (await rpc("ping")).chrome === "Chrome/e2e");
@@ -131,6 +132,7 @@ assert.equal(ping.extension, true, "扩展链路接着时 ping.extension 为 tru
 assert.equal(ping.mode, "idle", "空闲时 ping.mode 为 idle");
 assert.equal(typeof ping.build, "string", "ping 带 daemon 的 build（开发时没有 .version，为空串）");
 assert.equal(ping.extensionBuild, "ext-build-1", "hello 里的 buildId 回传到 ping.extensionBuild");
+assert.deepEqual(ping.extensionOps, EXT_OPS, "hello 里的操作列表回传到 ping.extensionOps，doctor 靠它判断扩展是不是旧版本");
 console.log("ping ok:", ping.chrome);
 
 // 第二个 daemon：扩展通道 socket 活着，应当直接退出，不覆盖
@@ -245,6 +247,8 @@ assert.match((await rpc("journal.replay", { seq: oldRow.seq })).error, /没有�
 assert.match((await rpc("journal.replay", { seq: 999999 })).error, /找不到事件/);
 const leaseRowSeq = (await readEvents({ dir: journalDir, all: true, limit: 80 })).find((r) => r.kind === "lease").seq;
 assert.match((await rpc("journal.replay", { seq: leaseRowSeq })).error, /不是一个请求/);
+// 扩展是旧版本（不认识这个操作）：说清楚要刷新扩展，而不是只报"未知操作"
+await assert.rejects(rpc("journal.lease", { op: "acquire", tabId: 88 }), /旧版本.*leaseAcquire.*刷新 TabBot 扩展/);
 console.log("journal replay ok");
 closeRpc();
 

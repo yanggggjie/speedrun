@@ -92,6 +92,12 @@ await new Promise((r) => setTimeout(r, 10));
 assert.deepEqual(calls.find((c) => c[0] === "connectNative"), ["connectNative", "com.tabbot.connect"]);
 assert.equal(posted[0].type, "hello");
 assert.equal(posted[0].protocolVersion, 1);
+// hello 带扩展正在运行的代码支持的操作；必须和 holder 一侧期望的（browser/extension.ts 的 SITE_OPS）一致
+const { SITE_OPS, missingSiteOps } = await import(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../browser/extension.ts"));
+assert.deepEqual(posted[0].ops, [...SITE_OPS]);
+assert.deepEqual(missingSiteOps(posted[0].ops), []);
+assert.deepEqual(missingSiteOps(undefined), [...SITE_OPS], "旧版本的扩展没有操作列表，全算缺");
+assert.deepEqual(missingSiteOps(["setSites", "siteTabs", "snapshot"]), ["leaseAcquire", "leaseRelease", "act", "replay"]);
 // hello 带 buildId，算法和 store/version.ts 里的 extension 一致
 const { createHash } = await import("node:crypto");
 const expectedBuild = createHash("sha256").update(extensionFiles["background.js"]).update(extensionFiles["manifest.json"]).update(extensionFiles["hook.js"]).update(extensionFiles["relay.js"]).update(extensionFiles["replay-core.js"]).digest("hex").slice(0, 16);

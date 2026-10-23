@@ -4,6 +4,10 @@
 
 import { applySets, isSafeMethod, redactHeadersForDaemon, replayHeaders, UNREPLAYABLE_BODY } from "./journal/replay-core.js";
 
+// 这份代码支持的常驻录制操作：握手时报给 daemon。扩展的版本哈希是启动时读磁盘文件算的，磁盘更新了但扩展没刷新时哈希会骗人；
+// 操作列表是正在运行的代码自己报的，daemon 据此判断扩展是不是旧版本（browser/extension.ts 的 SITE_OPS 必须与它一致）。
+const SITE_OPS = ["setSites", "siteTabs", "snapshot", "leaseAcquire", "leaseRelease", "act", "replay"];
+
 const HOST = "com.tabbot.connect";
 const PROTOCOL_VERSION = 1;
 const RETRY_MAX_MS = 30_000;
@@ -101,6 +105,7 @@ function connect() {
       chromeVersion: navigator.userAgent,
       extensionVersion: chrome.runtime.getManifest().version,
       buildId: id,
+      ops: SITE_OPS,
     });
   });
 }

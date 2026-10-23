@@ -33,6 +33,8 @@ export type PingResult = {
   build?: string;
   /** 当前连着的扩展报告的 build；扩展没报告时为空串。 */
   extensionBuild?: string;
+  /** 扩展握手时报告的、它正在运行的代码支持的常驻录制操作；旧版本的扩展没有。 */
+  extensionOps?: string[];
 };
 type AttachResult = { ok: true; result: PingResult } | { ok: false; error: JsonRpcError };
 

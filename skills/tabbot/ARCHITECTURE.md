@@ -158,3 +158,7 @@ CLI replay ─RPC journal.replay→ holder.runReplay（挑请求、挑同源标�
 - **`req find`**：在最近 7 天存下来的响应体文件里找文字，返回是哪个请求返回的；`req show` 用 `templateFromRow` 把日志里的一行还原成请求的样子，并给出风险提示（签名类参数、非 GET）。
 - **测试**：`chrome-extension/journal/replay-core.selfcheck.mjs`（`--set`、请求头）、`journal/replay.selfcheck.ts`（别名稳定、还原请求的样子、选标签页、摘要、JSON 请求体不泄露）、`background.selfcheck.mjs`（原始内容、抹真值、重放操作、同源、租约）、`holder.e2e.selfcheck.mjs`（经 relay、holder 到假扩展，含日志里没有真值）；`scripts/dev/hook-e2e.mjs` 在真实 Chrome 里验证 `__tcrReplay`（带 cookie 和自定义请求头、不被记成页面请求）。
 
+### 7.3 扩展是不是旧版本
+
+`extension-build`（扩展启动时读磁盘文件算的哈希）在"磁盘更新了、扩展没刷新"时会骗人：它反映的是磁盘上的文件，不是正在运行的代码。所以扩展在 `hello` 里还报告它**正在运行的代码**支持的常驻录制操作（`background.js` 的 `SITE_OPS`），holder 记下来（`ping.extensionOps`）：`doctor` 的 `extension-ops` 用它判断缺哪些操作，命令遇到扩展回"未知操作"时也据此提示"扩展是旧版本，请刷新"。`browser/extension.ts` 的 `SITE_OPS` 是 holder 一侧期望的列表，`background.selfcheck.mjs` 保证两边一致；新增扩展操作时两处都要改。
+

@@ -18,6 +18,15 @@ import type { RawCdpConnection } from "./session.ts";
 
 export const PROTOCOL_VERSION = 1;
 
+/** 常驻录制需要扩展支持的操作；扩展握手时报告它实际支持的（chrome-extension/background.js 的 SITE_OPS，自检保证两边一致）。 */
+export const SITE_OPS = ["setSites", "siteTabs", "snapshot", "leaseAcquire", "leaseRelease", "act", "replay"] as const;
+
+/** 扩展报告的操作里缺了哪些；没有报告（旧版本的扩展）就是全缺。 */
+export function missingSiteOps(reported: unknown): string[] {
+  const have = new Set(Array.isArray(reported) ? reported.filter((x): x is string => typeof x === "string") : []);
+  return SITE_OPS.filter((op) => !have.has(op));
+}
+
 export type TabOps = {
   /** kind 为 "record" 时，用户在这个窗口里自己开的新 tab 也会被纳入；省略表示 run 窗口。 */
   openWindow(opts: { focused: boolean; kind?: "run" | "record" }): Promise<{ windowId: number; tabId: number }>;

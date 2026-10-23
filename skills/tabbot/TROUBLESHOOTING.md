@@ -21,6 +21,7 @@ TabBot 完全以原始源码分发：`~/.tabbot` 是 skill 目录的原样镜像
 | `need-extension`，且从没加载过扩展（v1 升级上来的也算） | 打开 `chrome://extensions`，开启「开发者模式」，「加载已解压的扩展程序」，选择 `~/.tabbot/src/chrome-extension` |
 | `need-extension`，扩展已加载 | 在 `chrome://extensions` 确认 TabBot 开着，点一下它的工具栏图标 |
 | `extension-build` 提示版本不同 | 在 `chrome://extensions` 里刷新 TabBot（扩展代码不能自动更新） |
+| `extension-ops` 提示扩展缺少某些操作，或命令报"扩展是旧版本，不认识 xxx 操作" | 扩展正在运行的是旧代码（磁盘上的文件更新了，但扩展没刷新；`extension-build` 的哈希是启动时读磁盘算的，这时会骗人）。在 `chrome://extensions` 里点 TabBot 卡片上的刷新 |
 | `extension-id` 失败 | 重跑 `setup.js` 重写 native host manifest；扩展 ID 由 `manifest.json` 里的 key 固定 |
 | `need-chrome` | 启动 Google Chrome |
 | 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |

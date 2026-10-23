@@ -11,6 +11,7 @@ import { status as journalStatus } from "../journal/query.ts";
 import { readConfig } from "../journal/sites.ts";
 import { readVersion } from "../store/version.ts";
 import { chromeRunning } from "../browser/connect.ts";
+import { missingSiteOps } from "../browser/extension.ts";
 import { EXTENSION_ID, HOLDER_ENTRY, RELAY_ENTRY, launcherPath, manifestPath, nativeHostInstalled } from "../native-messaging-host/install.ts";
 
 const DEPS_MARKER = path.join("node_modules", "tldts", "dist", "cjs", "index.js");
@@ -114,6 +115,15 @@ async function collectChecks(): Promise<Check[]> {
       optional: true,
     });
     if (ping.extension) {
+      // 版本哈希是扩展启动时读磁盘文件算的，扩展没刷新时会骗人；操作列表是正在运行的代码自己报的，以它为准
+      const missing = missingSiteOps(ping.extensionOps);
+      add({
+        name: "extension-ops",
+        ok: missing.length === 0,
+        detail: missing.length === 0 ? "扩展支持全部操作" : ping.extensionOps ? `扩展正在运行的是旧代码，缺少：${missing.join("、")}` : "扩展正在运行的是旧代码（握手里没有操作列表）",
+        fix: "在 chrome://extensions 里刷新 TabBot 扩展",
+        optional: true,
+      });
       const loaded = ping.extensionBuild ?? "";
       add({
         name: "extension-build",

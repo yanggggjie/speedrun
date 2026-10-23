@@ -9,6 +9,7 @@ import { enforceCap } from "./journal/retention.ts";
 import { extensionConfig, readConfig } from "./journal/sites.ts";
 import { dayOf, JournalStore } from "./journal/store.ts";
 import { readEventBySeq } from "./journal/query.ts";
+import { missingSiteOps } from "./browser/extension.ts";
 import { isSafeMethod, pickReplayTab, summarizeBody, templateFromRow } from "./journal/replay.ts";
 import { loadAdblockEngine } from "./record/pipeline.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
@@ -45,6 +46,8 @@ const mode = new Mode<ConnState>(liveRecordName);
 const startupBuild = readVersion()?.build ?? "";
 /** 当前连着的扩展报告的 build（扩展对自己的 background.js 与 manifest.json 取的哈希）。 */
 let extensionBuild = "";
+/** 当前连着的扩展握手时报告的操作列表；旧版本的扩展没有。 */
+let extensionOps: string[] | undefined;
 // 页面事件按 sessionId（pageId）推给当前 run 的 client；client 自己按 method 过滤。
 link.onAny((method, params, sessionId) => {
   const run = mode.runConn();
@@ -143,7 +146,7 @@ function busyError(busy: Busy): Error { return Object.assign(new Error(busy.mess
 
 function pagesOf(ctx: CdpContext): number { return ctx.pages().filter((page) => !page.isClosed()).length; }
 /** `extension`：扩展链路当前是否接着。holder 在 relay 断开后还会存活一段时间，ping 通不代表扩展在线。 */
-function pingBody() { return { pid: process.pid, chrome: chromeVersion, extension: extSocket !== null, pages: context ? pagesOf(context) : 0, record: liveRecordName(), mode: mode.kind(), build: startupBuild, extensionBuild }; }
+function pingBody() { return { pid: process.pid, chrome: chromeVersion, extension: extSocket !== null, pages: context ? pagesOf(context) : 0, record: liveRecordName(), mode: mode.kind(), build: startupBuild, extensionBuild, extensionOps }; }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
 async function tryConnectChrome(): Promise<void> { const connected = await connectChrome(); browser = connected.browser; context = connected.context; chromeVersion = await browser.version().catch(() => "Google Chrome (CDP)"); browser.on("disconnected", () => void shutdown(1)); }
 async function ensureChrome(): Promise<void> {
@@ -181,17 +184,25 @@ function pageById(id: unknown): CdpPage { if (typeof id !== "string") throw Obje
 function paramsOf(req: JsonRpcRequest): Record<string, unknown> { return req.params ?? {}; }
 /** 扩展里没有 browser 级会话：connection / browser scope 发出的命令没有 tab，会被 raw.send 拒绝。 */
 
+/** 常驻录制的 RPC：经扩展执行。 */
+async function journalDispatch(req: JsonRpcRequest, params: Record<string, unknown>): Promise<unknown> {
+  if (req.method === "journal.sync") return pushSites();
+  if (req.method === "journal.tabs") return link.siteOp("siteTabs");
+  if (req.method === "journal.lease") return link.siteOp(params.op === "release" ? "leaseRelease" : "leaseAcquire", { tabId: params.tabId, reason: params.reason });
+  if (req.method === "journal.act") return runAct(Number(params.tabId), (params.cmd ?? {}) as Record<string, unknown>);
+  if (req.method === "journal.replay") return runReplay(params);
+  return link.siteOp("snapshot", { tabId: params.tabId, full: params.full === true });
+}
+
 async function dispatch(req: JsonRpcRequest, conn: ConnState): Promise<unknown> {
   if (req.method === "ping") { if (chromeReady) await chromeReady.catch(() => {}); return pingBody(); }
   if (req.method.startsWith("journal.")) {
     if (!extSocket) throw new NeedExtensionError();
-    const params = paramsOf(req);
-    if (req.method === "journal.sync") return pushSites();
-    if (req.method === "journal.tabs") return link.siteOp("siteTabs");
-    if (req.method === "journal.lease") return link.siteOp(params.op === "release" ? "leaseRelease" : "leaseAcquire", { tabId: params.tabId, reason: params.reason });
-    if (req.method === "journal.act") return runAct(Number(params.tabId), (params.cmd ?? {}) as Record<string, unknown>);
-    if (req.method === "journal.replay") return runReplay(params);
-    return link.siteOp("snapshot", { tabId: params.tabId, full: params.full === true });
+    try { return await journalDispatch(req, paramsOf(req)); } catch (error) {
+      const m = error instanceof Error ? /^未知操作 (\w+)/.exec(error.message) : null;
+      if (m) throw new Error(`Chrome 里的 TabBot 扩展是旧版本，不认识 ${m[1]} 操作：请在 chrome://extensions 里刷新 TabBot 扩展（${missingSiteOps(extensionOps).length ? `还缺：${missingSiteOps(extensionOps).join("、")}` : "刷新后再试"}）`);
+      throw error;
+    }
   }
   await ensureChrome();
   await reconciled;
@@ -323,6 +334,7 @@ function onRelay(sock: net.Socket): void {
           link.hello(msg);
           chromeVersion = link.chromeVersion;
           extensionBuild = typeof msg.buildId === "string" ? msg.buildId : "";
+          extensionOps = Array.isArray(msg.ops) ? msg.ops.filter((x): x is string => typeof x === "string") : undefined;
           link.attach((out) => sock.write(frame(out)));
           helloDone = true;
           logger.info("extension connected");
@@ -343,6 +355,7 @@ function onRelay(sock: net.Socket): void {
     link.detach();
     logger.info("extension link closed");
     extensionBuild = "";
+    extensionOps = undefined;
     if (mode.runConn()) void runEnd().catch(warnCatch("run cleanup on relay close"));
     idleTimer = setTimeout(() => { if (!extSocket && mode.kind() === "idle") void shutdown(0); }, IDLE_EXIT_MS);
     idleTimer.unref();
