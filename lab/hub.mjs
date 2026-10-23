@@ -2,11 +2,14 @@
 import http from "node:http"; import fs from "node:fs"; import path from "node:path";
 const DIR = path.dirname(new URL(import.meta.url).pathname), OUT = path.join(DIR, "out");
 let nextId = 0; const queue = [], waiters = [], results = new Map();
+const TOKEN = (() => { try { return fs.readFileSync(path.join(OUT, "hub-token"), "utf8").trim(); } catch { return ""; } })();
+const authed = (req) => !TOKEN || req.headers["x-tcr-token"] === TOKEN;
 const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "*" };
 http.createServer((req, res) => {
   const body = () => new Promise((r) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => r(b)); });
   res.setHeader("access-control-allow-origin", "*"); res.setHeader("access-control-allow-headers", "*");
   if (req.method === "OPTIONS") { res.end(); return; }
+  if ((req.url === "/do" || req.url === "/ev") && !authed(req)) { res.statusCode = 401; return res.end("token"); }
   if (req.url === "/cmd") { // 扩展长轮询
     const deliver = (c) => res.end(JSON.stringify(c));
     if (queue.length) return deliver(queue.shift());

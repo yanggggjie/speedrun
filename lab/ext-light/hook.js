@@ -15,21 +15,35 @@
     return "[" + Object.prototype.toString.call(b) + "]";
   };
 
+  const SENSITIVE = /^(cookie|authorization|proxy-authorization|set-cookie)$/i;
+  const hdrs = (...srcs) => {
+    const o = {};
+    for (const h of srcs) {
+      if (!h) continue;
+      try {
+        const it = h instanceof Headers ? [...h.entries()] : Array.isArray(h) ? h : Object.entries(h);
+        for (const [k, v] of it) o[String(k).toLowerCase()] = SENSITIVE.test(k) ? "[redacted]" : String(v).slice(0, 500);
+      } catch {}
+    }
+    return Object.keys(o).length ? o : null;
+  };
+
   // ---- fetch ----
   const origFetch = window.fetch;
   window.fetch = function (input, init) {
     const id = ++seq, t0 = performance.now();
-    let url, method, reqBody = null;
+    let url, method, reqBody = null, reqHeaders = null;
     try {
       const r = input instanceof Request ? input : null;
       url = new URL(r ? r.url : String(input), location.href).href;
+      reqHeaders = hdrs(r?.headers, init?.headers);
       method = (init?.method || r?.method || "GET").toUpperCase();
       if (init && "body" in init) reqBody = bodyStr(init.body);
       else if (r && method !== "GET" && method !== "HEAD") reqBody = "[Request body not read]";
     } catch {}
     const p = origFetch.apply(this, arguments);
     p.then(async (res) => {
-      const rec = { k: "net", via: "fetch", id, url, finalUrl: res.url, method, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0) };
+      const rec = { k: "net", via: "fetch", id, url, finalUrl: res.url, method, reqHeaders, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0) };
       try {
         if (!res.body) { rec.size = 0; rec.body = ""; }
         else if (!TEXTY.test(rec.ct || "")) { rec.bodyKind = "skipped-nontext"; }
@@ -47,7 +61,7 @@
         }
       } catch (e) { rec.bodyErr = String(e); }
       post(rec);
-    }, (e) => post({ k: "net", via: "fetch", id, url, method, reqBody, err: String(e) }));
+    }, (e) => post({ k: "net", via: "fetch", id, url, method, reqHeaders, reqBody, err: String(e) }));
     return p;
   };
 
@@ -56,6 +70,11 @@
   XMLHttpRequest.prototype.open = function (m, u) {
     try { this.__t = { method: String(m).toUpperCase(), url: new URL(String(u), location.href).href }; } catch {}
     return xo.apply(this, arguments);
+  };
+  const xh = XMLHttpRequest.prototype.setRequestHeader;
+  XMLHttpRequest.prototype.setRequestHeader = function (k, v) {
+    if (this.__t) (this.__t.reqHeaders ||= {})[String(k).toLowerCase()] = SENSITIVE.test(k) ? "[redacted]" : String(v).slice(0, 500);
+    return xh.apply(this, arguments);
   };
   XMLHttpRequest.prototype.send = function (b) {
     const t = this.__t;
@@ -121,23 +140,31 @@
     for (const el of root.querySelectorAll(INTERACTIVE)) out.push(el);
   };
   const visible = (el) => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; const cs = getComputedStyle(el); return cs.visibility !== "hidden" && cs.display !== "none"; };
-  const snap = (why) => {
+  const MAX_ITEMS = 60;
+  const snap = (why, full) => {
     const els = []; walk(document, els, 0);
     const vis = els.filter(visible);
-    const items = vis.slice(0, 200).map((el) => {
-      const d = desc(el);
-      if ("value" in el && el.type !== "password" && el.type !== "hidden") d.value = String(el.value).slice(0, 40);
-      if (el.type === "checkbox" || el.type === "radio") d.checked = el.checked;
-      if (el.href) d.href = el.href.slice(0, 120);
-      const r = el.getBoundingClientRect(); d.box = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
-      return d;
+    const vh = innerHeight, vw = innerWidth;
+    const inView = (el) => { const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw; };
+    const pick = full ? vis.slice(0, 200) : vis.filter(inView).slice(0, MAX_ITEMS);
+    const items = pick.map((el) => {
+      const d = desc(el), o = { t: d.role || d.tag };
+      if (d.text) o.n = d.text.slice(0, 40);
+      if (d.type && d.type !== "submit" && d.type !== "button") o.k = d.type;
+      if (d.name) o.nm = d.name;
+      if ("value" in el && el.type !== "password" && el.type !== "hidden" && el.value) o.v = String(el.value).slice(0, 40);
+      if (el.type === "checkbox" || el.type === "radio") o.c = el.checked;
+      if (el.href) { try { const u = new URL(el.href); o.h = u.origin === location.origin ? u.pathname + u.search.slice(0, 40) : u.host + u.pathname.slice(0, 40); } catch {} }
+      o.s = d.sel.split(">").slice(-2).join(">");
+      if (full) { const r = el.getBoundingClientRect(); o.box = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]; }
+      return o;
     });
     const o = {
       k: "snap", why, url: location.href, title: document.title,
-      headings: [...document.querySelectorAll("h1,h2,h3")].slice(0, 15).map((h) => h.innerText.trim().slice(0, 80)),
-      interactiveTotal: els.length, interactiveVisible: vis.length, items,
+      headings: [...document.querySelectorAll("h1,h2,h3")].filter(visible).slice(0, 8).map((h) => h.innerText.trim().slice(0, 60)),
+      interactiveTotal: els.length, interactiveVisible: vis.length, inViewShown: items.length, items,
       textChars: (document.body?.innerText || "").length, mutationsSince: mut, iframes: document.querySelectorAll("iframe").length,
-      focus: desc(document.activeElement),
+      focus: desc(document.activeElement)?.sel || null,
     };
     mut = 0; o.bytes = JSON.stringify(o).length;
     return o;

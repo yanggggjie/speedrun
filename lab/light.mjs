@@ -1,6 +1,7 @@
 // 轻量层实验：Chrome for Testing + lab/ext-light（无 chrome.debugger），同时用 CDP 记录 ground truth 对比。
 // 用法：先 `node lab/hub.mjs`（后台），再 `node lab/light.mjs [fixture|sites|all]`
 import http from "node:http"; import fs from "node:fs"; import os from "node:os"; import path from "node:path"; import { spawn } from "node:child_process";
+import { build } from "./light-setup.mjs";
 const DIR = path.dirname(new URL(import.meta.url).pathname), OUT = path.join(DIR, "out"); fs.mkdirSync(OUT, { recursive: true });
 const CHROME = process.env.CHROME || `${os.homedir()}/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`;
 const DBG = 9444, sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -56,7 +57,7 @@ mk(8767); mk(8768);
 
 // ---------- Chrome + CDP ----------
 const udd = fs.mkdtempSync(path.join(os.tmpdir(), "tcr-light-"));
-const chrome = spawn(CHROME, ["--headless=new", `--user-data-dir=${udd}`, `--remote-debugging-port=${DBG}`, `--load-extension=${path.join(DIR, "ext-light")}`, "--no-first-run", "--no-default-browser-check", "--host-resolver-rules=MAP localhost 127.0.0.1", "about:blank"], { stdio: "ignore" });
+const chrome = spawn(CHROME, ["--headless=new", `--user-data-dir=${udd}`, `--remote-debugging-port=${DBG}`, `--load-extension=${build().dir}`, "--no-first-run", "--no-default-browser-check", "--host-resolver-rules=MAP localhost 127.0.0.1", "about:blank"], { stdio: "ignore" });
 process.on("exit", () => { try { chrome.kill(); } catch {} });
 let ver; for (let i = 0; i < 50 && !ver; i++) { try { ver = await (await fetch(`http://127.0.0.1:${DBG}/json/version`)).json(); } catch { await sleep(200); } }
 if (!ver) throw new Error("chrome did not start");
@@ -133,7 +134,7 @@ function analyze(name, truth, lines, ax, finalSnap) {
     const m = pool.find((n) => !n.used && n.method === r.method && (norm(n.url) === norm(r.url)) && n.top !== undefined);
     if (m) m.used = true;
     const row = { url: r.url.replace(/^https?:\/\//, "").slice(0, 70), method: r.method, type: r.type, target: r.targetType, cdpStatus: r.status, seen: !!m };
-    if (m) { row.lightStatus = m.status; row.bodyMatch = r.body == null ? (m.body == null ? "both-none" : "light-only") : m.body == null ? (m.bodyKind || m.bodyErr || "missing") : m.body === r.body ? "exact" : (m.truncated && r.body.startsWith(m.body) ? "prefix(trunc)" : "DIFF"); row.reqBody = m.reqBody ? "yes" : (r.postData ? "MISSING" : "-"); }
+    if (m) { row.lightStatus = m.status; row.bodyMatch = r.body == null ? (m.body == null ? "both-none" : "light-only") : m.body == null ? (m.bodyKind || m.bodyErr || "missing") : m.body === r.body ? "exact" : (m.truncated && r.body.startsWith(m.body) ? "prefix(trunc)" : "DIFF"); row.reqBody = m.reqBody ? "yes" : (r.postData ? "MISSING" : "-"); row.hdrs = m.reqHeaders ? Object.keys(m.reqHeaders).length : 0; }
     rows.push(row);
   }
   const extra = pool.filter((n) => !n.used).map((n) => `${n.via} ${n.method} ${n.url.slice(0, 60)}`);
@@ -143,7 +144,7 @@ function analyze(name, truth, lines, ax, finalSnap) {
     bodyMatch: rows.reduce((a, r) => (r.bodyMatch && (a[r.bodyMatch] = (a[r.bodyMatch] || 0) + 1), a), {}),
     cdpAllRequests: truth.length, webRequestSeen: wr.length, cdpTypes: count(truth, "type"), wrTypes: count(wr, "type"),
     snapshots: snaps.length, snapBytes: snaps.map((s) => s.bytes), userEvents: evs.length,
-    domTopSnapshot: lastTop && { visible: lastTop.interactiveVisible, total: lastTop.interactiveTotal, shownItems: lastTop.items.length, textChars: lastTop.textChars, bytes: lastTop.bytes }, axInteractive: ax, finalSnapVisible: finalSnap?.interactiveVisible,
+    domTopSnapshot: lastTop && { visible: lastTop.interactiveVisible, total: lastTop.interactiveTotal, shownItems: lastTop.inViewShown, textChars: lastTop.textChars, bytes: lastTop.bytes }, axInteractive: ax, finalSnapVisible: finalSnap?.interactiveVisible,
     rows,
   };
   console.log(JSON.stringify({ ...rep, rows: undefined }, null, 1)); console.table(rows);
