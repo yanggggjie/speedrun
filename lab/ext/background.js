@@ -1,13 +1,16 @@
 // 实验用，非产品代码。只和本机 127.0.0.1:8766 的 hub 通信。
-const HUB = "http://127.0.0.1:8766";
+let CFG = { hub: "http://127.0.0.1:8766", token: "" };
+try { importScripts("config.js"); CFG = self.TCR; } catch {}
+const HUB = CFG.hub;
+const H = { "x-tcr-token": CFG.token };
 const now = () => performance.timeOrigin + performance.now();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const post = (path, body) => fetch(HUB + path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
+const post = (path, body) => fetch(HUB + path, { method: "POST", headers: H, body: JSON.stringify(body) }).catch(() => {});
 let lease = false, tab = null, waiter = null;
 const cdp = (method, params = {}) => chrome.debugger.sendCommand({ tabId: tab }, method, params);
 
 const PAGE_JS = `(()=>{if(window.__tcrInstalled)return;window.__tcrInstalled=1;let lm=0;
-const send=(t,e)=>{try{__tcr(JSON.stringify({t,w:performance.timeOrigin+e.timeStamp,p:e.pressure,k:e.key}))}catch(_){}};
+const q=[];let iv=0;const flush=()=>{if(typeof __tcr!=='function')return;clearInterval(iv);iv=0;for(const m of q.splice(0))try{__tcr(m)}catch(_){}};const send=(t,e)=>{const m=JSON.stringify({t,w:performance.timeOrigin+e.timeStamp,p:e.pressure,k:e.key});if(typeof __tcr==='function'){try{__tcr(m)}catch(_){}}else{if(q.length<50)q.push(m);if(!iv)iv=setInterval(flush,20)}};
 for(const t of['pointerdown','keydown','wheel'])addEventListener(t,e=>send(t,e),{capture:true,passive:true});
 addEventListener('pointermove',e=>{if(e.timeStamp-lm>100){lm=e.timeStamp;send('pointermove',e)}},{capture:true,passive:true});
 try{const err=new Error();Object.defineProperty(err,'stack',{get(){try{__tcr(JSON.stringify({t:'antidebug-hit',w:performance.timeOrigin+performance.now()}))}catch(_){};return''}});console.debug(err)}catch(_){}})()`;
@@ -19,6 +22,12 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
   if (m.t === "pointerdown" && Math.abs(m.p - 0.123) < 1e-3) return; // agent 自己的点击
   if (lease) { lease = false; const rec = { kind: "human-revoke", type: m.t, pageAt: m.w, recvAt, latencyMs: recvAt - m.w }; post("/ev", rec); waiter?.(rec); waiter = null; }
   else post("/ev", { kind: "human", type: m.t, latencyMs: recvAt - m.w });
+});
+chrome.debugger.onEvent.addListener((src, method, params) => {
+  // E5：跨站导航后 binding 会丢（脚本还在），主框架导航后补一次 addBinding，并记录耗时
+  if (src.tabId !== tab || method !== "Page.frameNavigated" || params.frame.parentId) return;
+  const t0 = now();
+  cdp("Runtime.addBinding", { name: "__tcr" }).then(() => post("/ev", { kind: "rebind", url: params.frame.url.slice(0, 80), ms: now() - t0 }), (e) => post("/ev", { kind: "rebind-fail", err: String(e) }));
 });
 chrome.debugger.onDetach.addListener((src, reason) => { if (src.tabId === tab) { post("/ev", { kind: "detached", tabId: tab, reason }); tab = null; lease = false; } });
 
@@ -62,7 +71,7 @@ const ops = {
 async function loop() {
   for (;;) {
     try {
-      const cmd = await (await fetch(HUB + "/cmd")).json();
+      const cmd = await (await fetch(HUB + "/cmd", { headers: H })).json();
       if (!cmd) continue;
       let result; try { result = await ops[cmd.op](cmd); } catch (e) { result = { error: String(e?.message ?? e) }; }
       await post("/res", { id: cmd.id, result });

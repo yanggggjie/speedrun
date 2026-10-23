@@ -9,7 +9,7 @@ http.createServer((req, res) => {
   const body = () => new Promise((r) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => r(b)); });
   res.setHeader("access-control-allow-origin", "*"); res.setHeader("access-control-allow-headers", "*");
   if (req.method === "OPTIONS") { res.end(); return; }
-  if ((req.url === "/do" || req.url === "/ev") && !authed(req)) { res.statusCode = 401; return res.end("token"); }
+  if ((req.url === "/do" || req.url === "/ev" || req.url === "/cmd" || req.url === "/res") && !authed(req)) { res.statusCode = 401; return res.end("token"); }
   if (req.url === "/cmd") { // 扩展长轮询
     const deliver = (c) => res.end(JSON.stringify(c));
     if (queue.length) return deliver(queue.shift());

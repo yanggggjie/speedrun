@@ -107,3 +107,14 @@
 - 用户事件：Claude in Chrome 发出的点击/滚轮 `isTrusted` 是 true，和真人无法用 `isTrusted` 区分（与 E1 一致）；有 1 个事件 `isTrusted=false`，来源未查（可能是 `ref` 点击走了 DOM）。
 - 小问题：知乎首次加载没出 `load` 快照（只有点击后的快照），原因没查；多标签页（新标签页打开文章）的事件带 `tab` 字段，能区分。
 - 隐私：本轮含登录态数据（`/api/v4/me` 响应体等），测完已删除 `lab/out/ext-events.jsonl`。
+
+## E5 复测（日常 Chrome，附着我开的测试 tab，Chrome 155，一次会话）
+- **根因不是 `Page.enable`**。跨站跳转后页面里的监听脚本（`addScriptToEvaluateOnNewDocument`）**仍然会重新运行**（`__tcrInstalled===1`），丢的是 `Runtime.addBinding` 的 `__tcr`：跳转后 `typeof __tcr === "undefined"`，输入报不回扩展。
+- 手动再调一次 `Runtime.addBinding`，对已存在的页面上下文立即生效。
+- 修法（已进 `lab/ext/background.js`）：主框架 `Page.frameNavigated` 后重新 `addBinding`，耗时 19–62ms；页面脚本在 `__tcr` 未就绪时缓存事件（最多 50 条）并 20ms 轮询补发，避免空窗期丢人的输入。
+- 修复后复测：example.com → 知乎（跨站）、example.com 刷新（cmd+r）、知乎刷新，`__tcr` 全部为 `function`；刷新后点击立刻被收到（`pointerdown` 延迟 0.5ms，`pointermove` 8.4ms；Claude in Chrome 的点击没有水印，所以被当成人，符合预期）。
+- **与 Claude in Chrome 共存**：同一个 tab 上 Claude in Chrome 的调试器和本实验扩展同时附着，没有冲突、没有被挤掉。
+- 扩展重载会丢附着，需要重新 attach（产品里要处理）。
+- 知乎（已登录）在附着、跨站跳转、刷新后页面正常，没有踢出登录或报错。
+- **反调试对照没做成**：页面内的探针（`Error.stack` getter + `console.debug`）连正向对照都是 0（Runtime 开着时手动执行也不触发），说明这个探针在本版本 Chrome 里无效；另外 Claude in Chrome 自己的调试器可能已经开了 Runtime 域，两者混在一起。结论：目前**没有**证据表明知乎/IT之家检测到调试器，但也没有有效的检测手段去证明没有。
+- 横幅表现：待用户描述。
