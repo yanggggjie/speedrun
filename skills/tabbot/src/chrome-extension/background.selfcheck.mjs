@@ -97,7 +97,7 @@ const { SITE_OPS, missingSiteOps } = await import(path.resolve(path.dirname(file
 assert.deepEqual(posted[0].ops, [...SITE_OPS]);
 assert.deepEqual(missingSiteOps(posted[0].ops), []);
 assert.deepEqual(missingSiteOps(undefined), [...SITE_OPS], "旧版本的扩展没有操作列表，全算缺");
-assert.deepEqual(missingSiteOps(["setSites", "siteTabs", "snapshot"]), ["leaseAcquire", "leaseRelease", "act", "replay"]);
+assert.deepEqual(missingSiteOps(["setSites", "siteTabs", "snapshot"]), ["leaseAcquire", "leaseRelease", "act", "replay", "text"]);
 // hello 带 buildId，算法和 store/version.ts 里的 extension 一致
 const { createHash } = await import("node:crypto");
 const expectedBuild = createHash("sha256").update(extensionFiles["background.js"]).update(extensionFiles["manifest.json"]).update(extensionFiles["hook.js"]).update(extensionFiles["relay.js"]).update(extensionFiles["replay-core.js"]).digest("hex").slice(0, 16);

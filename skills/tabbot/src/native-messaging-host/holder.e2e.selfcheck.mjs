@@ -62,6 +62,7 @@ function fakeExtension(child) {
             acts.push(a.cmd);
             reply(msg.id, { ok: true, target: { tag: "input", text: "搜索" }, chars: String(a.cmd.text ?? "").length, settle: { settled: true, waitedMs: 150 } });
             break;
+          case "text": reply(msg.id, { url: "https://example.com/", title: "示例", total: 5, text: "你好，世界" }); break;
           case "replay":
             replays.push(a);
             if (a.rid === "dz:2" && !held.has(a.tabId)) { reply(msg.id, { ok: false, rejected: "no-lease", humanIdleMs: 99999 }); break; }
@@ -121,7 +122,7 @@ const waitFor = async (fn, ms = 8000) => { const end = Date.now() + ms; for (;;)
 const child = spawn(process.execPath, [RELAY], { env, stdio: ["pipe", "pipe", "pipe"], cwd: SRC });
 child.stderr.on("data", (d) => { if (process.env.E2E_DEBUG) process.stderr.write(d); });
 const ext = fakeExtension(child);
-const EXT_OPS = ["setSites", "siteTabs", "snapshot", "leaseAcquire", "leaseRelease", "act", "replay"];
+const EXT_OPS = ["setSites", "siteTabs", "snapshot", "leaseAcquire", "leaseRelease", "act", "replay", "text"];
 child.stdin.write(frame({ type: "hello", protocolVersion: 1, chromeVersion: "Chrome/e2e", buildId: "ext-build-1", ops: EXT_OPS }));
 
 await waitFor(() => fs.existsSync(SOCK));
@@ -187,6 +188,7 @@ closeRpc();
 // 在原页面上操作：journal.lease / journal.act 经 holder 到扩展；动作写进日志（来源 agent），输入的文字不进日志
 const noLease = await rpc("journal.act", { tabId: 77, cmd: { kind: "click", ref: "@e1" } });
 assert.equal(noLease.rejected, "no-lease", "没有租约，扩展拒绝动作");
+assert.equal((await rpc("journal.text", { tabId: 77 })).text, "你好，世界");
 assert.equal((await rpc("journal.lease", { op: "acquire", tabId: 77 })).granted, true);
 const acted = await rpc("journal.act", { tabId: 77, cmd: { kind: "fill", ref: "@e5", text: "你好世界" } });
 assert.equal(acted.ok, true);

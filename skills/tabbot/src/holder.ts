@@ -191,6 +191,7 @@ async function journalDispatch(req: JsonRpcRequest, params: Record<string, unkno
   if (req.method === "journal.lease") return link.siteOp(params.op === "release" ? "leaseRelease" : "leaseAcquire", { tabId: params.tabId, reason: params.reason });
   if (req.method === "journal.act") return runAct(Number(params.tabId), (params.cmd ?? {}) as Record<string, unknown>);
   if (req.method === "journal.replay") return runReplay(params);
+  if (req.method === "journal.text") return link.siteOp("text", { tabId: params.tabId, max: params.max });
   return link.siteOp("snapshot", { tabId: params.tabId, full: params.full === true });
 }
 

@@ -19,7 +19,7 @@ import type { RawCdpConnection } from "./session.ts";
 export const PROTOCOL_VERSION = 1;
 
 /** 常驻录制需要扩展支持的操作；扩展握手时报告它实际支持的（chrome-extension/background.js 的 SITE_OPS，自检保证两边一致）。 */
-export const SITE_OPS = ["setSites", "siteTabs", "snapshot", "leaseAcquire", "leaseRelease", "act", "replay"] as const;
+export const SITE_OPS = ["setSites", "siteTabs", "snapshot", "leaseAcquire", "leaseRelease", "act", "replay", "text"] as const;
 
 /** 扩展报告的操作里缺了哪些；没有报告（旧版本的扩展）就是全缺。 */
 export function missingSiteOps(reported: unknown): string[] {

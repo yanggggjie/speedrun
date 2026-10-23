@@ -47,7 +47,7 @@ function out(text: string): void { console.log(text); }
 function fail(error: string): void { console.log(formatErrorStdout(error)); process.exitCode = 1; }
 
 /** 经 holder 问扩展；握手类失败按统一格式输出。 */
-async function ask(method: "journal.sync" | "journal.tabs" | "journal.snapshot" | "journal.lease" | "journal.act" | "journal.replay", params?: Record<string, unknown>, ms = 15_000): Promise<unknown | undefined> {
+async function ask(method: "journal.sync" | "journal.tabs" | "journal.snapshot" | "journal.text" | "journal.lease" | "journal.act" | "journal.replay", params?: Record<string, unknown>, ms = 15_000): Promise<unknown | undefined> {
   try { return await ensureSessionAndRpc(method, params, ms); } catch (error) {
     const value = error as { data?: { status?: string }; message?: string };
     if (value.data?.status && isHandshakeStatus(value.data.status)) { console.log(formatHandshakeStdout(value.data.status)); process.exitCode = 1; } else fail(value.message ?? String(error));
@@ -139,6 +139,25 @@ export async function snapshotCommand(args: string[]): Promise<void> {
   }
   const res = (await ask("journal.snapshot", { tabId: tab, full: flags.bools.has("full") })) as { snap: Snapshot } | undefined;
   if (res) out(renderSnapshot(res.snap, tab as number));
+}
+
+/** 当前页面的可见文字（正文、评论），给“读内容”用；要点击或填写仍用 snapshot 取元素引用。 */
+export async function textCommand(args: string[]): Promise<void> {
+  const flags = parseFlags(args);
+  if ("error" in flags) return fail(flags.error);
+  let tab = intFlag(flags, "tab");
+  const max = intFlag(flags, "max");
+  for (const v of [tab, max]) if (isError(v)) return fail(v.error);
+  if (tab === undefined) {
+    const list = (await ask("journal.tabs")) as { tabs: { tabId: number; active: boolean }[] } | undefined;
+    if (!list) return;
+    tab = (list.tabs.find((t) => t.active) ?? list.tabs[0])?.tabId;
+    if (tab === undefined) return fail("录制范围内没有打开的标签页");
+  }
+  const res = (await ask("journal.text", { tabId: tab, max })) as { url: string; title: string; total: number; text: string } | undefined;
+  if (!res) return;
+  const cut = res.total > res.text.length;
+  out(`tab${tab} ${res.url} "${res.title}"${cut ? `\n（只给前 ${res.text.length} 字，全文 ${res.total} 字；用 --max N 取更多）` : ""}\n\n${res.text}`);
 }
 
 export async function waitCommand(args: string[]): Promise<void> {

@@ -6,7 +6,7 @@ import { applySets, isSafeMethod, redactHeadersForDaemon, replayHeaders, UNREPLA
 
 // 这份代码支持的常驻录制操作：握手时报给 daemon。扩展的版本哈希是启动时读磁盘文件算的，磁盘更新了但扩展没刷新时哈希会骗人；
 // 操作列表是正在运行的代码自己报的，daemon 据此判断扩展是不是旧版本（browser/extension.ts 的 SITE_OPS 必须与它一致）。
-const SITE_OPS = ["setSites", "siteTabs", "snapshot", "leaseAcquire", "leaseRelease", "act", "replay"];
+const SITE_OPS = ["setSites", "siteTabs", "snapshot", "leaseAcquire", "leaseRelease", "act", "replay", "text"];
 
 const HOST = "com.tabbot.connect";
 const PROTOCOL_VERSION = 1;
@@ -259,6 +259,19 @@ async function runTab(name, args) {
       });
       if (!res?.result) throw new Error("页面里没有录制脚本（刷新这个页面后再试）");
       return { snap: res.result };
+    }
+    case "text": {
+      const tab = await siteTab(args.tabId);
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (max) => {
+          const text = (document.body?.innerText ?? "").replace(/\n{3,}/g, "\n\n").trim();
+          return { url: location.href, title: document.title, total: text.length, text: text.slice(0, max) };
+        },
+        args: [Math.max(1, Math.min(args.max | 0 || 20000, 200000))],
+      });
+      if (!res?.result) throw new Error("读不到页面文字（浏览器内部页面或页面已关闭）");
+      return res.result;
     }
     default:
       throw new Error(`未知操作 ${name}`);

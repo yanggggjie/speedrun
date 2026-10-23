@@ -10,14 +10,14 @@ import * as path from "node:path";
 import { ensureSessionAndRpc, restartDaemon } from "./session.ts";
 import { handleDoctor } from "./doctor.ts";
 import { runEval } from "./compose.ts";
-import { actCommand, logCommand, releaseCommand, sitesCommand, snapshotCommand, sqlCommand, statusCommand, tabsCommand, reqCommand, replayCommand, takeoverCommand, waitCommand } from "./journal.ts";
+import { actCommand, logCommand, releaseCommand, sitesCommand, snapshotCommand, textCommand, sqlCommand, statusCommand, tabsCommand, reqCommand, replayCommand, takeoverCommand, waitCommand } from "./journal.ts";
 import { checkParams, invokeTaskFile, parseCliParams, taskFile, taskOutput, taskSummary, taskTimeoutMs } from "./tasks.ts";
 import { writeRunHistory } from "../run-history.ts";
 import { formatErrorStdout, formatHandshakeStdout, isHandshakeStatus } from "../protocol.ts";
 import { assertNode24 } from "../utils/node.ts";
 import { TASK_DIR, CLI_RPC_BUFFER_MS, RECORD_STOP_RPC_MS } from "../utils/constants.ts";
 
-const USAGE = "用法：tabbot run [task] [--参数 值 ...] | tabbot eval '<代码>' | tabbot record start|stop|abort | tabbot daemon restart | tabbot doctor [--json] | tabbot sites | tabs | log | sql | snapshot | wait | status | takeover | release | act | req | replay";
+const USAGE = "用法：tabbot run [task] [--参数 值 ...] | tabbot eval '<代码>' | tabbot record start|stop|abort | tabbot daemon restart | tabbot doctor [--json] | tabbot sites | tabs | log | sql | snapshot | text | wait | status | takeover | release | act | req | replay";
 
 function print(value: unknown): void {
   console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
@@ -113,6 +113,7 @@ async function main(argv: string[]): Promise<void> {
     case "log": return logCommand(argv.slice(1));
     case "sql": return sqlCommand(argv.slice(1));
     case "snapshot": return snapshotCommand(argv.slice(1));
+    case "text": return textCommand(argv.slice(1));
     case "wait": return waitCommand(argv.slice(1));
     case "status": return statusCommand();
     case "takeover": return takeoverCommand(argv.slice(1));
