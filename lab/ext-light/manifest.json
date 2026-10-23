@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "tcr light layer (lab, not for distribution)",
+  "version": "0.0.1",
+  "description": "Light-layer experiment: MAIN-world fetch/XHR hook + DOM snapshot + webRequest metadata, no chrome.debugger. Reports to 127.0.0.1:8769.",
+  "permissions": ["webRequest"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["hook.js"], "run_at": "document_start", "all_frames": true, "match_about_blank": true, "world": "MAIN" },
+    { "matches": ["<all_urls>"], "js": ["relay.js"], "run_at": "document_start", "all_frames": true, "match_about_blank": true }
+  ]
+}

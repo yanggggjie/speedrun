@@ -16,4 +16,4 @@ http.createServer((req, res) => {
   if (req.url === "/ev") return void body().then((b) => { fs.appendFileSync(path.join(OUT, "ext-events.jsonl"), b.split("\n").filter(Boolean).map((l) => l).join("\n") + "\n"); res.end("ok"); });
   if (req.url === "/do") return void body().then((b) => { const cmd = { ...JSON.parse(b), id: ++nextId }; const p = new Promise((r) => { results.set(cmd.id, r); setTimeout(() => r({ error: "timeout (extension not connected?)" }), 120000); }); const w = waiters.shift(); w ? w(cmd) : queue.push(cmd); p.then((r) => res.end(JSON.stringify(r))); });
   res.setHeader("content-type", "text/html"); res.end(fs.readFileSync(path.join(DIR, "probe.html")));
-}).listen(8766, "127.0.0.1", () => console.log("hub on 8766"));
+}).listen(+(process.env.HUB_PORT || 8766), "127.0.0.1", () => console.log("hub on", process.env.HUB_PORT || 8766));

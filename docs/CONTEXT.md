@@ -17,6 +17,7 @@ TwoCursor：人和 agent 共用同一个浏览器。人做到一半可交给 age
 - 录制时脱敏；agent 看脱敏版，原始值留本地、重放时本地替换。
 - 录制时长可到 24h，分层存储。
 - 仓库先私有；许可证沿用 Apache-2.0。
+- 测试用日常 Chrome：手动加载 `lab/ext-light` 记录，操作（导航、点击）统一用 Claude in Chrome 工具在专用 tab 里完成。只对用户点名的站点测，响应体只写 `lab/out/`，测完删除。
 
 ## 原型 A 到目前的结论（细节见 EXPERIMENTS.md）
 - `isTrusted` 不能区分真人与 CDP；DOM 方法触发的是 false。

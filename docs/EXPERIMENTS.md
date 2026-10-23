@@ -63,3 +63,31 @@
 3. 记录附着时横幅的表现。
 4. E2 补测：真人滚轮、更多样本、键值收窄（agent 事件键值/坐标/目标与指令预期不符 → 当人）。
 5. 已知小问题：`lab/hub.mjs` 的长轮询在扩展重载后会把第一条命令派给已死的连接，命令丢失（重发即可）。
+
+## E6 轻量层（无 `chrome.debugger`）能抓到多少
+环境：Chrome for Testing 151 headless，`lab/ext-light` 扩展，`node lab/light.mjs fixture|sites`。同一页面同时用 CDP `Network` 记 ground truth 做对比（CDP 只用于评估，扩展里没有 debugger）。扩展含：`world: "MAIN"` 的 `document_start` 脚本包住 `fetch`/XHR/`sendBeacon`/WebSocket，DOM 快照（含 open shadow root）和用户事件监听，加 `webRequest` 元数据。样本量小，未登录、headless，结论是方向性的。
+
+**请求（fetch/XHR/beacon）**
+- 本地 fixture（16 个数据请求，覆盖 `Request` 对象、POST、流式、1MB、二进制、重定向、404、shadow DOM 按钮、同源 iframe、SPA `pushState`）：抓到 15 个。响应体 11 个与 CDP 完全一致，1MB 的按 256KB 截断，二进制只记大小，POST 请求体都在。重定向记成原始 URL，附带 `finalUrl`。
+- 跨源 iframe 里的 fetch 也抓到了（`all_frames`）。
+- **漏的：Worker 里发的请求**（fixture 的 Worker fetch，npm 页 Cloudflare 的 Worker）。主页面的 content script 管不到 Worker，需要另想办法或接受这个盲区。
+- GitHub 仓库页 + 点进 issues：16/16 抓到，有响应体的 8 个与 CDP 完全一致。
+- 真实站点的另一个漏：HN 上 Cloudflare challenge iframe 里的一个 XHR 没抓到（原因没查，测试环境是 headless 被判成机器人，npm/HN/reddit 都停在 challenge 页，参考价值有限）。
+- `webRequest` 能看到全部资源类型的元数据（脚本、图片、样式、字体），但**没有响应体和请求体**，数量比 CDP 少一些（GitHub 252 vs 348）。
+
+**DOM**
+- 快照列出可见的可交互元素（tag/role/文字/选择器/坐标/输入值，密码打码），并走 open shadow root。
+- 和 CDP Accessibility 树的可交互节点数对比：Wikipedia 269=269，HN 229=229，fixture 17=17，GitHub 74 vs 70（多出的是无障碍树里被忽略的元素）。
+- 动作后（click/change/submit/SPA 跳转）和 load 后自动出快照，抓到了 SPA 跳转和 JS 延迟插入的按钮。
+- **体积偏大**：Wikipedia 首页 40KB（200 条上限已触顶），HN 43KB。交接包要的是 2–4k token，这里要裁剪（只留视口内、按相关性取前几十条、去掉坐标）。
+- 未覆盖：closed shadow root、跨源 iframe 内部的 DOM（该 frame 自己的 content script 会各自出快照，但没合并）。
+
+**用户事件**：click/input/keydown/wheel/submit 的 capture 监听能看到并记录目标元素，CDP 驱动的事件 `isTrusted` 也是 true（与 E1 一致）。
+
+**结论**
+1. 对"人在页面里做了什么、页面发了哪些接口、返回了什么"，轻量层基本够用，不弹横幅。
+2. 盲区：Worker/Service Worker 请求、部分 challenge iframe、非文本响应体、超过上限的响应体。
+3. 要重放请求需要的 header（cookie 之外的自定义头、签名）轻量层**没记**，这点上 CDP 更完整；目前 fetch 层可以记 `init.headers`，未做。
+4. 没测：页面是否能检测到被改写的 `fetch`（`toString()` 非 native）；已登录的复杂 SPA（GraphQL、WebSocket 密集）；有 CSP 的站点（manifest 注入的 MAIN-world 脚本理论上不受页面 CSP 限制，未实测）。
+
+**注意**：本机 8766 被一个无关的 python 服务占用，`lab/hub.mjs` 已支持 `HUB_PORT` 环境变量，轻量层用 8769（`HUB_PORT=8769 node lab/hub.mjs`）。
