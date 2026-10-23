@@ -50,19 +50,23 @@ function postToHost(message) {
 }
 
 /**
- * 对自己的 background.js 与 manifest.json 取哈希，随 hello 发给 daemon；
- * 算法与 setup.js 写进 .version 的 extension 一致（两个文件的字节依次拼接，SHA-256 取前 16 位十六进制）。
+ * 对自己的文件取哈希，随 hello 发给 daemon；算法与 setup.js 写进 .version 的 extension 一致
+ * （按 EXTENSION_FILES 的顺序把字节依次拼接，SHA-256 取前 16 位十六进制，列表见 src/store/version.ts）。
  * 读不到就是空串，daemon 一侧只当"版本未知"。
  */
+const EXTENSION_FILES = ["background.js", "manifest.json", "journal/hook.js", "journal/relay.js"];
 const buildId = (async () => {
   try {
     const parts = [];
-    for (const name of ["background.js", "manifest.json"]) {
+    for (const name of EXTENSION_FILES) {
       parts.push(new Uint8Array(await (await fetch(chrome.runtime.getURL(name))).arrayBuffer()));
     }
-    const all = new Uint8Array(parts[0].length + parts[1].length);
-    all.set(parts[0]);
-    all.set(parts[1], parts[0].length);
+    const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let offset = 0;
+    for (const part of parts) {
+      all.set(part, offset);
+      offset += part.length;
+    }
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", all));
     return [...digest].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
   } catch {

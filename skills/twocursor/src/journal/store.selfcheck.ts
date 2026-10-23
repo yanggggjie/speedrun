@@ -111,4 +111,17 @@ assert.ok(!fs.existsSync(path.join(dir, "bodies", oldDay)));
 assert.deepEqual(listDays(dir), [today]);
 assert.deepEqual(enforceCap({ dir, capBytes: 1e12, today }), []);
 
+// 一批事件跨午夜：按天拆进各自的库，不会写错文件
+const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "tc-journal-midnight-"));
+const store3 = new JournalStore(dir2);
+await store3.open();
+const midnight = new Date(T0); midnight.setHours(23, 59, 59, 900);
+new Ingestor(store3).handleBatch([
+  { k: "ev", t: midnight.getTime(), tab: 3, page, type: "click", trusted: true, pressure: 0.5, target: { tag: "a", text: "午夜前" } } as HookMsg,
+  { k: "ev", t: midnight.getTime() + 300, tab: 3, page, type: "click", trusted: true, pressure: 0.5, target: { tag: "a", text: "午夜后" } } as HookMsg,
+]);
+store3.close();
+assert.equal(listDays(dir2).length, 2);
+assert.deepEqual((await runSql("SELECT target FROM events ORDER BY seq", { dir: dir2 })).rows.map((r) => r[0]), ["a[午夜前]", "a[午夜后]"]);
+
 console.log("store.selfcheck ok");

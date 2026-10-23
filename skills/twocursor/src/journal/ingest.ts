@@ -56,14 +56,20 @@ export class Ingestor {
     this.engine = options.engine ?? (() => undefined);
   }
 
-  /** 一批消息放进一个事务；单条出错不影响其它。 */
+  /** 一批消息放进事务；跨午夜的批按天拆开，一天的事件一个事务（一天一个库文件）。单条出错不影响其它。 */
   handleBatch(msgs: HookMsg[]): void {
-    if (msgs.length === 0) return;
-    this.store.batch(msgs[0]!.t, () => {
-      for (const msg of msgs) {
-        try { this.handle(msg); } catch { /* 坏消息丢掉，不让它挡住整批 */ }
-      }
-    });
+    let start = 0;
+    for (let i = 1; i <= msgs.length; i++) {
+      if (i < msgs.length && dayOf(msgs[i]!.t) === dayOf(msgs[start]!.t)) continue;
+      const chunk = msgs.slice(start, i);
+      start = i;
+      if (chunk.length === 0) continue;
+      this.store.batch(chunk[0]!.t, () => {
+        for (const msg of chunk) {
+          try { this.handle(msg); } catch { /* 坏消息丢掉，不让它挡住整批 */ }
+        }
+      });
+    }
   }
 
   private handle(msg: HookMsg): void {

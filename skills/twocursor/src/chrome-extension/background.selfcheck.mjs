@@ -77,7 +77,7 @@ globalThis.chrome = {
 };
 
 // 扩展用 fetch(chrome.runtime.getURL(...)) 读自己的文件算 buildId；这里用固定内容代替
-const extensionFiles = { "background.js": Buffer.from("bg-bytes\n"), "manifest.json": Buffer.from("{}\n") };
+const extensionFiles = { "background.js": Buffer.from("bg-bytes\n"), "manifest.json": Buffer.from("{}\n"), "hook.js": Buffer.from("hook\n"), "relay.js": Buffer.from("relay\n") };
 globalThis.fetch = async (url) => {
   const name = String(url).split("/").pop();
   if (!(name in extensionFiles)) throw new Error("not found");
@@ -93,7 +93,7 @@ assert.equal(posted[0].type, "hello");
 assert.equal(posted[0].protocolVersion, 1);
 // hello 带 buildId，算法和 store/version.ts 里的 extension 一致
 const { createHash } = await import("node:crypto");
-const expectedBuild = createHash("sha256").update(extensionFiles["background.js"]).update(extensionFiles["manifest.json"]).digest("hex").slice(0, 16);
+const expectedBuild = createHash("sha256").update(extensionFiles["background.js"]).update(extensionFiles["manifest.json"]).update(extensionFiles["hook.js"]).update(extensionFiles["relay.js"]).digest("hex").slice(0, 16);
 assert.equal(posted[0].buildId, expectedBuild);
 assert.deepEqual(calls.find((c) => c[0] === "alarm"), ["alarm", "twocursor-keepalive", 0.5]);
 

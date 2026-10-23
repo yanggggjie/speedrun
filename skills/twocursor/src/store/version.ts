@@ -10,9 +10,12 @@ export const VERSION_FILE = ".version";
 export type Version = {
   /** 运行时代码内容的哈希（规则见 isRuntimePath，不含本文件）。 */
   build: string;
-  /** 扩展的 background.js 与 manifest.json 内容的哈希；扩展启动时对自己算同一个值。 */
+  /** 扩展的 background.js、manifest.json 与 journal/ 下两个页面脚本内容的哈希；扩展启动时对自己算同一个值。 */
   extension: string;
 };
+
+/** 扩展的哈希按这个顺序拼接；chrome-extension/background.js 里的 EXTENSION_FILES 必须与它一致。 */
+export const EXTENSION_FILES = ["background.js", "manifest.json", "journal/hook.js", "journal/relay.js"];
 
 const short = (hash: crypto.Hash): string => hash.digest("hex").slice(0, 16);
 
@@ -32,7 +35,7 @@ export function computeVersion(root: string): Version {
   const build = crypto.createHash("sha256");
   for (const file of files) build.update(path.relative(root, file)).update("\0").update(fs.readFileSync(file));
   const extension = crypto.createHash("sha256");
-  for (const name of ["background.js", "manifest.json"]) {
+  for (const name of EXTENSION_FILES) {
     const file = path.join(root, "chrome-extension", name);
     if (fs.existsSync(file)) extension.update(fs.readFileSync(file));
   }

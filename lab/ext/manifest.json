@@ -1,9 +1,0 @@
-{
-  "manifest_version": 3,
-  "name": "tcr lab (E4/E5, not for distribution)",
-  "version": "0.0.1",
-  "description": "Prototype A lab: attach CDP to ordinary tabs, report human input latency to a local hub on 127.0.0.1:8766.",
-  "permissions": ["debugger", "tabs", "alarms"],
-  "host_permissions": ["http://127.0.0.1:8766/*"],
-  "background": { "service_worker": "background.js" }
-}

@@ -7,6 +7,8 @@ import {
   TWOCURSOR_HOME,
 } from "../utils/constants.ts";
 import { tryPing } from "./session.ts";
+import { status as journalStatus } from "../journal/query.ts";
+import { readSites } from "../journal/sites.ts";
 import { readVersion } from "../store/version.ts";
 import { chromeRunning } from "../browser/connect.ts";
 import { EXTENSION_ID, HOLDER_ENTRY, RELAY_ENTRY, launcherPath, manifestPath, nativeHostInstalled } from "../native-messaging-host/install.ts";
@@ -83,6 +85,17 @@ async function collectChecks(): Promise<Check[]> {
     ok: responding,
     detail: !ping ? "无" : responding ? `alive pid=${ping.pid}` : `pid=${ping.pid} 在运行，扩展未连接`,
     fix: "在 Chrome 中点一下 twocursor 扩展的 service worker 或工具栏图标；仍无响应则在 chrome://extensions 刷新扩展",
+    optional: true,
+  });
+
+  // 常驻录制：有没有点名要录的站点、日志占了多少。没有站点只是提示，不影响退出码。
+  const sites = readSites();
+  const journal = await journalStatus().catch(() => null);
+  add({
+    name: "journal",
+    ok: sites.length > 0,
+    detail: sites.length ? `${sites.length} 个站点，${journal?.days.length ?? 0} 天日志，${((journal?.bytes ?? 0) / 1024 / 1024).toFixed(1)}MB` : "没有要录制的站点",
+    fix: "twocursor sites add <域名>",
     optional: true,
   });
 

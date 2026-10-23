@@ -12,6 +12,9 @@ try {
   fs.writeFileSync(path.join(root, "holder.ts"), "daemon\n");
   fs.writeFileSync(path.join(root, "chrome-extension", "background.js"), "bg\n");
   fs.writeFileSync(path.join(root, "chrome-extension", "manifest.json"), "{}\n");
+  fs.mkdirSync(path.join(root, "chrome-extension", "journal"), { recursive: true });
+  fs.writeFileSync(path.join(root, "chrome-extension", "journal", "hook.js"), "hook\n");
+  fs.writeFileSync(path.join(root, "chrome-extension", "journal", "relay.js"), "relay\n");
   assert.equal(readVersion(root), null, "没有 .version 时返回 null");
 
   const first = writeVersion(root);
@@ -36,6 +39,9 @@ try {
   const third = computeVersion(root);
   assert.notEqual(third.extension, second.extension);
   assert.equal(third.build, computeVersion(root).build);
+  // 录制脚本变了 → extension 也变（否则 doctor 发现不了页面里还跑着旧 hook）
+  fs.writeFileSync(path.join(root, "chrome-extension", "journal", "hook.js"), "hook v2\n");
+  assert.notEqual(computeVersion(root).extension, third.extension);
 
   fs.writeFileSync(path.join(root, VERSION_FILE), "not json");
   assert.equal(readVersion(root), null, "损坏的 .version 当作没有");

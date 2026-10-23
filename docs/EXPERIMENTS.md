@@ -1,6 +1,6 @@
-# 原型 A 实验记录
+# 实验记录
 
-环境：macOS，Chrome 155，独立临时 profile + `--remote-debugging-port`（CDP 与扩展 `chrome.debugger` 同一协议，输入行为一致）。代码在 `lab/`：`lab.mjs up|agent|mark`、`e2.mjs`、`e2-analyze.mjs`、`analyze.mjs`。样本量小（单人、单机、单次），结论是方向性的。
+环境：macOS、Chrome 151–155。实验代码（原 `lab/`）已随产品落地删除，需要时用 `git log --stat -- lab` 找回；结论保留在这里，已转入设计的部分见 `docs/DESIGN.md`。样本量都很小（单人、单机），结论是方向性的。
 
 ## E1 指纹对比（人 vs CDP vs DOM）
 | 来源 | isTrusted | pressure（pointerdown） | 其它字段 |
@@ -36,7 +36,7 @@
 - 真人是否被挡未测到（脚本运行时人看不到提示）；对结论无影响。
 - 替代方案待验证：页面内遮罩层、或 agent 动作期间由扩展在页面 capture 阶段 `preventDefault` 非水印事件。
 
-## 当前结论
+## E1–E3 的结论（E2 的后续已作废）
 1. 鼠标：水印可确定性区分，无需对账。
 2. 键盘/滚轮：对账法可用，但会把约 1–2% 的真人按键误判成 agent（真人按键恰好落在 agent 指令窗口内）。这个方向**不安全**：真人输入被当成 agent，就不会触发抢占。所以判定要偏向"是人"：窗口内出现与指令预期不符的事件（键值、坐标、目标元素对不上）一律当人。
 3. `setIgnoreInputEvents` 不能用于屏蔽人。
@@ -49,20 +49,13 @@
 - 观察：`pointermove` 经常是第一个触发撤销的事件。设计结论：**只有 `pointerdown`/`keydown`/`wheel` 触发撤销，`pointermove` 只当"人在场"信号**，否则鼠标悬停就会打断 agent。
 - 水印 `force: 0.123` 在扩展里同样有效（agent 自己的点击不会撤销租约）。
 
-## E5 附着到用户已有的普通标签页（进行中）
+## E5 附着到用户已有的普通标签页（首次测试，复测见文末）
 已测（Chrome 155，一个普通站点标签页，单次）：
 - 附着成功，CDP 命令正常；人的输入实时收到（2–4ms）。横幅是否出现、观感如何：**未记录**。
 - **DevTools 共存**：附着期间用户打开 DevTools，没有断开事件，CDP 照常返回。这个版本里不会被挤掉（只测一次，别的版本未知）。
 - `chrome://` 页面不能附着（"Cannot access a chrome:// URL"），属浏览器限制；受限页面都要在设计里处理。
 - **发现的问题**：用户跳转 + 刷新后，页面里的监听脚本和 `__tcr` 绑定都没了（`typeof __tcr === "undefined"`），附着本身没断。当时的写法是未先启用 `Page` 域就 `Page.addScriptToEvaluateOnNewDocument`；**推测**是这个导致没生效，尚未验证。已在 `lab/ext/background.js` 改成附着时先 `Page.enable`，并加了 `raw` 调试操作；**改后的版本还没有完成"跳转+刷新"复测**。
 - 因同一原因，早先在探针页上的反调试对照（Runtime 开/关，均 0 命中）**作废**：刷新后脚本根本没运行。
-
-## 未完成 / 下一步
-1. E5 复测：重新附着（需要前台是普通 http(s) 标签页），确认 `__tcrInstalled===1`，再让用户跳转 + 刷新，看脚本是否留住；留不住就改成 `Page.frameNavigated`/`Page.loadEventFired` 后补注入，并量化空窗期。
-2. E5 反调试对照重做：Runtime.enable 开/关各一次，确认探针确实运行过；再在用户指定的几个有风控的站点上附着观察。注意：Chrome 的反调试手法会随版本变，当前探针命中为 0 并不代表不会被检测。
-3. 记录附着时横幅的表现。
-4. E2 补测：真人滚轮、更多样本、键值收窄（agent 事件键值/坐标/目标与指令预期不符 → 当人）。
-5. 已知小问题：`lab/hub.mjs` 的长轮询在扩展重载后会把第一条命令派给已死的连接，命令丢失（重发即可）。
 
 ## E6 轻量层（无 `chrome.debugger`）能抓到多少
 环境：Chrome for Testing 151 headless，`lab/ext-light` 扩展，`node lab/light.mjs fixture|sites`。同一页面同时用 CDP `Network` 记 ground truth 做对比（CDP 只用于评估，扩展里没有 debugger）。扩展含：`world: "MAIN"` 的 `document_start` 脚本包住 `fetch`/XHR/`sendBeacon`/WebSocket，DOM 快照（含 open shadow root）和用户事件监听，加 `webRequest` 元数据。样本量小，未登录、headless，结论是方向性的。
@@ -118,3 +111,9 @@
 - 知乎（已登录）在附着、跨站跳转、刷新后页面正常，没有踢出登录或报错。
 - **反调试对照没做成**：页面内的探针（`Error.stack` getter + `console.debug`）连正向对照都是 0（Runtime 开着时手动执行也不触发），说明这个探针在本版本 Chrome 里无效；另外 Claude in Chrome 自己的调试器可能已经开了 Runtime 域，两者混在一起。结论：目前**没有**证据表明知乎/IT之家检测到调试器，但也没有有效的检测手段去证明没有。
 - 横幅：Chrome 窗口顶部一条提示，“<扩展名>”已开始调试此浏览器，右侧有按钮；点“取消”后扩展收到 `onDetach`，`reason: "canceled_by_user"`，扩展状态清空，之后需要重新 attach（产品里要有重连提示，不能静默重连）。横幅点名的是扩展名，产品扩展名要让人看了不慌。Claude in Chrome 的截图只截页面内容，截不到浏览器界面和横幅。窗口 `outerHeight` 913 vs `innerHeight` 736（含标签栏、地址栏、横幅，没有无横幅对照值）。
+
+## 已作废和已转入产品的部分
+- **E2 的时间窗口对账**（键盘、滚轮约 1–2% 误判）已被"构造法"取代：agent 用 `insertText`、`scrollBy` 等不会产生 `keydown`、`wheel` 的方式，特殊键再用一对一消耗对账。构造法依赖的两个假设（`insertText` 不触发 `keydown`，`scrollBy` 不触发 `wheel`）**没有实测**，见 `docs/DESIGN.md` 的 TODO。E2 的真人滚轮样本没有收集。
+- **反调试对照**没做成（探针在这个 Chrome 版本里无效，连正向对照都是 0）。
+- **轻量层**（E6、E6b）已落成产品里的 `src/chrome-extension/journal/`；**E5 的修法**（跨站跳转后重新 `addBinding`）属于重量层，产品里还没用到，做 agent 的输入通道时再带上。
+
