@@ -1,8 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <!-- 16 像素用：同一个造型，眼睛和嘴更大，去掉舌头 -->
-  <rect x="2" y="86" width="124" height="36" rx="18" fill="#F2709A"/>
-  <path d="M18 86A8 8 0 0 0 26 78V22A16 16 0 0 1 42 6H86A16 16 0 0 1 102 22V78A8 8 0 0 0 110 86Z" fill="#FF8FAE"/>
-  <circle cx="48" cy="32" r="9" fill="#5A1730"/>
-  <circle cx="80" cy="32" r="9" fill="#5A1730"/>
-  <path d="M30 52H98A34 34 0 0 1 30 52Z" fill="#7B1E3C"/>
+  <!-- 16 像素用：同一个造型，眼睛更大，嘴更大，去掉舌头 -->
+  <path d="M8 92V20A14 14 0 0 1 22 6H56A14 14 0 0 1 70 20A8 8 0 0 0 78 28H92A30 30 0 0 1 122 58V92A30 30 0 0 1 92 122H38A30 30 0 0 1 8 92Z" fill="#FF8FAE"/>
+  <circle cx="44" cy="50" r="10" fill="#5A1730"/>
+  <circle cx="84" cy="50" r="10" fill="#5A1730"/>
+  <path d="M24 70H104A40 40 0 0 1 24 70Z" fill="#7B1E3C"/>
 </svg>
