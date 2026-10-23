@@ -27,7 +27,9 @@
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") hiddenAt = Date.now(); });
   const foreground = () => document.visibilityState === "visible" || Date.now() - hiddenAt < GRACE_MS;
   let bg = 0;
-  setInterval(() => { if (bg) { post({ k: "bg", n: bg }); bg = 0; } }, 30000);
+  const flushBg = () => { if (bg) { post({ k: "bg", n: bg }); bg = 0; } };
+  setInterval(flushBg, 30000);
+  addEventListener("pagehide", flushBg);
 
   // ---- 同站与埋点的粗判断（只决定读不读响应体，最终判断在 daemon）----
   const SLD = /^(com|co|org|net|gov|edu|ac)$/;

@@ -20,6 +20,8 @@ ingest.handleBatch([
   // 人点击：isTrusted 为 true，之后 2 秒内的请求记为它引发的
   { k: "ev", t: T0, tab: 3, page, type: "click", trusted: true, pressure: 0.5, target: { tag: "button", text: "提交订单", sel: "#go" } } as HookMsg,
   net(T0 + 100, { url: "https://www.zhihu.com/api/order?token=abc123def456ghi789&x=1", method: "POST", body: JSON.stringify({ ok: true, access_token: "SECRETSECRET12345", items: [1, 2] }), size: 60, reqBody: "{\"a\":1}" }),
+  // 域名不是 JWT：host 参数、响应体里的主机名要保持原样；真正的 JWT（eyJ 开头）仍然脱敏
+  net(T0 + 150, { url: "https://www.zhihu.com/api/dns?host=www.zhihu.com&jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r", body: JSON.stringify({ cdn: "static.zhimg.com", t: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r" }), size: 40 }),
   // 重复请求：只计数
   net(T0 + 200, { url: "https://www.zhihu.com/api/v4/me", body: "{\"name\":\"x\"}", size: 12 }),
   net(T0 + 300, { url: "https://www.zhihu.com/api/v4/me", body: "{\"name\":\"x\"}", size: 12 }),
@@ -37,7 +39,7 @@ ingest.handleBatch([
 ]);
 
 const all = await readEvents({ dir, all: true, limit: 100 });
-assert.equal(all.length, 11); // 重复的 /me 只占一行
+assert.equal(all.length, 12); // 重复的 /me 只占一行
 const bySeq = (verb: string, src: string) => all.find((r) => r.verb === verb && r.src === src);
 const order = all.find((r) => r.url?.includes("/api/order"))!;
 assert.equal(order.cause, all[0]!.seq, "请求应记为点击引发的");
@@ -46,6 +48,10 @@ const bodyFile = path.join(bodiesDir(dayOf(order.ts), dir), order.body!);
 const stored = fs.readFileSync(bodyFile, "utf8");
 assert.ok(stored.includes("\"items\"") && !stored.includes("SECRETSECRET12345"), "响应体写盘前脱敏、缩进展开");
 assert.match(stored, /\n/, "JSON 要展开成多行，方便 rg");
+const dns = all.find((r) => r.url?.includes("/api/dns"))!;
+assert.ok(dns.url!.includes("host=www.zhihu.com") && /jwt=⟨secret_\d+:jwt⟩/.test(dns.url!), "域名保持原样，真正的 JWT 脱敏");
+const dnsBody = fs.readFileSync(path.join(bodiesDir(dayOf(dns.ts), dir), dns.body!), "utf8");
+assert.ok(dnsBody.includes("static.zhimg.com") && !dnsBody.includes("eyJhbGci"));
 const me = all.find((r) => r.url?.endsWith("/api/v4/me"))!;
 assert.equal(me.dup, 2);
 const cdn = all.find((r) => r.url?.includes("cdn.other.com"))!;
@@ -56,7 +62,7 @@ assert.equal(all.filter((r) => r.kind === "input").map((r) => r.src).join(), "hu
 assert.ok(bySeq("pushState", "page") && bySeq("load", "page"));
 
 // 默认视图不含噪声；按 src 过滤；since 游标
-assert.equal((await readEvents({ dir, limit: 100 })).length, 10);
+assert.equal((await readEvents({ dir, limit: 100 })).length, 11);
 assert.equal((await readEvents({ dir, src: "agent", limit: 100 })).length, 1);
 assert.equal((await readEvents({ dir, since: all[all.length - 1]!.seq, limit: 100 })).length, 0);
 const lines = formatRows(await readEvents({ dir, limit: 100 }));
@@ -82,7 +88,7 @@ const before = store.lastSeq();
 ingest.handleBatch([{ k: "ev", t: nextDay, tab: 3, page, type: "click", trusted: true, pressure: 0.5, target: { tag: "a", text: "明天" } } as HookMsg]);
 assert.equal(store.lastSeq(), before + 1);
 assert.equal(listDays(dir).length, 2);
-assert.equal((await runSql("SELECT COUNT(*) AS c FROM events", { dir })).rows[0]![0], 12);
+assert.equal((await runSql("SELECT COUNT(*) AS c FROM events", { dir })).rows[0]![0], 13);
 
 // 重开后 seq 接上
 store.close();

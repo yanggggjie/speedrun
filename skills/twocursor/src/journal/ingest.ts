@@ -46,7 +46,7 @@ export type IngestOptions = { engine?: () => FiltersEngine | undefined };
 
 export class Ingestor {
   private readonly store: JournalStore;
-  private readonly sanitizer = new RecordSanitizer();
+  private readonly sanitizer = new RecordSanitizer(true);
   private readonly engine: () => FiltersEngine | undefined;
   private readonly seen = new Map<string, { seq: number; day: string; ts: number }>();
   private readonly lastAction = new Map<number, { seq: number; ts: number }>();

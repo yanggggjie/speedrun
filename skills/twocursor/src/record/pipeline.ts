@@ -51,6 +51,9 @@ export function shouldSkipRecordUrl(
 const SENSITIVE_NAME =
   /password|passwd|auth|authorization|token|ticket|csrf|xsrf|jwt|session|sign|signature|secret|api[-_]?key|access[-_]?token|verify|fingerprint|(^|[_-])fp($|[_-])|bogus|nonce/i;
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+/** 严格的 JWT：头部是 base64 的 `{"`，所以总是以 eyJ 开头。常驻录制用它，不会把 www.example.com 这样的域名当成 JWT。 */
+const STRICT_JWT = /^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/;
+const STRICT_JWT_IN_TEXT = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HEX = /^[0-9a-f]+$/i;
@@ -72,6 +75,16 @@ function shape(value: string): Redaction["shape"] {
 export class RecordSanitizer {
   private readonly aliases = new Map<string, string>();
   private nextAlias = 1;
+  private readonly strictJwt: boolean;
+
+  /** strictJwt：只把 eyJ 开头的当 JWT（常驻录制）；默认沿用宽松规则，任何 a.b.c 都算（录制和 task 的既有行为）。 */
+  constructor(strictJwt = false) {
+    this.strictJwt = strictJwt;
+  }
+
+  private isJwt(value: string): boolean {
+    return (this.strictJwt ? STRICT_JWT : JWT).test(value);
+  }
 
   private redact(
     raw: string,
@@ -93,7 +106,7 @@ export class RecordSanitizer {
     const redactions: Redaction[] = [];
     const parsed = parseUrl(urlText);
     for (const [name, value] of Object.entries(parsed.query)) {
-      if (SENSITIVE_NAME.test(name) || JWT.test(value)) {
+      if (SENSITIVE_NAME.test(name) || this.isJwt(value)) {
         parsed.query[name] = this.redact(value, "query", name, redactions);
       }
     }
@@ -136,7 +149,7 @@ export class RecordSanitizer {
               redactions,
             )}${match[3]}`
           : this.redact(raw, "header", "set-cookie", redactions);
-      } else if (SENSITIVE_NAME.test(lower) || JWT.test(raw)) {
+      } else if (SENSITIVE_NAME.test(lower) || this.isJwt(raw)) {
         value[name] = this.redact(raw, "header", lower, redactions);
       } else {
         value[name] = raw;
@@ -154,7 +167,7 @@ export class RecordSanitizer {
     const walk = (value: unknown, path: string, key = "", depth = 0): unknown => {
       if (depth > 20 || value == null) return value;
       if (typeof value === "string") {
-        if (SENSITIVE_NAME.test(key) || JWT.test(value)) {
+        if (SENSITIVE_NAME.test(key) || this.isJwt(value)) {
           return this.redact(value, location, path, redactions);
         }
         if (depth === 0 && parseForm && value.includes("=")) {
@@ -165,7 +178,7 @@ export class RecordSanitizer {
             for (const [name, child] of [...params]) {
               count++;
               obj[name] =
-                SENSITIVE_NAME.test(name) || JWT.test(child)
+                SENSITIVE_NAME.test(name) || this.isJwt(child)
                   ? this.redact(child, location, `$.${name}`, redactions)
                   : child;
             }
@@ -212,7 +225,7 @@ export class RecordSanitizer {
       (_whole, key: string, separator: string, raw: string) =>
         `${key}${separator}${this.redact(raw, location, path, redactions)}`,
     );
-    const jwt = /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
+    const jwt = this.strictJwt ? STRICT_JWT_IN_TEXT : /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
     result = result.replace(jwt, (raw) =>
       this.redact(raw, location, path, redactions),
     );
