@@ -18,6 +18,6 @@ function rec(e){
 }
 for(const t of ['pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','keydown','keyup','input','wheel','scroll'])
   addEventListener(t,rec,{capture:true,passive:true});
-setInterval(()=>{if(!buf.length)return;const b=buf.splice(0);fetch('/ev',{method:'POST',body:JSON.stringify(b),keepalive:true}).catch(()=>{});},150);
+setInterval(()=>{if(!buf.length)return;const b=buf.splice(0);fetch('/page-ev',{method:'POST',body:JSON.stringify(b),keepalive:true}).catch(()=>{});},150);
 window.__setStatus=s=>{document.getElementById('st').textContent=s};
 </script>
