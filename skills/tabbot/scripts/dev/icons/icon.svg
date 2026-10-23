@@ -1,19 +1,21 @@
-<!-- TabBot 图标：整个图标面就是一个 t（手法同 yodo：圆角方块 + 三块渐变色块 + 白色粗圆头笔画，笔画同时是色块的分界线）。用 scripts/dev/make-icons.mjs 生成 PNG。 -->
+<!-- TabBot 图标：整个图标面就是一个 t（手法同 yodo）：白线（留白）组成 t，把图标切成三块渐变色，笔画一直延伸出图标边缘，没有一条直线。用 scripts/dev/make-icons.mjs 生成 PNG。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
   <defs>
-    <!-- 三块区域各一条渐变：上方粉色，左下深莓色，右侧蜜桃粉 -->
-    <linearGradient id="top" gradientUnits="userSpaceOnUse" x1="120" y1="0" x2="30" y2="60"><stop offset="0" stop-color="#FF6FA8"/><stop offset="1" stop-color="#FF8FB4"/></linearGradient>
-    <linearGradient id="left" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="70" y2="128"><stop offset="0" stop-color="#7A1E5C"/><stop offset="1" stop-color="#D32A7A"/></linearGradient>
-    <linearGradient id="right" gradientUnits="userSpaceOnUse" x1="130" y1="44" x2="60" y2="120"><stop offset="0" stop-color="#FFC7A6"/><stop offset="1" stop-color="#FF8CA8"/></linearGradient>
+    <!-- 三块区域各一条渐变：上方（横笔之上）粉色，左下深莓色，竖笔右侧蜜桃粉 -->
+    <linearGradient id="top" gradientUnits="userSpaceOnUse" x1="120" y1="0" x2="20" y2="40"><stop offset="0" stop-color="#FF8FB4"/><stop offset="1" stop-color="#FF5E9C"/></linearGradient>
+    <linearGradient id="left" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="70" y2="128"><stop offset="0" stop-color="#6E1A58"/><stop offset="1" stop-color="#D02A78"/></linearGradient>
+    <linearGradient id="right" gradientUnits="userSpaceOnUse" x1="130" y1="40" x2="60" y2="115"><stop offset="0" stop-color="#FFD2B0"/><stop offset="1" stop-color="#FF9AAE"/></linearGradient>
     <clipPath id="tile"><rect width="128" height="128" rx="30"/></clipPath>
+    <!-- 横笔以下的整片区域：用来限定右侧蜜桃色块只出现在横笔下面 -->
+    <clipPath id="belowBar"><path d="M-14 54C24 26 66 62 142 34V150H-14Z"/></clipPath>
   </defs>
   <g clip-path="url(#tile)">
-    <!-- 底色即上方区域；左下、右侧两块盖在上面，边界沿着 t 的笔画中线 -->
+    <!-- 底色即上方区域；横笔以下先整片铺深莓色，再把竖笔右侧（弯脚之上）盖成蜜桃色，边界沿着笔画中线 -->
     <rect width="128" height="128" fill="url(#top)"/>
-    <path d="M-12 46H62V84C62 100 70 108 86 108C100 108 110 118 112 150H-12Z" fill="url(#left)"/>
-    <path d="M62 46H150V150H112C110 118 100 108 86 108C70 108 62 100 62 84Z" fill="url(#right)"/>
-    <!-- 两条白线画出 t：竖笔（带向右的弯脚）和横笔 -->
-    <path d="M62 16V84C62 100 70 108 86 108" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-    <path d="M28 46H100" stroke="#fff" stroke-width="22" stroke-linecap="round" fill="none"/>
+    <path d="M-14 54C24 26 66 62 142 34V150H-14Z" fill="url(#left)"/>
+    <g clip-path="url(#belowBar)"><path d="M77 -14C64 28 56 62 63 90C70 114 110 124 150 100V-14Z" fill="url(#right)"/></g>
+    <!-- 两条白线画出 t：竖笔（S 形，从上边缘流下，弯脚向右扫出右边缘）和横笔（起伏的波浪，左右都出边缘） -->
+    <path d="M77 -14C64 28 56 62 63 90C70 114 110 124 150 100" stroke="#fff" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <path d="M-14 54C24 26 66 62 142 34" stroke="#fff" stroke-width="22" stroke-linecap="round" fill="none"/>
   </g>
 </svg>

@@ -63,7 +63,7 @@ ping
 `src/chrome-extension/` 是薄层 CDP 代理，约 220 行。协议见 `src/browser/extension.ts`。
 
 - run / 录制只操作由 holder 创建的窗口和 tab，以及两类新 tab（常驻录制的只读操作是例外，见第 7 节）：opener 属于 TabBot 的 tab；开在录制窗口里的 tab（用户在录制窗口自己按 Cmd+T 开的 tab 没有 opener）。`openWindow` 的 `kind: "record"` 标记录制窗口，run 窗口不放宽。
-- 工具栏图标：manifest 声明了 `icons` 与 `action`；点击图标会唤醒 service worker 并立即尝试连接（`need-extension` 的提示让用户点一下它）。图标是圆角方块上一个白色粗圆头的 `t`：粉色、深莓色、蜜桃粉三块撞色，色块的分界线沿着 `t` 的笔画（手法同 yodo，配色不同，避免混淆）；源文件是 `scripts/dev/icons/icon.svg`，所有尺寸共用，改动后运行 `node scripts/dev/make-icons.mjs` 重新生成 PNG（需要本机的 Chrome）。
+- 工具栏图标：manifest 声明了 `icons` 与 `action`；点击图标会唤醒 service worker 并立即尝试连接（`need-extension` 的提示让用户点一下它）。图标整个面就是一个 `t`（手法同 yodo，配色不同，避免混淆）：白色的曲线（竖笔是 S 形，弯脚向右扫出边缘；横笔是一道波浪，没有一条直线）组成 `t`，笔画延伸出图标边缘，把图标切成粉色、深莓色、蜜桃粉三块，色块边界沿着笔画。源文件是 `scripts/dev/icons/icon.svg`，所有尺寸共用，改动后运行 `node scripts/dev/make-icons.mjs` 重新生成 PNG（需要本机的 Chrome）。
 - 操作：`openWindow`、`openTab`、`closeTab`、`closeWindow`、`listOwned`、`windowOf`、`attach`、`detach`、`send`。
 - 事件：`debuggerEvent`、`debuggerDetach`、`tab.created`、`tab.updated`、`tab.removed`。
 
