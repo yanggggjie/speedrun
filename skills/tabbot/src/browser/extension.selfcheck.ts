@@ -1,91 +1,64 @@
 import assert from "node:assert/strict";
-import { ExtensionLink, frame, parseFrames, PROTOCOL_VERSION } from "./extension.ts";
+import { ABI, ExtensionLink, frame, parseFrames } from "./extension.ts";
 
 // 分帧：往返一致；半包不吐消息，拼完整后再吐
 {
   const out: Record<string, unknown>[] = [];
-  const a = frame({ id: 1, op: "tab", name: "listOwned", args: {} });
-  const b = frame({ type: "event", tabId: 7, method: "Page.loadEventFired", params: { 中文: "ok" } });
+  const a = frame({ id: 1, name: "tabs", args: {} });
+  const b = frame({ type: "page", k: "ev", 中文: "ok" });
   const all = Buffer.concat([a, b]);
   const rest = parseFrames(all.subarray(0, 5), (m) => out.push(m));
   assert.equal(out.length, 0, "半包不应吐消息");
   const rest2 = parseFrames(Buffer.concat([rest, all.subarray(5)]), (m) => out.push(m));
   assert.equal(rest2.length, 0);
   assert.equal(out.length, 2);
-  assert.equal(out[1]?.method, "Page.loadEventFired");
-  assert.deepEqual((out[1]?.params as { 中文: string }).中文, "ok");
+  assert.equal(out[1]?.中文, "ok");
 }
 
-// 链路：写出的请求带 id；应答按 id 匹配；事件带 tabId 作为 sessionId
+// 链路：写出的请求带 id；应答按 id 匹配；推送按 type 交给订阅者
 {
   const written: Record<string, unknown>[] = [];
   const link = new ExtensionLink();
-  link.write = (m) => written.push(m);
-  link.hello({ type: "hello", protocolVersion: PROTOCOL_VERSION, chromeVersion: "Chrome/x" });
-  assert.equal(link.raw.chromeVersion, "Chrome/x");
+  link.attach((m) => written.push(m));
+  link.hello({ type: "hello", abi: ABI, chromeVersion: "Chrome/x", userScripts: true });
+  assert.equal(link.chromeVersion, "Chrome/x");
+  assert.equal(link.compatible(), true);
+  assert.equal(link.userScripts, true);
 
-  const seen: { params: unknown; sessionId?: string }[] = [];
-  link.raw.on("Page.frameNavigated", (params, sessionId) => seen.push({ params, sessionId }));
-  link.receive({ type: "event", tabId: 7, method: "Page.frameNavigated", params: { frame: { url: "https://a" } } });
-  assert.equal(seen[0]?.sessionId, "7");
+  const pages: unknown[] = [];
+  link.on("page", (m) => pages.push(m));
+  link.receive({ type: "page", k: "ev", tab: 7 });
+  assert.equal((pages[0] as { tab: number }).tab, 7);
 
-  const removed: unknown[] = [];
-  link.raw.on("tab.removed", (params) => removed.push(params));
-  link.receive({ type: "tab", kind: "removed", tabId: 7, windowId: 1 });
-  assert.equal((removed[0] as { tabId: number }).tabId, 7);
-
-  const listed = link.ops.listOwned();
+  const listed = link.request("tabs");
   const req = written[written.length - 1]!;
-  assert.equal(req.op, "tab");
-  assert.equal(req.name, "listOwned");
-  link.receive({ id: req.id, result: { tabs: [{ tabId: 7, windowId: 1, url: "https://a" }] } });
-  assert.equal((await listed).tabs[0]?.tabId, 7);
+  assert.equal(req.name, "tabs");
+  link.receive({ id: req.id, result: { tabs: [{ tabId: 7 }] } });
+  assert.equal(((await listed) as { tabs: { tabId: number }[] }).tabs[0]?.tabId, 7);
 
-  const sent = link.raw.send("Runtime.evaluate", { expression: "1" }, "7");
-  const cdp = written[written.length - 1]!;
-  assert.equal(cdp.op, "cdp");
-  assert.equal(cdp.tabId, 7);
-  assert.equal(cdp.method, "Runtime.evaluate");
-  link.receive({ id: cdp.id, error: { message: "boom" } });
-  await assert.rejects(sent, /boom/);
-
-  // browser 级命令（无 sessionId）不发出去
-  await assert.rejects(link.raw.send("Target.getTargets"), /browser 级 CDP 不可用/);
-
-  const keepAlive = setInterval(() => {}, 10); // 命令超时的定时器是 unref 的，等待期间要有别的句柄撑着进程
-  // 页面脚本命令超时：补发一次 Runtime.terminateExecution（同一个 tab）；其它方法超时不补发；终止命令自己超时不再补发
-  const before = written.length;
-  await assert.rejects(link.raw.send("Runtime.evaluate", { expression: "while(true){}" }, "9", 20), /扩展命令超时/);
-  const terminate = written.slice(before).find((m) => m.method === "Runtime.terminateExecution");
-  assert.equal(terminate?.tabId, 9, "脚本命令超时后应对同一个 tab 补发终止");
-  await assert.rejects(link.raw.send("Runtime.callFunctionOn", { functionDeclaration: "function(){}" }, "9", 20), /扩展命令超时/);
-  const mark = written.length;
-  await assert.rejects(link.raw.send("Page.navigate", { url: "https://a" }, "9", 20), /扩展命令超时/);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.ok(!written.slice(mark).some((m) => m.method === "Runtime.terminateExecution"), "非脚本命令超时不补发");
-  const terminated = written.filter((m) => m.method === "Runtime.terminateExecution").length;
-  assert.equal(terminated, 2, "每次脚本命令超时只补发一次，终止命令自己超时不再触发补发");
-  clearInterval(keepAlive);
-  assert.equal(written.filter((m) => m.method === "Target.getTargets").length, 0);
+  const failed = link.request("exec", { tabId: 7 });
+  link.receive({ id: written[written.length - 1]!.id, error: { message: "boom" } });
+  await assert.rejects(failed, /boom/);
 }
 
-// 版本不一致直接报错
+// ABI 不符（旧版扩展）：握手不抛错，但 compatible 为假，holder 据此提示刷新扩展
 {
   const link = new ExtensionLink();
-  assert.throws(() => link.hello({ type: "hello", protocolVersion: PROTOCOL_VERSION + 1 }), /协议版本/);
+  link.hello({ type: "hello", protocolVersion: 1 });
+  assert.equal(link.compatible(), false);
+  assert.equal(link.userScripts, false);
+  link.hello({ type: "hello", abi: ABI + 1 });
+  assert.equal(link.compatible(), false);
 }
 
-// 连接关闭：未完成的请求被拒绝，close 处理函数被调用
+// 断开：未完成的请求被拒绝；断开后再发直接失败
 {
   const link = new ExtensionLink();
-  link.write = () => {};
-  let closed = 0;
-  link.onClose(() => closed++);
-  const pending = link.ops.closeTab(1);
-  link.close();
-  await assert.rejects(pending, /扩展通道已关闭/);
-  assert.equal(closed, 1);
-  assert.equal(link.raw.isClosed(), true);
+  link.attach(() => {});
+  const pending = link.request("tabs");
+  link.detach();
+  await assert.rejects(pending, /扩展已断开/);
+  await assert.rejects(link.request("tabs"), /扩展未连接/);
 }
 
 console.log("browser extension selfcheck ok");

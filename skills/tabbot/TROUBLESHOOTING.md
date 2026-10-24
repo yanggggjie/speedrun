@@ -10,51 +10,46 @@ TabBot 完全以原始源码分发：`~/.tabbot` 是 skill 目录的原样镜像
 |---|---|
 | Node 版本低于 24 | 用 fnm、nvm、Homebrew 或官方安装升级后重跑 `setup.js` |
 | `npm install` 失败 | 看 npm 的报错（网络、权限、registry）；解决后重跑 `setup.js`，它可重复执行 |
-| `doctor` 的 `home`、`src`、`deps`、`native-host`、`launcher` 失败 | 重跑 `node <skill 安装目录>/setup.js`（`npx skills ls -g` 找安装目录） |
-| `npx skills add` 失败 | clone 仓库，在仓库根目录运行 `npm run dev:install`（按 git 认的文件导出再安装，内容与在线安装相同） |
+| `doctor` 的 `home`、`src`、`deps`、`session`、`native-host`、`launcher` 失败 | 重跑 `node <skill 安装目录>/setup.js`（`npx skills ls -g` 找安装目录） |
+| `npx skills add` 失败 | clone 仓库，直接运行 `node <仓库>/skills/tabbot/setup.js`（本地安装，不经过 `skills add`） |
 | 找不到 `tabbot` 命令 | 命令是 `~/.tabbot/bin/tabbot`，用绝对路径，或把 `~/.tabbot/bin` 加入 PATH |
 
 ## 2. 扩展与连接
 
 | 现象 | 处理 |
 |---|---|
-| `need-extension`，且从没加载过扩展（v1 升级上来的也算） | 打开 `chrome://extensions`，开启「开发者模式」，「加载已解压的扩展程序」，选择 `~/.tabbot/src/chrome-extension` |
+| `need-extension`，且从没加载过扩展 | 打开 `chrome://extensions`，开启「开发者模式」，「加载已解压的扩展程序」，选择 `~/.tabbot/src/chrome-extension` |
 | `need-extension`，扩展已加载 | 在 `chrome://extensions` 确认 TabBot 开着，点一下它的工具栏图标 |
-| `extension-build` 提示版本不同 | 在 `chrome://extensions` 里刷新 TabBot（扩展代码不能自动更新） |
-| `extension-ops` 提示扩展缺少某些操作，或命令报"扩展是旧版本，不认识 xxx 操作" | 扩展正在运行的是旧代码（磁盘上的文件更新了，但扩展没刷新；`extension-build` 的哈希是启动时读磁盘算的，这时会骗人）。在 `chrome://extensions` 里点 TabBot 卡片上的刷新 |
+| `extension-abi` 提示 ABI 不对，或命令报"扩展是旧版本" | 扩展代码太旧（ABI 变了才会出现），在 `chrome://extensions` 里点 TabBot 卡片上的刷新 |
+| `user-scripts` 失败，或命令报"允许用户脚本" | 页面脚本由 holder 经 `chrome.userScripts` 下发，开关没打开时录制和 `act` 都不工作。在 `chrome://extensions` 打开 TabBot 的详情页，打开『允许用户脚本』，再点一下扩展图标 |
 | `extension-id` 失败 | 重跑 `setup.js` 重写 native host manifest；扩展 ID 由 `manifest.json` 里的 key 固定 |
 | `need-chrome` | 启动 Google Chrome |
 | 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |
 
-## 3. 升级与迁移
+## 3. 升级
 
 | 现象 | 处理 |
 |---|---|
-| `tabbot daemon restart` 提示正忙 | 有 run 或录制在进行，结束后再运行 |
 | 升级后旧 daemon 还在跑 | `setup.js` 会提示；运行 `tabbot daemon restart` |
-| 从 v1 升级：`tabbot run` 报「位置参数」或「没有这些参数」 | v2 参数一律具名。在 task 文件头加 `@param 名字 说明`（可选参数写 `名字?`），代码里把 `process.argv` 换成 `tabbot.params.名字`（值都是字符串）。调用时写 `--名字 值`。详见 `SKILL.md` |
-| 升级后留下的 `~/.tabbot/temp`、`~/.tabbot/backup` | 处理方式见 `install.md`「清理 v1 遗留」，里面可能有用户想保留的内容，不要直接删 |
-| task 文件在哪 | `~/.tabbot/task/<name>.js`，直接改它；升级不会碰 `task/`，但会重写 `task/lib/` |
 
 ## 4. 运行
 
 | 现象 | 处理 |
 |---|---|
-| 登录失效（401/403、跳到登录页、超时前停在登录页） | 请用户在 Chrome 里重新登录该网站后重试一次；不要改 task |
-| 提示 busy / 正忙 | 同时只能一个 run；run 与录制互斥。等待或结束录制 |
-| task 超时 | 单步骤 60 秒、整个 task 默认 115 秒，可在 task 头部写 `@timeout <秒>`；先确认不是登录失效 |
-| 残留 `tabbot run` / `tabbot record` 窗口 | 刷新扩展或重启 daemon 时会按标题对账清理；只关标题确认的窗口 |
-| 运行历史、录制在哪 | `~/.tabbot/run/<task>/`、`~/.tabbot/record/` |
+| `act` 或 `replay` 被拒（`no-lease`） | 没有租约或人刚动过。先 `tabbot takeover`；被拒说明人 1.5 秒内有输入，按 `SKILL.md` 先读日志，不要抢回 |
+| `snapshot`、`act` 报"页面里没有 TabBot 的脚本" | 页面脚本没装上（开关没打开、页面是 `chrome://` 之类的），或页面是在脚本下发之前打开的：刷新这个页面后再试 |
+| 日志里没有某个站点的事件 | 后台标签页只记导航和请求数，不记响应体；先看 `tabbot doctor` 里的 `user-scripts` |
+| `replay` 报"原始内容已经不在 holder 的内存里" | holder 重启过或太旧被清掉；在页面上再触发一次这个操作，然后重试 |
+| `replay --set` 报"别名已失效" | 别名对照表只在 holder 内存里，holder 重启后就没了；重新取这个请求的最新日志行 |
 
 ## 5. 取日志与现场
 
 - 运行时日志：`~/.tabbot/session/log.jsonl`
-- daemon 状态：`tabbot doctor --json`，其中 `holder` 项会 ping daemon（含 `build`、`mode`、`extensionBuild`）
-- 进入运行中的 daemon：`kill -USR1 <holder pid>` 用 Node inspector 连入
+- daemon 状态：`tabbot doctor --json`，其中 `holder` 项会 ping daemon（含 `build`、`abi`、`userScripts`）
+- 进入运行中的 daemon：`kill -USR1 <holder pid>` 用 Node inspector 连入（注意：能看到内存里的 token 真值）
 - 仍无法解决：把 `doctor --json` 的输出和日志末尾给用户，说明需要用户做的一件事
 
 ## 6. 开发脚本
 
-- `~/.tabbot/scripts/dev/` 随源码分发：`record.mjs` 起夹具、录制、模拟演示；`replay.mjs` 用 dev 模式保存的原始事件离线重放流水线（不需要 Chrome）。用法见 `AGENTS.md` 2.3。需要先 `touch ~/.tabbot/session/dev` 开启 dev，用完 `rm ~/.tabbot/session/dev`。
-- dev 模式保存的原始事件是脱敏**之前**的数据，可能含密码和 token，只写在 `~/.tabbot/dev/`。用完 `rm -rf ~/.tabbot/dev`，不要发给别人，也不要放进 `~/.tabbot/record`。
-- 仓库根目录的 `tools/`（`verify-pack`、`dev-install`）和 `README.md`、`CHANGELOG.md`、`PRIVACY.md` 不分发；需要它们请 clone 仓库。
+- `~/.tabbot/scripts/dev/hook-e2e.mjs` 在无头 Chrome 里验证页面脚本（`src/page/`），用法见 `AGENTS.md` 2.3。
+- 仓库根目录的 `tools/`（`verify-pack`、`export-payload`）和 `README.md`、`CHANGELOG.md`、`PRIVACY.md` 不分发；需要它们请 clone 仓库。

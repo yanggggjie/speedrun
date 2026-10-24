@@ -19,16 +19,6 @@ export function parseUrl(raw: string): TabBotUrl {
   }
 }
 
-/** Build full URL string; query values encoded via URLSearchParams. */
-export function serializeUrl(u: TabBotUrl): string {
-  const keys = Object.keys(u.query);
-  if (keys.length === 0) return u.bareUrl;
-  const sp = new URLSearchParams();
-  for (const [key, value] of Object.entries(u.query)) sp.set(key, value);
-  return `${u.bareUrl}?${sp.toString()}`;
-}
-
-
 /** Registrable domain (eTLD+1); falls back to hostname. */
 export function registrableDomain(u: TabBotUrl): string {
   try {

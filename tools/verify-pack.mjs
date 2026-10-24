@@ -51,17 +51,18 @@ try {
     "SKILL.md",
     "LICENSE",
     "setup.js",
-    "src/sdk.ts",
     "src/holder.ts",
     "src/cli/tabbot.ts",
     "src/cli/shim.ts",
     "src/store/deploy.ts",
-    "src/templates/task-lib/index.js",
-    "src/templates/task-lib/url.js",
+    "src/journal/ingest.ts",
+    "src/chrome-extension/background.js",
+    "src/page/recorder.js",
+    "src/page/executor.js",
     "AGENTS.md",
     "ARCHITECTURE.md",
     "TROUBLESHOOTING.md",
-    "scripts/dev/replay.mjs",
+    "scripts/dev/hook-e2e.mjs",
     "src/package.json",
     "src/package-lock.json",
   ]) {
@@ -69,9 +70,9 @@ try {
   }
 
   // 本机数据：镜像不能碰
-  const keep = path.join(HOME, ".tabbot", "task", "keep.js");
+  const keep = path.join(HOME, ".tabbot", "journal", "keep.txt");
   fs.mkdirSync(path.dirname(keep), { recursive: true });
-  fs.writeFileSync(keep, "// 用户 task\n");
+  fs.writeFileSync(keep, "用户的日志\n");
 
   const setup = spawnSync(process.execPath, [path.join(skillDir, "setup.js")], {
     env,
@@ -79,8 +80,8 @@ try {
   });
   assert.equal(setup.status, 0, `setup 失败：${setup.stderr || setup.stdout}`);
   const dest = path.join(HOME, ".tabbot", "src");
-  assert.ok(fs.existsSync(path.join(dest, "sdk.ts")), "~/.tabbot/src 未建好");
-  assert.equal(fs.readFileSync(keep, "utf8"), "// 用户 task\n", "setup 不应动 ~/.tabbot/task");
+  assert.ok(fs.existsSync(path.join(dest, "holder.ts")), "~/.tabbot/src 未建好");
+  assert.equal(fs.readFileSync(keep, "utf8"), "用户的日志\n", "setup 不应动 ~/.tabbot/journal");
   // ~/.tabbot 是 skill 目录的镜像：除 node_modules 和 .version（本机生成）外，每个文件内容都相同；自检、夹具、scripts、文档都在
   const listFiles = (dir, rel = "") => fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).flatMap((e) => {
     const r = path.join(rel, e.name);
@@ -92,11 +93,9 @@ try {
     assert.ok(fs.existsSync(mirrored), `~/.tabbot 缺 ${rel}`);
     assert.ok(fs.readFileSync(mirrored).equals(fs.readFileSync(path.join(skillDir, rel))), `~/.tabbot/${rel} 与 skill 目录不同`);
   }
-  assert.ok(fs.existsSync(path.join(dest, "record", "dom.selfcheck.ts")), "自检应随源码分发");
-  assert.ok(fs.existsSync(path.join(dest, "dev", "rpc.ts")), "镜像缺 dev/rpc.ts");
+  assert.ok(fs.existsSync(path.join(dest, "journal", "store.selfcheck.ts")), "自检应随源码分发");
   const version = JSON.parse(fs.readFileSync(path.join(dest, ".version"), "utf8"));
   assert.match(version.build, /^[0-9a-f]{16}$/, ".version 缺 build");
-  assert.match(version.extension, /^[0-9a-f]{16}$/, ".version 缺 extension");
   assert.ok(
     fs.existsSync(path.join(dest, "node_modules", "tldts", "dist", "cjs", "index.js")),
     "setup 后缺 tldts",

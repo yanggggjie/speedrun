@@ -7,7 +7,6 @@
   "scripts": {
     "check": "npm --prefix skills/tabbot/src run check",
     "test": "npm --prefix skills/tabbot/src run test",
-    "dev:install": "node tools/dev-install.mjs",
     "verify:pack": "node tools/verify-pack.mjs"
   },
   "engines": {

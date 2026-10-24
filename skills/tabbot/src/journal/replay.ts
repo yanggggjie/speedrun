@@ -1,4 +1,5 @@
-import { BROWSER_HEADERS, isSafeMethod, UNREPLAYABLE_BODY } from "../chrome-extension/journal/replay-core.js";
+import { isSameSite, parseUrl } from "../utils/url.ts";
+import { BROWSER_HEADERS, isSafeMethod, UNREPLAYABLE_BODY } from "./replay-core.ts";
 import type { EventRow } from "./types.ts";
 
 export { isSafeMethod };
@@ -32,10 +33,13 @@ export function sameOrigin(a: string, b: string): boolean {
   try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
 }
 
-/** 在候选标签页里挑一个和请求同源的，前台的优先。 */
-export function pickReplayTab(tabs: { tabId: number; active: boolean; url: string }[], url: string): number | undefined {
-  const same = tabs.filter((t) => sameOrigin(t.url, url));
-  return (same.find((t) => t.active) ?? same[0])?.tabId;
+/**
+ * 在候选标签页里挑一个能重放的：请求与标签页同站，且标签页的 origin 等于这个请求原来发出时的页面 origin
+ * （`www.xxx.com` 的页面调用 `api.xxx.com` 的请求，换个同样 origin 的标签页发，CORS 和登录态都和原来一样）。前台的优先。
+ */
+export function pickReplayTab(tabs: { tabId: number; active: boolean; url: string }[], requestUrl: string, originalPage: string): number | undefined {
+  const ok = tabs.filter((t) => sameOrigin(t.url, originalPage) && isSameSite(parseUrl(requestUrl), parseUrl(t.url)));
+  return (ok.find((t) => t.active) ?? ok[0])?.tabId;
 }
 
 /** 响应的一行摘要：JSON 给顶层结构，其它给长度。 */

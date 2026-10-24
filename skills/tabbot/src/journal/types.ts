@@ -1,6 +1,10 @@
-/** 事件来源：human 是真人输入，agent 是 TabBot 自己发的动作，page 是页面自己做的（请求、脚本触发的事件）。 */
+/**
+ * 事件来源：human 是真人输入（isTrusted 为真），page 是页面里的脚本触发的（isTrusted 为假，包括 agent 的 DOM 事件，观察端分不出也不去分）和所有请求、导航，
+ * agent 只用于命令记录（TabBot 自己发出的动作和重放）和租约。
+ */
 export type Src = "human" | "agent" | "page";
-export type Kind = "input" | "nav" | "net" | "snap" | "ws" | "tab" | "bg" | "lease";
+/** input 是页面里的输入事件，cmd 是 agent 的命令记录，doc 是主文档渲染后的 HTML，snap 是页面快照。 */
+export type Kind = "input" | "cmd" | "nav" | "net" | "doc" | "snap" | "tab" | "bg" | "lease";
 
 /** 写进 events 表的一行（不含 seq）。 */
 export type NewEvent = {
@@ -18,11 +22,11 @@ export type NewEvent = {
   method?: string;
   status?: number;
   size?: number;
-  /** 响应体文件（相对 journal/bodies/<day>/ 的名字）；snap 是快照文件。 */
+  /** 响应体或文档文件的引用 `<分段序号>/<文件名>`（bodies/ 下）；snap 是快照文件（snapshots/ 下）。 */
   body?: string;
   /** 1 = 埋点、广告等噪声，默认视图隐藏。 */
   noise?: number;
-  /** 这个动作引发了哪个请求：指向最近一次人或 agent 动作的 seq。 */
+  /** 这个请求是被哪个动作引发的：指向 2 秒内最近一次人的事件或 agent 命令的 seq。 */
   cause?: number;
   /** 其它字段（JSON 文本）：请求头、请求体、脱敏记录等。 */
   detail?: string;

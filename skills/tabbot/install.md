@@ -19,9 +19,9 @@
 
 ## 2. 同步 skill
 
-- 本地开发安装，在仓库根目录运行 `npm run dev:install`。
-- 在线安装运行 `npx skills add yanggggjie/TabBot -g -y -a '*' -s tabbot`。
-- 运行 `npx skills ls -g`，找到 TabBot 的安装目录，下面的步骤都从这个目录运行。
+- 本地安装：不需要同步，安装目录就是仓库里的 `skills/tabbot`，直接进入第 3 步。
+- 在线安装运行 `npx skills add yanggggjie/TabBot -g -y -a '*' -s tabbot`，再运行 `npx skills ls -g`，找到 TabBot 的安装目录。
+- 下面的步骤都从安装目录运行。
 
 ## 3. 运行引导脚本
 
@@ -29,7 +29,7 @@
 node <安装目录>/setup.js
 ```
 
-脚本依次完成：把 skill 目录原样镜像到 `~/.tabbot`（含 `src`、`scripts`、文档），在 `~/.tabbot/src` 安装依赖，注册 native messaging host，生成 `~/.tabbot/bin/tabbot` 与 `tabbot.cmd`，创建 `~/.tabbot/task` 与 `~/.tabbot/record`，最后运行 `doctor`。
+脚本依次完成：把 skill 目录原样镜像到 `~/.tabbot`（含 `src`、`scripts`、文档），在 `~/.tabbot/src` 安装依赖，注册 native messaging host，生成 `~/.tabbot/bin/tabbot` 与 `tabbot.cmd`，创建 `~/.tabbot/session`，最后运行 `doctor`。
 
 ## 4. 加载或刷新 Chrome 扩展（需要用户操作）
 
@@ -37,35 +37,39 @@ node <安装目录>/setup.js
 
 先自己确认 `setup.js` 输出的扩展目录里有 `manifest.json`，不要把文件清单念给用户。
 
-**扩展没连上（默认）**：在 `setup.js` 之后运行 `~/.tabbot/bin/tabbot doctor`，只要扩展没连上，就按这一套来。包括从 v1 升级的用户：v1 没有扩展，等于第一次安装。不要凭「已有 `~/.tabbot`」判断扩展装过。用 `node -p process.platform` 判断系统，把 `<扩展目录>` 换成 `setup.js` 输出的绝对路径，只对用户说对应系统的那一套：
+**扩展没连上（默认）**：在 `setup.js` 之后运行 `~/.tabbot/bin/tabbot doctor`，只要扩展没连上，就按这一套来。不要凭「已有 `~/.tabbot`」判断扩展装过。用 `node -p process.platform` 判断系统，把 `<扩展目录>` 换成 `setup.js` 输出的绝对路径，只对用户说对应系统的那一套：
 
 macOS（`darwin`）：
 
 > 请在 Chrome 里加载 TabBot 扩展：
 > 1. 打开 `chrome://extensions`，打开右上角「开发者模式」
 > 2. 点「加载已解压的扩展程序」，按 `Cmd+Shift+G`，粘贴 `<扩展目录>`，选择它
-> 3. 完成后告诉我「好了」
+> 3. 点 TabBot 卡片上的「详细信息」，打开「允许用户脚本」
+> 4. 完成后告诉我「好了」
 
 Windows（`win32`）：
 
 > 请在 Chrome 里加载 TabBot 扩展：
 > 1. 打开 `chrome://extensions`，打开右上角「开发者模式」
 > 2. 点「加载已解压的扩展程序」，在窗口顶部的地址栏粘贴 `<扩展目录>`，回车，再点「选择文件夹」
-> 3. 完成后告诉我「好了」
+> 3. 点 TabBot 卡片上的「详细信息」，打开「允许用户脚本」
+> 4. 完成后告诉我「好了」
 
 Linux（`linux`）：
 
 > 请在 Chrome 里加载 TabBot 扩展：
 > 1. 打开 `chrome://extensions`，打开右上角「开发者模式」
 > 2. 点「加载已解压的扩展程序」，按 `Ctrl+L`，粘贴 `<扩展目录>`，回车，再点「选择」
-> 3. 完成后告诉我「好了」
+> 3. 点 TabBot 卡片上的「详细信息」，打开「允许用户脚本」
+> 4. 完成后告诉我「好了」
 
-**扩展已连上、仅版本不同（`extension-build` 提示）**：只说「请在 `chrome://extensions` 里点 TabBot 扩展卡片上的刷新，完成后告诉我『好了』」。
+**扩展已连上、但 ABI 不同（`extension-abi` 提示）**：只说「请在 `chrome://extensions` 里点 TabBot 扩展卡片上的刷新，完成后告诉我『好了』」。
 
 以下是给 agent 的背景，不要讲给用户：
 
-- daemon 一般不用手动重启：`setup.js` 发现运行中的 daemon 是旧代码时，会让它退出，并在扩展重连时换成新的。装的时候 daemon 正忙（run、录制），`setup.js` 换不掉，会打印醒目的提示；等 run 或录制结束后运行 `tabbot daemon restart`，不会有任何命令自动帮你换。
-- 扩展本身不能自动更新，扩展代码有改动时 `doctor` 的 `extension-build` 会提示刷新。刷新扩展会断开旧的 relay，Chrome 随后用新的 manifest 重新拉起 relay；扩展代码或 relay 代码有改动时，必须做刷新才会生效。
+- 「允许用户脚本」这个开关必须打开：页面脚本由 holder 经 `chrome.userScripts` 下发，开关没开，录制和 `act` 都不工作；`doctor` 的 `user-scripts` 会检查。
+- daemon 一般不用手动重启：`setup.js` 发现运行中的 daemon 是旧代码时，会让它退出，并在扩展重连时换成新的。之后没有任何命令会自动帮你换，需要时运行 `tabbot daemon restart`。
+- 扩展本身不能自动更新，但它只是一个固定 ABI 的管道，只有 ABI 变化或权限变化时才需要刷新；页面脚本由 holder 下发，更新它们不需要刷新扩展。刷新扩展会断开旧的 relay，Chrome 随后用新的 manifest 重新拉起 relay；扩展代码或 relay 代码有改动时，必须做刷新才会生效。
 
 ## 5. 验收
 
@@ -77,23 +81,13 @@ Linux（`linux`）：
 
 - 全部通过：进入第 6 步。
 - 扩展未连接（`need-extension`）：对用户只说「请在 `chrome://extensions` 里确认 TabBot 扩展是开着的，再点一下它的图标」，然后重新运行 `doctor`。
-- `extension-build` 提示扩展版本不同或没有报告版本：对用户只说「请在 `chrome://extensions` 里刷新 TabBot 扩展」，然后重新运行 `doctor`。
+- `extension-abi` 提示扩展 ABI 不对：对用户只说「请在 `chrome://extensions` 里刷新 TabBot 扩展」
+- `user-scripts` 失败：对用户只说「请在 `chrome://extensions` 里点开 TabBot 的『详细信息』，打开『允许用户脚本』，再点一下 TabBot 的图标，完成后告诉我『好了』」（没有这个开关录制和操作都不工作，装完一定要确认），然后重新运行 `doctor`。
 - 其它失败：按 `doctor` 输出的修复命令自己处理，再重新运行 `doctor`；处理不了时，对用户说清需要他做的一件事。
 
-通过后进入第 6 步（旧数据检查）。可以自己做冒烟测试（例如 `tabbot run` 列出 task、跑一个只读 task）。
+通过后进入第 6 步。可以自己做冒烟测试（例如 `tabbot status`、`tabbot tabs`）。
 
-## 6. 升级后的检查
-
-仅在 `~/.tabbot` 里已有旧数据时做。静默完成，不向用户罗列文件和目录；只有需要用户做决定时才说一句话。
-
-**旧 task**：读 `~/.tabbot/task/*.js` 的文件头。没有 `@param`、却读 `process.argv` 的，是 v1 的位置参数 task：按 `SKILL.md` 改成具名参数（文件头加 `@param 名字 说明`，代码里用 `tabbot.params.名字`）。只改这些 task。不要为了验证去运行有副作用的 task。
-
-**清理 v1 遗留**：v2 只用 `task`、`record`、`run`、`session`、`bin`、`src`。
-
-- `~/.tabbot/temp`：v1 的候选 task 目录。先看里面有没有 `.js` 文件；有的是未验证的草稿，请用户决定保留（移到 `~/.tabbot/task`，文件头加 `@status: draft`）还是丢弃；只剩 `package.json` 时才可以直接删。
-- `~/.tabbot/backup`：v1 升级迁移前自动创建的 task 备份。只对用户说一句有旧备份，由用户决定是否删除，agent 不主动删。
-
-## 7. 报告
+## 6. 报告
 
 只告诉用户：
 
@@ -106,5 +100,5 @@ Linux（`linux`）：
 以下是给 agent 的背景，不要讲给用户：
 
 - TabBot 完全以源码分发，没有编译产物。遇到问题先到 `~/.tabbot` 里找答案：`TROUBLESHOOTING.md` 是故障表，`ARCHITECTURE.md` 说明各部分怎么工作，`AGENTS.md` 是开发约定，`src/` 是全部源码，开发脚本在 `scripts/dev`。安装、升级、迁移中遇到任何问题，都可以直接读源码定位并修复，不必等用户指点。
-- 在线安装失败时，可以 clone 仓库后在仓库根目录运行 `npm run dev:install`，效果与在线安装相同。
+- 在线安装失败时，可以 clone 仓库，按本地安装处理（安装目录就是仓库里的 `skills/tabbot`）。
 - 直接改 `~/.tabbot/src` 只是临时修复，下次升级会被覆盖；修复有普遍价值时告诉用户可以提 issue 或 PR。

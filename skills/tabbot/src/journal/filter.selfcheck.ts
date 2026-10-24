@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import { noiseReason, shouldStoreBody, TELEMETRY_HOST, TELEMETRY_PATH } from "./filter.ts";
+import { noiseReason, shouldStoreBody } from "./filter.ts";
 
 const page = "https://www.zhihu.com/";
 const req = (url: string, method = "GET", extra: { status?: number; via?: string } = {}) => noiseReason({ url, method, page, via: extra.via ?? "fetch", status: extra.status });
@@ -8,11 +7,9 @@ const req = (url: string, method = "GET", extra: { status?: number; via?: string
 // 第一方埋点：知乎自己的上报都是同站，只有启发式抓得到
 assert.equal(req("https://zhihu-web-analytics.zhihu.com/api/v2/za/logs/batch", "POST"), "telemetry-host");
 assert.equal(req("https://datahub.zhihu.com/collector/zlab", "POST"), "telemetry-host");
-assert.equal(req("https://apm.zhihu.com/collector/apm", "POST"), "telemetry-host");
 assert.equal(req("https://www.zhihu.com/zbst/events/r", "POST"), "telemetry-path");
 assert.equal(req("https://www.zhihu.com/sc-profiler", "POST", { status: 204 }), "telemetry-path");
 assert.equal(req("https://www.zhihu.com/x/y", "POST", { status: 204 }), "no-content");
-assert.equal(req("https://www.zhihu.com/x/y", "POST", { via: "beacon" }), "beacon");
 
 // 不能误伤：GET 的数据接口、登录、普通 POST
 assert.equal(req("https://www.zhihu.com/api/v4/stats/summary"), null);
@@ -28,11 +25,5 @@ assert.equal(body({ url: "https://cdn.other.com/a.json" }), false);
 assert.equal(body({ body: "" }), false);
 assert.equal(body({ status: 500, body: "x".repeat(5000) }), false);
 assert.equal(body({ status: 500, body: "boom" }), true);
-
-// hook.js 里的正则必须和这里一致（页面里没法 import）
-const hook = fs.readFileSync(new URL("../chrome-extension/journal/hook.js", import.meta.url), "utf8");
-const literal = (name: string): string => { const m = hook.match(new RegExp(`const ${name} = /(.*)/i;`)); assert.ok(m, `hook.js 里找不到 ${name}`); return m[1]!; };
-assert.equal(literal("TELEMETRY_HOST"), TELEMETRY_HOST.source);
-assert.equal(literal("TELEMETRY_PATH"), TELEMETRY_PATH.source);
 
 console.log("filter.selfcheck ok");

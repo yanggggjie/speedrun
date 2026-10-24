@@ -1,5 +1,5 @@
 // 把 skills/tabbot 里 git 认的文件（已跟踪 + 未跟踪但没被忽略）导出到 <dest>/skills/tabbot。
-// 用它代替直接复制工作区：node_modules、.DS_Store 这些杂物不会进 skill，本地安装与在线安装的内容一致。
+// 用它代替直接复制工作区：node_modules、.DS_Store 这些杂物不会进 skill，verify:pack 里的内容与在线安装一致。
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";

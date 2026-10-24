@@ -1,137 +1,76 @@
+// 分段队列：按大小滚动、超过总量整段删除最旧的、seq 跨段和重启都接着编、跨段查询。
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Ingestor, type HookMsg } from "./ingest.ts";
-import { readEvents, runSql, status, waitForHuman, formatRows } from "./query.ts";
-import { enforceCap } from "./retention.ts";
-import { bodiesDir, dayOf, JournalStore, listDays } from "./store.ts";
+import { findInBodies, lastSeq, readEvents, readEventBySeq, runSql, status } from "./query.ts";
+import { bodyPath, JournalStore, listSegs, segDir } from "./store.ts";
+import type { NewEvent } from "./types.ts";
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-journal-"));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-store-"));
 process.on("exit", () => fs.rmSync(dir, { recursive: true, force: true })); // 自检结束清掉临时目录
+const ev = (n: number, over: Partial<NewEvent> = {}): NewEvent => ({ ts: 1000 + n, tab: 1, frame: 0, src: "page", kind: "net", verb: "fetch", method: "GET", url: `https://a.com/${n}`, status: 200, ...over });
 
-const store = new JournalStore(dir);
+// 小分段（SQLite 自己每段就占几十 KB，所以用大一点的响应体）：每段 150KB，总量上限 300KB
+const store = new JournalStore({ dir, segmentBytes: 150_000, capBytes: 300_000 });
 await store.open();
-const ingest = new Ingestor(store);
-
-const T0 = Date.now() - 60_000;
-const page = "https://www.zhihu.com/";
-const net = (t: number, over: Record<string, unknown>): HookMsg => ({ k: "net", t, tab: 3, frame: 0, page, via: "fetch", method: "GET", status: 200, ct: "application/json", ...over }) as HookMsg;
-
-ingest.handleBatch([
-  // 人点击：isTrusted 为 true，之后 2 秒内的请求记为它引发的
-  { k: "ev", t: T0, tab: 3, page, type: "click", trusted: true, pressure: 0.5, target: { tag: "button", text: "提交订单", sel: "#go" } } as HookMsg,
-  net(T0 + 100, { url: "https://www.zhihu.com/api/order?token=abc123def456ghi789&x=1", method: "POST", body: JSON.stringify({ ok: true, access_token: "SECRETSECRET12345", items: [1, 2] }), size: 60, reqBody: "{\"a\":1}" }),
-  // 域名不是 JWT：host 参数、响应体里的主机名要保持原样；真正的 JWT（eyJ 开头）仍然脱敏
-  net(T0 + 150, { url: "https://www.zhihu.com/api/dns?host=www.zhihu.com&jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r", body: JSON.stringify({ cdn: "static.zhimg.com", t: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r" }), size: 40 }),
-  // 重复请求：只计数
-  net(T0 + 200, { url: "https://www.zhihu.com/api/v4/me", body: "{\"name\":\"x\"}", size: 12 }),
-  net(T0 + 300, { url: "https://www.zhihu.com/api/v4/me", body: "{\"name\":\"x\"}", size: 12 }),
-  // 第三方：只留索引，不存响应体
-  net(T0 + 400, { url: "https://cdn.other.com/data.json", body: "{\"a\":1}", size: 7 }),
-  // 同站埋点：噪声
-  net(T0 + 500, { url: "https://datahub.zhihu.com/collector/zlab", method: "POST", status: 200, body: "", size: 0 }),
-  // 来源：agent 的鼠标点击带水印；脚本触发的事件是 page
-  { k: "ev", t: T0 + 600, tab: 3, page, type: "click", trusted: true, pressure: 0.123, target: { tag: "a", text: "下一页" } } as HookMsg,
-  { k: "ev", t: T0 + 700, tab: 3, page, type: "click", trusted: false, target: { tag: "div", sel: "#x" } } as HookMsg,
-  { k: "ev", t: T0 + 800, tab: 3, page, type: "input", trusted: true, n: 12, target: { tag: "input", text: "地址", sel: "#addr" } } as HookMsg,
-  { k: "ev", t: T0 + 850, tab: 3, page, type: "key", key: "Enter", trusted: true, target: { tag: "input", text: "地址" } } as HookMsg,
-  { k: "nav", t: T0 + 900, tab: 3, page, via: "pushState", url: "https://www.zhihu.com/hot?x=1" } as HookMsg,
-  { k: "snap", t: T0 + 1000, tab: 3, page, snap: { why: "load", title: "热榜", interactiveVisible: 4, interactiveTotal: 9, items: [] } } as HookMsg,
-]);
-
-const all = await readEvents({ dir, all: true, limit: 100 });
-assert.equal(all.length, 12); // 重复的 /me 只占一行
-const bySeq = (verb: string, src: string) => all.find((r) => r.verb === verb && r.src === src);
-const order = all.find((r) => r.url?.includes("/api/order"))!;
-assert.equal(order.cause, all[0]!.seq, "请求应记为点击引发的");
-assert.ok(/token=⟨secret_\d+:\w+⟩/.test(order.url!) && !order.url!.includes("abc123def456ghi789"), "URL 里的 token 要脱敏，别名保持可读");
-const bodyFile = path.join(bodiesDir(dayOf(order.ts), dir), order.body!);
-const stored = fs.readFileSync(bodyFile, "utf8");
-assert.ok(stored.includes("\"items\"") && !stored.includes("SECRETSECRET12345"), "响应体写盘前脱敏、缩进展开");
-assert.match(stored, /\n/, "JSON 要展开成多行，方便 rg");
-const dns = all.find((r) => r.url?.includes("/api/dns"))!;
-assert.ok(dns.url!.includes("host=www.zhihu.com") && /jwt=⟨secret_\d+:jwt⟩/.test(dns.url!), "域名保持原样，真正的 JWT 脱敏");
-const dnsBody = fs.readFileSync(path.join(bodiesDir(dayOf(dns.ts), dir), dns.body!), "utf8");
-assert.ok(dnsBody.includes("static.zhimg.com") && !dnsBody.includes("eyJhbGci"));
-const me = all.find((r) => r.url?.endsWith("/api/v4/me"))!;
-assert.equal(me.dup, 2);
-const cdn = all.find((r) => r.url?.includes("cdn.other.com"))!;
-assert.equal(cdn.body, null, "第三方不存响应体");
-const noisy = all.find((r) => r.url?.includes("datahub"))!;
-assert.equal(noisy.noise, 1);
-assert.equal(all.filter((r) => r.kind === "input").map((r) => r.src).join(), "human,agent,page,human,human");
-assert.ok(bySeq("pushState", "page") && bySeq("load", "page"));
-
-// 默认视图不含噪声；按 src 过滤；since 游标
-assert.equal((await readEvents({ dir, limit: 100 })).length, 11);
-assert.equal((await readEvents({ dir, src: "agent", limit: 100 })).length, 1);
-assert.equal((await readEvents({ dir, since: all[all.length - 1]!.seq, limit: 100 })).length, 0);
-const lines = formatRows(await readEvents({ dir, limit: 100 }));
-assert.match(lines, /tab3 human click button\[提交订单\]/);
-assert.match(lines, /POST \/api\/order\?token=.* 200 .*body:\d{4}-\d{2}-\d{2}\/[0-9a-f]{16}\.json.*← #1/);
-assert.match(lines, /GET \/api\/v4\/me 200 12B .*×2/);
-assert.match(lines, /agent click a\[下一页\]/);
-assert.match(lines, /human key Enter input\[地址\]/);
-assert.match(lines, /input 输入框|input input\[地址\] 12字/);
-
-// SQL：只读，单条 SELECT，行数上限
-const sql = await runSql("SELECT src, COUNT(*) AS n FROM events GROUP BY src ORDER BY src", { dir });
-assert.deepEqual(sql.columns, ["src", "n"]);
-assert.equal(sql.rows.length, 3);
-assert.equal((await runSql("SELECT seq FROM events", { dir, limit: 2 })).truncated, true);
-for (const bad of ["DELETE FROM events", "SELECT 1; DROP TABLE events", "SELECT 1 FROM events; SELECT 2", "ATTACH DATABASE 'x' AS y", "PRAGMA query_only=OFF", "WITH a AS (SELECT 1) INSERT INTO events(seq) VALUES(1)"]) {
-  await assert.rejects(() => runSql(bad, { dir }), Error, bad);
+const bodies: string[] = [];
+for (let i = 1; i <= 12; i++) {
+  store.batch(() => {
+    const ref = store.putFile("bodies", `b${i}.json`, JSON.stringify({ n: i, pad: "x".repeat(40_000), word: i === 1 ? "最老的独有文字" : i === 12 ? "最新的独有文字" : "" }));
+    bodies.push(ref);
+    store.insert(ev(i, { body: ref }));
+  });
 }
-
-// 新的一天的库：seq 接着往后，SQL 能跨天
-const nextDay = T0 + 36 * 3600_000;
-const before = store.lastSeq();
-ingest.handleBatch([{ k: "ev", t: nextDay, tab: 3, page, type: "click", trusted: true, pressure: 0.5, target: { tag: "a", text: "明天" } } as HookMsg]);
-assert.equal(store.lastSeq(), before + 1);
-assert.equal(listDays(dir).length, 2);
-assert.equal((await runSql("SELECT COUNT(*) AS c FROM events", { dir })).rows[0]![0], 13);
-
-// 重开后 seq 接上
 store.close();
-const store2 = new JournalStore(dir);
-await store2.open();
-assert.equal(store2.lastSeq(), before + 1);
-store2.close();
 
-// wait：人的操作之后静默够久就返回；一直没有人就超时
-const now = Date.now();
-const idle = await waitForHuman({ since: 0, idleMs: 1000, timeoutMs: 3000, pollMs: 50, dir, now: () => now + 1e9 });
-assert.equal(idle.timedOut, false);
-assert.ok(idle.rows.length > 0 && idle.rows.every((r) => !r.noise));
-const none = await waitForHuman({ since: before + 1, idleMs: 1000, timeoutMs: 200, pollMs: 50, dir });
-assert.deepEqual({ timedOut: none.timedOut, humanActive: none.humanActive, n: none.rows.length }, { timedOut: true, humanActive: false, n: 0 });
+// 滚动：一批事件落在同一段；写满就新开一段
+const segs = listSegs(dir);
+assert.ok(segs.length >= 2, `应该滚动出多段：${segs}`);
+assert.equal(segs[segs.length - 1], Math.max(...segs));
+// 总量上限：最旧的整段被删了（先进先出），最老的事件没了，最新的还在
+assert.ok(segs[0]! > 1, `最旧的分段应该被淘汰：${segs}`);
+const rows = await readEvents({ dir, limit: 100 });
+assert.equal(rows[rows.length - 1]!.seq, 12);
+assert.ok(rows[0]!.seq > 1, "最老的事件被淘汰了");
+assert.deepEqual(rows.map((r) => r.seq), rows.map((r) => r.seq).sort((a, b) => a - b), "按 seq 从旧到新");
 
-// 状态与淘汰：超过上限的 80% 先删旧一天的响应体和快照（索引保留），仍超过再删库；今天的不动
+// seq 在重启之后接着编；跨段的游标有效
+const again = new JournalStore({ dir, segmentBytes: 150_000, capBytes: 300_000 });
+await again.open();
+assert.equal(again.lastSeq(), 12);
+const next = again.batch(() => again.insert(ev(13)));
+assert.equal(next.seq, 13);
+again.close();
+assert.equal(await lastSeq(dir), 13);
+assert.deepEqual((await readEvents({ dir, since: 11 })).map((r) => r.seq), [12, 13]);
+assert.equal((await readEventBySeq(13, dir))?.url, "https://a.com/13");
+assert.equal(await readEventBySeq(1, dir), undefined, "被淘汰的拿不到");
+
+// 响应体：行里的引用是 <分段序号>/<文件名>，文件在对应分段的 bodies/ 下；最老的响应体随分段一起没了
+const newest = rows[rows.length - 1]!;
+assert.match(newest.body!, /^\d{6}\/b12\.json$/);
+assert.ok(fs.existsSync(bodyPath(newest.body!, "bodies", dir)));
+assert.ok(!fs.existsSync(path.join(segDir(1, dir), "bodies", "b1.json")));
+const found = await findInBodies("最新的独有文字", { dir });
+assert.equal(found.length, 1); assert.equal(found[0]!.row.seq, 12);
+assert.deepEqual(await findInBodies("最老的独有文字", { dir }), []);
+
+// 同名文件（内容哈希相同）只写一次
+const dedupe = new JournalStore({ dir: path.join(dir, "d"), segmentBytes: 1e9 });
+await dedupe.open();
+const r1 = dedupe.putFile("bodies", "same.json", "{}"), r2 = dedupe.putFile("bodies", "same.json", "{}");
+assert.equal(r1, r2);
+dedupe.close();
+
+// SQL 跨段查询、状态
+const sql = await runSql("SELECT COUNT(*) AS c, MIN(seq) AS lo FROM events", { dir });
+assert.equal(sql.rows[0]![0], (await status(dir)).events);
+await assert.rejects(runSql("DELETE FROM events", { dir }), /只支持单条 SELECT/);
+await assert.rejects(runSql("SELECT 1; SELECT 2", { dir }), /只支持单条 SELECT/);
+await assert.rejects(runSql("SELECT * FROM events WHERE 1 AND (SELECT 1 FROM pragma_table_info('events')) AND pragma", { dir }), /不能用 ATTACH/);
 const st = await status(dir);
-assert.equal(st.days.length, 2);
-const today = dayOf(nextDay);
-const oldDay = dayOf(T0);
-fs.writeFileSync(path.join(dir, "bodies", oldDay, "pad.bin"), Buffer.alloc(200_000));
-const first = enforceCap({ dir, capBytes: 20_000, today });
-assert.deepEqual(first.map((e) => e.what), ["files", "db"]);
-assert.ok(!fs.existsSync(path.join(dir, "bodies", oldDay)));
-assert.deepEqual(listDays(dir), [today]);
-assert.deepEqual(enforceCap({ dir, capBytes: 1e12, today }), []);
-
-// 一批事件跨午夜：按天拆进各自的库，不会写错文件
-const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "tc-journal-midnight-"));
-process.on("exit", () => fs.rmSync(dir2, { recursive: true, force: true })); // 自检结束清掉临时目录
-
-const store3 = new JournalStore(dir2);
-await store3.open();
-const midnight = new Date(T0); midnight.setHours(23, 59, 59, 900);
-new Ingestor(store3).handleBatch([
-  { k: "ev", t: midnight.getTime(), tab: 3, page, type: "click", trusted: true, pressure: 0.5, target: { tag: "a", text: "午夜前" } } as HookMsg,
-  { k: "ev", t: midnight.getTime() + 300, tab: 3, page, type: "click", trusted: true, pressure: 0.5, target: { tag: "a", text: "午夜后" } } as HookMsg,
-]);
-store3.close();
-assert.equal(listDays(dir2).length, 2);
-assert.deepEqual((await runSql("SELECT target FROM events ORDER BY seq", { dir: dir2 })).rows.map((r) => r[0]), ["a[午夜前]", "a[午夜后]"]);
+assert.equal(st.segments, listSegs(dir).length);
+assert.ok(st.bytes > 0);
 
 console.log("store.selfcheck ok");

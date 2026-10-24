@@ -1,12 +1,23 @@
-import type { FiltersEngine } from "@ghostery/adblocker";
+import { FiltersEngine, Request as FilterRequest } from "@ghostery/adblocker";
 import { isSameSite, parseUrl } from "../utils/url.ts";
-import { shouldSkipRecordUrl } from "../record/pipeline.ts";
-import type { RequestKind } from "../record/types.ts";
+
+/** adblock 规则要联网下载，加载好之前（或离线）只用启发式识别噪声。 */
+export function loadAdblockEngine(): Promise<FiltersEngine> {
+  return FiltersEngine.fromPrebuiltAdsAndTracking(fetch);
+}
+
+function adblockMatches(url: string, via: string, sourceUrl: string, engine: FiltersEngine | undefined): boolean {
+  if (!engine) return false;
+  try {
+    return engine.match(FilterRequest.fromRawDetails({ url, type: via === "xhr" ? "xmlhttprequest" : "fetch", sourceUrl })).match;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * 第一方埋点：adblock 规则抓不住同站的上报（知乎的 zhihu-web-analytics、datahub、apm 都是同站）。
  * 只对非 GET 生效：GET /api/stats 这类可能是人要看的数据，不能当噪声。
- * hook.js 里有同一份正则（页面里没法 import），filter.selfcheck.ts 校验两边一致。
  */
 export const TELEMETRY_HOST = /(analytics|telemetry|apm|datahub|track|metrics|sentry|beacon|collector)/i;
 export const TELEMETRY_PATH = /(^|[/._-])(collect|collector|track|tracking|beacon|analytics|telemetry|metrics|pixel|apm|sentry|logs?|stats?|events?|monitor|heartbeat|profiler|za)([/._?-]|$)/i;
@@ -15,9 +26,7 @@ export type NoiseInput = { url: string; method: string; status?: number; via: st
 
 /** 返回噪声原因，不是噪声返回 null。adblock 引擎没加载好（离线）时只用启发式。 */
 export function noiseReason(input: NoiseInput, engine?: FiltersEngine): string | null {
-  const kind: RequestKind = input.via === "xhr" ? "xhr" : "fetch";
-  if (input.via === "beacon") return "beacon";
-  if (shouldSkipRecordUrl(input.url, kind, input.page, engine)) return "adblock";
+  if (adblockMatches(input.url, input.via, input.page, engine)) return "adblock";
   if (input.method === "GET") return null;
   let host = "";
   let pathname = "";

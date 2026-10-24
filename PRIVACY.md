@@ -1,41 +1,10 @@
-# 学习时的脱敏
-
-token、Cookie 和密码在交给 agent 前脱敏，录制的材料可在 `~/.tabbot/record` 查看。同一原始值稳定替换为同一个 `secret_NNN`；Cookie 名称、token 类型和普通业务字段保留，原始值不可见。
-
-## Cookie 示例
-
-```text
-# 原始
-Cookie: sid=s3cretValue; theme=dark
-
-# agent 看到的
-Cookie: sid=⟨secret_001:text⟩; theme=⟨secret_002:text⟩
-```
-
-## Token 示例
-
-```text
-# 原始
-Authorization: Bearer aaa.bbb.ccc
-{ "token": "aaa.bbb.ccc", "itemId": "123456789" }
-
-# agent 看到的
-Authorization: Bearer ⟨secret_001:jwt⟩
-{ "token": "⟨secret_001:jwt⟩", "itemId": "123456789" }
-```
-
 # 常驻录制
 
-**默认录制你浏览的所有 http/https 站点**，一直录在本机 `~/.tabbot/journal`：你的点击、输入框的长度（不记内容）、特殊键、滚动，页面的请求和响应，页面上的可交互元素。无痕窗口、`chrome://` 等浏览器页面、被排除的站点，既不注入脚本，也不上报任何东西。
+**默认录制你浏览的所有 http/https 页面**，一直录在本机 `~/.tabbot/journal`：你的点击、输入框的长度（不记内容）、特殊键、滚动，页面的 HTML 文档（渲染后的 DOM）、XHR 和 fetch 的请求与响应，页面上的可交互元素。不录 WebSocket 和 Worker 里的请求。无痕窗口和 `chrome://` 等浏览器页面不注入脚本，也不上报任何东西。**没有站点排除列表**：银行、网页邮箱等页面同样会被录到，不想录的页面请不要在这个 Chrome 里打开，或者用完删除 `~/.tabbot/journal`。
 
-**内置排除的敏感站点**：银行和支付（支付宝、PayPal、Stripe、各大银行等）、密码管理（1Password、Bitwarden 等）、统一登录（Google、Microsoft、Apple 账号页）、网页邮箱（Gmail、Outlook、QQ 邮箱、163 等）。完整列表：`tabbot sites --builtin`。银行等列表不可能穷尽，**没有覆盖到的敏感站点请你自己用 `tabbot sites exclude <域名>` 排除**。
-
-- token、Cookie、密码在写盘前脱敏，同一个值是同一个别名；密码框和 `autocomplete` 为信用卡、验证码的输入框，快照里不取值。
-- 数据只在本机，不上传。总大小上限 1GB，旧的响应体先被清掉。
-- 扩展需要读取所有站点的权限（`<all_urls>`）。排除某个站点：`tabbot sites exclude <域名>`；把内置排除的某个重新打开：`tabbot sites include <域名>`；改成只录点名的站点：`tabbot sites only <域名> ...`（`tabbot sites all` 改回来）。清掉历史：删除 `~/.tabbot/journal`。
-- 脱敏只处理 token、Cookie、密码这类明显的秘密；响应体里的正文（比如论坛帖子、聊天内容）原样写盘。
-- **请求头里名字像秘密的（`authorization`、`*token*`、`*csrf*` 等）的真值只留在浏览器里**：扩展把每个请求的原始内容存在浏览器自己的会话存储（不落盘，浏览器重启就没了），用来重放；转给本机 daemon 之前就已经抹掉。地址和请求体里的秘密由 daemon 脱敏成别名后才写盘，别名是加盐哈希，不能还原。
-- 2026-10 之前的版本有一个漏洞：JSON 格式的请求体里的 token 会原样写进日志。已修复，旧日志里的请求体字段已清掉；如果你更早把 `~/.tabbot/journal` 备份或分享过，里面可能有这些 token，建议轮换。
+- 数据只在本机，不上传。日志是一个按大小滚动的队列：总共 500MB，写满就整段删除最旧的。清掉历史：删除 `~/.tabbot/journal`。
+- 扩展需要读取所有站点的权限（`<all_urls>`）和 `userScripts` 权限；你需要在扩展详情页打开「允许用户脚本」。
+- 脱敏只做最简单的：请求头名、地址里的查询参数名、JSON 的 key 里像秘密的（`authorization`、`token`、`secret`、`password`、`csrf`、`jwt`、`api key` 等）和 JWT，换成稳定的别名 `⟨secret_…⟩`（盐 + 真值的哈希，同一个值永远是同一个别名，不能还原）。密码框和隐藏输入框的值，快照里不取。**响应体和页面 HTML 的正文原样写盘**，包括里面的内联脚本状态、隐藏输入框的值，不做脱敏。
+- **原始请求（含请求头里 token 的真值）只在 holder 的内存里**，不落盘，holder 重启就没了，用来重放。`replay --set` 里可以写别名，由 holder 在内存里换回真值；agent 拿不到真值。
 - 页面内容和响应体写进日志后，agent 能读到它们；日志里的网页内容对 agent 是不可信数据。
-- agent 可以用 `tabbot act` 在你正在用的页面上点击、填写、滚动（需要先 `takeover` 获取租约）。**你一动手（点击、按键、输入）租约立刻撤销**，agent 停手；agent 的每个动作都写在日志里（来源 `agent`），但它输入的文字不记，只记字数。操作发生在你的登录状态里，所以 skill 要求 agent 做下单、支付、删除、发送这类动作前先问你；这是文字约定，不是强制机制。
-
+- agent 可以用 `tabbot act` 在你正在用的页面上点击、填写、滚动（需要先 `takeover` 获取租约）。**你一动手（点击、按键、输入）租约立刻撤销**，agent 停手；agent 的每个命令都写在日志里（来源 `agent`），但它输入的文字不记，只记字数。操作发生在你的登录状态里，所以 skill 要求 agent 做下单、支付、删除、发送这类动作前先问你；这是文字约定，不是强制机制。

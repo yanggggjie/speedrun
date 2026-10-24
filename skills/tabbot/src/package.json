@@ -3,7 +3,7 @@
   "version": "2.0.1",
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Use the user's logged-in Chrome to record a site, then run scripts",
+  "description": "Humans and agents share one Chrome: always-on journal, act on the original page, replay requests",
   "engines": {
     "node": ">=24"
   },
@@ -13,10 +13,7 @@
   },
   "dependencies": {
     "@ghostery/adblocker": "^2.18.2",
-    "tldts": "^7.4.11",
-    "write-file-atomic": "^7.0.1",
     "@types/node": "^22.16.5",
-    "@types/write-file-atomic": "^4.0.3",
-    "devtools-protocol": "^0.0.1701330"
+    "tldts": "^7.4.11"
   }
 }

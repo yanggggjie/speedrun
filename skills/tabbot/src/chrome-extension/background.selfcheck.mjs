@@ -1,406 +1,118 @@
-// 用桩对象模拟 chrome.* 运行 background.js，验证扩展侧的消息与所有权逻辑。由 npm test 调用。
+// 用桩对象模拟 chrome.* 运行 background.js：握手、固定的几个操作（register / exec / tabs / goto）、页面消息转发、标签页事件、重连。
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const posted = [];
-let portListeners = { message: null, disconnect: null };
-const storage = {};
+const port = { message: null, disconnect: null };
 const calls = [];
-const listeners = {};
-// 同一个事件可以有多个监听（所有权逻辑和常驻录制各有一个）：listeners[name] 依次调用全部
 const handlers = {};
-const onEvt = (name) => ({ addListener: (fn) => { (handlers[name] ??= []).push(fn); listeners[name] = (...args) => Promise.all(handlers[name].map((f) => f(...args))); } });
-const registered = [];
-let siteStore = {};
-let nextWin = 1000;
-let nextTab = 2000;
-const tabs = new Map();
+const onEvt = (name) => ({ addListener: (fn) => { (handlers[name] ??= []).push(fn); } });
+const tabs = new Map([[1, { id: 1, windowId: 1, active: true, url: "https://a.com/x", title: "A", status: "complete" }], [2, { id: 2, windowId: 1, active: false, url: "chrome://extensions", title: "E", status: "complete" }]]);
+let userScriptsOn = true;
+let registered = [];
 
 globalThis.chrome = {
-  storage: {
-    session: {
-      get: async (keys) => Object.fromEntries(keys.map((k) => [k, storage[k]])),
-      set: async (obj) => Object.assign(storage, obj),
-    },
-    local: { get: async () => ({ ...siteStore }), set: async (o) => Object.assign(siteStore, o) },
-  },
   runtime: {
+    id: "fake-id",
     connectNative: (name) => {
       calls.push(["connectNative", name]);
-      return {
-        postMessage: (m) => posted.push(m),
-        onMessage: { addListener: (fn) => (portListeners.message = fn) },
-        onDisconnect: { addListener: (fn) => (portListeners.disconnect = fn) },
-      };
+      return { postMessage: (m) => posted.push(m), onMessage: { addListener: (fn) => (port.message = fn) }, onDisconnect: { addListener: (fn) => (port.disconnect = fn) } };
     },
-    getManifest: () => ({ version: "0.1.0" }),
-    getURL: (name) => `chrome-extension://fake/${name}`,
+    getManifest: () => ({ version: "0.2.0" }),
     onStartup: onEvt("startup"),
     onInstalled: onEvt("installed"),
-    id: "fake-extension-id",
-    onMessage: onEvt("runtimeMessage"),
+    onUserScriptMessage: onEvt("userScriptMessage"),
   },
-  scripting: {
-    registerContentScripts: async (list) => { registered.push(...list); },
-    unregisterContentScripts: async () => { registered.length = 0; },
-    executeScript: async ({ target, func, args }) => { calls.push(["executeScript", target.tabId]); return [{ result: func ? await func(...args) : null }]; },
-  },
-  action: { onClicked: onEvt("actionClicked") },
-  alarms: { create: (n, o) => calls.push(["alarm", n, o.periodInMinutes]), onAlarm: onEvt("alarm") },
-  debugger: {
-    attach: async (t, v) => { calls.push(["attach", t.tabId, v]); },
-    detach: async (t) => { calls.push(["detach", t.tabId]); },
-    sendCommand: async (t, m, p) => { calls.push(["cdp", t.tabId, m]); return { echoed: m, params: p }; },
-    onEvent: onEvt("debuggerEvent"),
-    onDetach: onEvt("debuggerDetach"),
-  },
-  windows: {
-    create: async ({ focused }) => {
-      const id = nextWin++; const tab = { id: nextTab++, windowId: id, url: "about:blank" };
-      tabs.set(tab.id, tab); calls.push(["windows.create", focused]);
-      return { id, tabs: [tab], state: "normal" };
-    },
-    get: async (id) => ({ id, state: "normal" }),
-    remove: async (id) => { calls.push(["windows.remove", id]); },
-    onRemoved: onEvt("windowRemoved"),
-  },
+  userScripts: new Proxy({
+    getScripts: async () => { if (!userScriptsOn) throw new Error("User scripts are not enabled"); return registered; },
+    configureWorld: async (o) => { calls.push(["configureWorld", o.messaging]); },
+    unregister: async ({ ids }) => { registered = registered.filter((s) => !ids.includes(s.id)); },
+    register: async (list) => { registered.push(...list); },
+    execute: async ({ target, js, world }) => { calls.push(["execute", target.tabId, world, js[0].code]); return [{ frameId: 0 }]; },
+  }, {}),
   tabs: {
-    create: async ({ windowId, url, active }) => { const tab = { id: nextTab++, windowId, url }; tabs.set(tab.id, tab); calls.push(["tabs.create", windowId, active]); return tab; },
-    get: async (id) => { const t = tabs.get(id); if (!t) throw new Error("no tab"); return t; },
-    remove: async (id) => { tabs.delete(id); calls.push(["tabs.remove", id]); },
     query: async () => [...tabs.values()],
-    update: async (id, { url }) => { calls.push(["tabs.update", id, url]); const t = tabs.get(id); if (t) t.url = url; return t; },
-    onCreated: onEvt("tabCreated"),
+    update: async (id, { url }) => { calls.push(["tabs.update", id, url]); },
     onUpdated: onEvt("tabUpdated"),
     onRemoved: onEvt("tabRemoved"),
   },
+  action: { onClicked: onEvt("actionClicked") },
+  alarms: { create: (n, o) => calls.push(["alarm", n, o.periodInMinutes]), onAlarm: onEvt("alarm") },
 };
 
-// 扩展用 fetch(chrome.runtime.getURL(...)) 读自己的文件算 buildId；这里用固定内容代替
-const extensionFiles = { "background.js": Buffer.from("bg-bytes\n"), "manifest.json": Buffer.from("{}\n"), "hook.js": Buffer.from("hook\n"), "relay.js": Buffer.from("relay\n"), "replay-core.js": Buffer.from("core\n") };
-globalThis.fetch = async (url) => {
-  const name = String(url).split("/").pop();
-  if (!(name in extensionFiles)) throw new Error("not found");
-  const bytes = extensionFiles[name];
-  return { arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
-};
 await import(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "background.js") + "?t=1");
 await new Promise((r) => setTimeout(r, 10));
+const host = async (msg) => { await port.message(msg); await new Promise((r) => setTimeout(r, 5)); };
+const last = () => [...posted].reverse().find((m) => "id" in m);
 
-// 1. 启动即连接，并先发 hello
+// 1. 启动即连接，握手带 ABI 版本和用户脚本能力；ABI 必须和 holder 一侧一致
 assert.deepEqual(calls.find((c) => c[0] === "connectNative"), ["connectNative", "com.tabbot.connect"]);
-assert.equal(posted[0].type, "hello");
-assert.equal(posted[0].protocolVersion, 1);
-// hello 带扩展正在运行的代码支持的操作；必须和 holder 一侧期望的（browser/extension.ts 的 SITE_OPS）一致
-const { SITE_OPS, missingSiteOps } = await import(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../browser/extension.ts"));
-assert.deepEqual(posted[0].ops, [...SITE_OPS]);
-assert.deepEqual(missingSiteOps(posted[0].ops), []);
-assert.deepEqual(missingSiteOps(undefined), [...SITE_OPS], "旧版本的扩展没有操作列表，全算缺");
-assert.deepEqual(missingSiteOps(["setSites", "siteTabs", "snapshot"]), ["leaseAcquire", "leaseRelease", "act", "replay", "text"]);
-// hello 带 buildId，算法和 store/version.ts 里的 extension 一致
-const { createHash } = await import("node:crypto");
-const expectedBuild = createHash("sha256").update(extensionFiles["background.js"]).update(extensionFiles["manifest.json"]).update(extensionFiles["hook.js"]).update(extensionFiles["relay.js"]).update(extensionFiles["replay-core.js"]).digest("hex").slice(0, 16);
-assert.equal(posted[0].buildId, expectedBuild);
+const { ABI } = await import(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../browser/extension.ts"));
+assert.deepEqual(posted[0], { type: "hello", abi: ABI, chromeVersion: posted[0].chromeVersion, extensionVersion: "0.2.0", userScripts: true });
 assert.deepEqual(calls.find((c) => c[0] === "alarm"), ["alarm", "tabbot-keepalive", 0.5]);
 
-const host = (msg) => portListeners.message(msg);
-const replies = () => posted.filter((m) => "id" in m);
-const last = () => replies()[replies().length - 1];
-const settle = () => new Promise((r) => setTimeout(r, 20));
+// 2. tabs：只列 http/https
+await host({ id: 1, name: "tabs", args: {} });
+assert.deepEqual(last().result.tabs.map((t) => t.tabId), [1]);
+assert.equal(last().result.tabs[0].status, "complete");
 
-// 2. 开窗：focused 原样传递；返回 windowId / tabId；记入 owned
-await host({ id: 1, op: "tab", name: "openWindow", args: { focused: true } });
-await settle();
-assert.equal(last().id, 1);
-const win = last().result;
-assert.ok(win.windowId && win.tabId);
-assert.ok(calls.some((c) => c[0] === "windows.create" && c[1] === true));
-
-// 3. 未 attach 的 cdp 被拒绝；attach 后可发送
-await host({ id: 2, op: "cdp", tabId: win.tabId, method: "Runtime.evaluate", params: { expression: "1" } });
-await settle();
-assert.match(last().error.message, /未 attach/);
-await host({ id: 3, op: "tab", name: "attach", args: { tabId: win.tabId } });
-await settle();
-assert.ok(calls.some((c) => c[0] === "attach" && c[1] === win.tabId && c[2] === "1.3"));
-await host({ id: 4, op: "cdp", tabId: win.tabId, method: "Runtime.evaluate", params: { expression: "1" } });
-await settle();
-assert.equal(last().result.echoed, "Runtime.evaluate");
-
-// 4. 非 TabBot 的 tab 一律拒绝（用户自己的 tab）
-await host({ id: 5, op: "tab", name: "attach", args: { tabId: 999999 } });
-await settle();
-assert.match(last().error.message, /不属于 tabbot/);
-await host({ id: 6, op: "cdp", tabId: 999999, method: "Page.enable", params: {} });
-await settle();
-assert.match(last().error.message, /不属于 tabbot/);
-
-// 5. 由 tabbot tab 打开的新 tab 自动纳入，并通知 holder
-tabs.set(7001, { id: 7001, windowId: 7000, url: "https://a.com" });
-await listeners.tabCreated({ id: 7001, windowId: 7000, openerTabId: win.tabId, pendingUrl: "https://a.com" });
-await settle();
-const created = posted.find((m) => m.type === "tab" && m.kind === "created");
-assert.equal(created.tabId, 7001);
-assert.equal(created.openerTabId, win.tabId);
-// 无 opener 的用户 tab 不纳入
-tabs.set(8001, { id: 8001, windowId: 8000, url: "https://user.com" });
-await listeners.tabCreated({ id: 8001, windowId: 8000, openerTabId: undefined });
-await settle();
-assert.equal(posted.filter((m) => m.type === "tab" && m.kind === "created").length, 1);
-await host({ id: 9, op: "tab", name: "listOwned", args: {} });
-await settle();
-const ids = last().result.tabs.map((t) => t.tabId);
-assert.equal(typeof last().result.tabs[0].title, "string", "listOwned 带 title，holder 靠它识别 TabBot 的窗口");
-assert.ok(ids.includes(win.tabId) && ids.includes(7001) && !ids.includes(8001));
-
-// 6. 录制窗口（kind: record）里用户自己开的新 tab（没有 opener）也纳入；run 窗口不放宽
-await host({ id: 20, op: "tab", name: "openWindow", args: { focused: false, kind: "record" } });
-await settle();
-const rec = last().result;
-const createdCount = () => posted.filter((m) => m.type === "tab" && m.kind === "created").length;
-const before = createdCount();
-tabs.set(9001, { id: 9001, windowId: rec.windowId, url: "chrome://newtab" });
-await listeners.tabCreated({ id: 9001, windowId: rec.windowId, openerTabId: undefined });
-await settle();
-assert.equal(createdCount(), before + 1, "录制窗口里没有 opener 的 tab 应被纳入并通知 holder");
-assert.equal(posted.filter((m) => m.type === "tab" && m.kind === "created").at(-1).tabId, 9001);
-tabs.set(9002, { id: 9002, windowId: win.windowId, url: "https://user.com" });
-await listeners.tabCreated({ id: 9002, windowId: win.windowId, openerTabId: undefined });
-await settle();
-assert.equal(createdCount(), before + 1, "run 窗口里没有 opener 的 tab 不纳入");
-// 录制窗口关闭后不再放宽
-await host({ id: 21, op: "tab", name: "closeWindow", args: { windowId: rec.windowId } });
-await settle();
-tabs.set(9003, { id: 9003, windowId: rec.windowId, url: "https://late.com" });
-await listeners.tabCreated({ id: 9003, windowId: rec.windowId, openerTabId: undefined });
-await settle();
-assert.equal(createdCount(), before + 1, "窗口关闭后不再纳入"); 
-
-// 6. 调试器事件带 tabId 转发；分离通知
-listeners.debuggerEvent({ tabId: win.tabId }, "Page.loadEventFired", { timestamp: 1 });
-const ev = posted.find((m) => m.type === "event");
-assert.equal(ev.tabId, win.tabId);
-assert.equal(ev.method, "Page.loadEventFired");
-listeners.debuggerDetach({ tabId: win.tabId }, "canceled_by_user");
-const det = posted.find((m) => m.type === "tab" && m.kind === "detached");
-assert.equal(det.reason, "canceled_by_user");
-
-// 7. 关闭 tab：owned 移除并通知
-listeners.tabRemoved(7001, { windowId: 7000 });
-await settle();
-assert.ok(posted.some((m) => m.type === "tab" && m.kind === "removed" && m.tabId === 7001));
-
-// 8. 断开后退避重连
-portListeners.disconnect();
-await new Promise((r) => setTimeout(r, 1100));
-assert.equal(calls.filter((c) => c[0] === "connectNative").length >= 2, true, "断开后应重连");
-
-// 9. 点击工具栏图标：立即重连，不等退避（need-extension 的提示让用户点一下它）
-const connectsBefore = calls.filter((c) => c[0] === "connectNative").length;
-portListeners.disconnect();
-listeners.actionClicked();
-assert.equal(calls.filter((c) => c[0] === "connectNative").length, connectsBefore + 1, "点击图标应立即重连");
-
-
-// 10. 常驻录制：setSites 动态注册内容脚本（manifest 不变），白名单站点之外的 tab 一律不开放，页面事件批量推给 daemon
-tabs.set(8001, { id: 8001, windowId: 1, url: "https://www.zhihu.com/hot", title: "热榜", active: true });
-tabs.set(8002, { id: 8002, windowId: 1, url: "https://mail.example.org/inbox", title: "邮箱", active: false });
-await host({ id: 20, op: "tab", name: "setSites", args: { sites: ["zhihu.com"] } });
-await settle();
-assert.deepEqual(last().result, { mode: "only", sites: ["zhihu.com"], exclude: [] }); // 没带 mode 的旧格式按只录点名站点处理
-assert.deepEqual(registered.map((r) => [r.id, r.world]), [["tc-hook", "MAIN"], ["tc-relay", "ISOLATED"]]);
-assert.deepEqual(registered[0].matches, ["*://zhihu.com/*", "*://*.zhihu.com/*"]);
-assert.equal(registered[0].runAt, "document_start");
-assert.ok(calls.some((c) => c[0] === "executeScript" && c[1] === 8001), "已打开的白名单页面要补注入");
-assert.ok(!calls.some((c) => c[0] === "executeScript" && c[1] === 8002), "白名单之外的页面不注入");
-await host({ id: 21, op: "tab", name: "siteTabs", args: {} });
-await settle();
-assert.deepEqual(last().result.tabs.map((t) => t.tabId), [8001], "只列白名单站点的 tab，不泄露其它 tab");
-await host({ id: 22, op: "tab", name: "snapshot", args: { tabId: 8002 } });
-await settle();
-assert.match(last().error.message, /不在录制范围内/);
-globalThis.window = globalThis; // executeScript 的桩直接在本进程里运行 func
-globalThis.__tcrSnap = (why) => ({ why, title: "热榜" });
-await host({ id: 23, op: "tab", name: "snapshot", args: { tabId: 8001 } });
-await settle();
-assert.deepEqual(last().result.snap, { why: "live", title: "热榜" });
-delete globalThis.__tcrSnap;
-delete globalThis.window;
-// 页面事件：只收自己扩展内容脚本发来的、带 tab 的消息；批量推送
-const journalPosts = () => posted.filter((m) => m.type === "journal");
-const postsBefore = journalPosts().length;
-listeners.runtimeMessage({ __tcrl: 1, top: true, page: "https://www.zhihu.com/hot", msg: { __tcrl: 1, k: "ev", t: 1, type: "click" } }, { id: "fake-extension-id", tab: { id: 8001 }, frameId: 0 });
-listeners.runtimeMessage({ __tcrl: 1, msg: { k: "ev", t: 2 } }, { id: "other-extension", tab: { id: 8001 }, frameId: 0 });
-listeners.runtimeMessage({ __tcrl: 1, msg: { k: "ev", t: 3 } }, { id: "fake-extension-id", frameId: 0 });
-await new Promise((r) => setTimeout(r, 350));
-const batch = journalPosts().slice(postsBefore);
-assert.equal(batch.length, 1);
-assert.deepEqual(batch[0].events, [{ k: "ev", t: 1, type: "click", tab: 8001, frame: 0, top: true, page: "https://www.zhihu.com/hot" }]);
-// 白名单 tab 的地址变化、关闭会记一条 tab 事件；离开白名单站点只记 left
-await listeners.tabUpdated(8001, { url: "https://www.zhihu.com/explore" }, tabs.get(8001));
-await listeners.tabRemoved(8001, { windowId: 1 });
-await new Promise((r) => setTimeout(r, 350));
-const tabEvents = journalPosts().flatMap((m) => m.events).filter((e) => e.k === "tab").map((e) => e.ev);
-assert.deepEqual(tabEvents, ["url", "closed"]);
-
-// 11. 默认录所有 http/https 站点、排除敏感站点：注册的是全部 http/https，用 excludeMatches 排除；被排除的站点和非网页不开放只读操作
-await host({ id: 30, op: "tab", name: "setSites", args: { mode: "all", sites: [], exclude: ["mail.example.org", "bank.example.com"] } });
-await settle();
-assert.deepEqual(last().result, { mode: "all", sites: [], exclude: ["mail.example.org", "bank.example.com"] });
+// 3. register：开消息通道、注册常驻脚本（所有 http/https，document_start），已打开的页面补注入；旧的先清掉
+const scripts = [{ id: "page", code: "/*page*/", world: "MAIN" }, { id: "bridge", code: "/*bridge*/", world: "USER_SCRIPT" }];
+await host({ id: 2, name: "register", args: { scripts } });
+assert.deepEqual(last().result, { scripts: 2 });
+assert.ok(calls.some((c) => c[0] === "configureWorld" && c[1] === true));
+assert.deepEqual(registered.map((s) => [s.id, s.world, s.runAt, s.allFrames]), [["page", "MAIN", "document_start", true], ["bridge", "USER_SCRIPT", "document_start", true]]);
 assert.deepEqual(registered[0].matches, ["http://*/*", "https://*/*"]);
-assert.deepEqual(registered[0].excludeMatches, ["*://mail.example.org/*", "*://*.mail.example.org/*", "*://bank.example.com/*", "*://*.bank.example.com/*"]);
-tabs.set(8003, { id: 8003, windowId: 1, url: "https://v2ex.com/?tab=tech", title: "V2EX", active: false });
-tabs.set(8004, { id: 8004, windowId: 1, url: "chrome://extensions/", title: "扩展", active: false });
-await host({ id: 31, op: "tab", name: "siteTabs", args: {} });
-await settle();
-const allIds = last().result.tabs.map((t) => t.tabId);
-assert.ok(allIds.includes(8001) && allIds.includes(8003), "zhihu、v2ex 等没被排除的站点都在范围内");
-assert.ok(!allIds.includes(8002), "被排除的 mail.example.org 不在范围内");
-assert.ok(!allIds.includes(8004), "chrome:// 页面不算");
-globalThis.window = globalThis;
-globalThis.__tcrSnap = (why) => ({ why, title: "V2EX" });
-await host({ id: 32, op: "tab", name: "snapshot", args: { tabId: 8003 } });
-await settle();
-assert.deepEqual(last().result.snap, { why: "live", title: "V2EX" });
-await host({ id: 33, op: "tab", name: "snapshot", args: { tabId: 8002 } });
-await settle();
-assert.match(last().error.message, /不在录制范围内/, "被排除站点的页面不能取快照");
-delete globalThis.__tcrSnap;
-delete globalThis.window;
-// 排除列表不为空以外的情况：没有排除时不带 excludeMatches；切回只录点名站点后恢复成按站点注册
-await host({ id: 34, op: "tab", name: "setSites", args: { mode: "all", sites: [], exclude: [] } });
-await settle();
-assert.equal("excludeMatches" in registered[0], false);
-await host({ id: 35, op: "tab", name: "setSites", args: { mode: "only", sites: ["ithome.com"], exclude: [] } });
-await settle();
-assert.deepEqual(registered[0].matches, ["*://ithome.com/*", "*://*.ithome.com/*"]);
+assert.equal(calls.filter((c) => c[0] === "execute" && c[1] === 1).length, 2, "已打开的 http 页面补注入两个脚本");
+assert.ok(!calls.some((c) => c[0] === "execute" && c[1] === 2), "chrome:// 页面不注入");
+await host({ id: 3, name: "register", args: { scripts: [scripts[0]] } });
+assert.deepEqual(registered.map((s) => s.id), ["page"], "再次注册先清掉旧的");
 
-// 12. 租约与 act：agent 的动作是页面内的合成事件；真人输入（trusted 标记为真）在扩展里本地撤销租约；滚轮只算在场
-await host({ id: 39, op: "tab", name: "setSites", args: { mode: "all", sites: [], exclude: [] } });
-await settle();
-const T8003 = 8003;
-const sendMsg = (msg) => listeners.runtimeMessage({ __tcrl: 1, top: true, page: "https://v2ex.com/", msg }, { id: "fake-extension-id", tab: { id: T8003 }, frameId: 0 });
-const leasePosts = () => posted.filter((m) => m.type === "lease");
-const actOp = async (id, cmd) => { await host({ id, op: "tab", name: "act", args: { tabId: T8003, cmd } }); await settle(); return last().result; };
-// 没有租约，act 被拒
-assert.equal((await actOp(40, { kind: "click", ref: "@e1" })).rejected, "no-lease");
-// 获取租约（没有人输入过，不用等）
-await host({ id: 41, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
-assert.deepEqual(last().result, { granted: true });
-assert.equal(leasePosts().at(-1).state, "acquired");
-await host({ id: 42, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
-assert.deepEqual(last().result, { granted: true, already: true });
-// 范围之外的 tab（被排除、非网页）不能获取租约
-await host({ id: 43, op: "tab", name: "leaseAcquire", args: { tabId: 8004 } }); await settle();
-assert.match(last().error.message, /不在录制范围内/);
-// act：在页面里执行，结果原样返回
-globalThis.window = globalThis;
-globalThis.__tcrAct = async (c) => ({ ok: true, target: { tag: "button", text: "提交" }, settle: { settled: true, waitedMs: 130 }, url: "https://v2ex.com/", title: "V2EX", echo: c });
-let r = await actOp(44, { kind: "click", ref: "@e12" });
-assert.equal(r.ok, true); assert.equal(r.echo.ref, "@e12"); assert.equal(r.revokedDuring, undefined);
-// 动作引发页面跳转：executeScript 报 frame 被移除，算成功，并带上新地址
-globalThis.__tcrAct = async () => { throw new Error("Frame with ID 0 was removed."); };
-r = await actOp(45, { kind: "click", ref: "@e3" });
-assert.equal(r.ok, true); assert.equal(r.navigated, true); assert.ok(r.url);
-// 页面返回的失败原样带回；不相关的错误是失败
-globalThis.__tcrAct = async () => ({ ok: false, error: "元素 @e9 已不在页面上，请重新 snapshot" });
-assert.match((await actOp(46, { kind: "click", ref: "@e9" })).error, /已不在页面上/);
-globalThis.__tcrAct = async () => { throw new Error("Cannot access contents of the page"); };
-await host({ id: 47, op: "tab", name: "act", args: { tabId: T8003, cmd: { kind: "click", ref: "@e1" } } }); await settle();
-assert.match(last().error.message, /Cannot access/);
-// goto：用 tabs.update 导航
-r = await actOp(48, { kind: "goto", url: "https://v2ex.com/recent?p=2" });
-assert.equal(r.ok, true); assert.ok(calls.some((c) => c[0] === "tabs.update" && c[1] === T8003 && c[2] === "https://v2ex.com/recent?p=2"));
-// 合成事件（trusted 标记为 false，agent 自己产生的）不撤销租约；在场信号不进日志
-const journalBefore = journalPosts().flatMap((m) => m.events).length;
-sendMsg({ k: "ev", t: 1, type: "click", trusted: false });
-sendMsg({ k: "presence", kind: "key" }); // 在场信号：按键 → 撤销（下面验证）
-assert.equal(leasePosts().at(-1).state, "revoked", "真人按键立刻撤销租约");
-assert.deepEqual({ reason: leasePosts().at(-1).reason, by: leasePosts().at(-1).by }, { reason: "human", by: "key" });
-await new Promise((r2) => setTimeout(r2, 350));
-const newEvents = journalPosts().flatMap((m) => m.events).slice(journalBefore);
-assert.ok(newEvents.every((e) => e.k !== "presence"), "在场信号不进日志");
-// 撤销之后 act 被拒，并告诉 agent 人多久前动过
-r = await actOp(49, { kind: "click", ref: "@e1" });
-assert.equal(r.rejected, "no-lease"); assert.ok(r.humanIdleMs < 1500);
-// 人刚输入，租约不能马上拿回（防抖）
-await host({ id: 50, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
-assert.equal(last().result.granted, false); assert.equal(last().result.reason, "human-active");
-await new Promise((r2) => setTimeout(r2, 1600));
-await host({ id: 51, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
-assert.equal(last().result.granted, true, "人静默超过 1.5s 之后可以重新获取");
-// 滚轮、滚动只算在场，不撤销租约
-sendMsg({ k: "presence", kind: "wheel" });
-sendMsg({ k: "ev", t: 2, type: "scroll", trusted: true, dy: 300 });
-assert.equal(leasePosts().at(-1).state, "acquired", "滚轮不撤销租约");
-// 真人点击、输入、特殊键的事件也撤销租约
-sendMsg({ k: "ev", t: 3, type: "click", trusted: true, pressure: 0.5 });
-assert.equal(leasePosts().at(-1).state, "revoked");
-assert.equal(leasePosts().at(-1).by, "click");
-// 交还：带原因；没有租约时说明
-await new Promise((r2) => setTimeout(r2, 1600));
-await host({ id: 52, op: "tab", name: "leaseAcquire", args: { tabId: T8003 } }); await settle();
-await host({ id: 53, op: "tab", name: "leaseRelease", args: { tabId: T8003, reason: "请登录" } }); await settle();
-assert.deepEqual(last().result, { released: true });
-assert.deepEqual({ state: leasePosts().at(-1).state, reason: leasePosts().at(-1).reason }, { state: "released", reason: "请登录" });
-await host({ id: 54, op: "tab", name: "leaseRelease", args: { tabId: T8003 } }); await settle();
-assert.deepEqual(last().result, { released: false });
-// tabs 列表带上租约和人静默时间
-await host({ id: 55, op: "tab", name: "siteTabs", args: {} }); await settle();
-const t8003 = last().result.tabs.find((t) => t.tabId === T8003);
-assert.equal(t8003.lease, false); assert.equal(typeof t8003.humanIdleMs, "number");
-delete globalThis.__tcrAct; delete globalThis.window;
+// 4. exec：在 MAIN world 执行任意代码，不限制内容
+await host({ id: 4, name: "exec", args: { tabId: 1, code: "anything()" } });
+assert.deepEqual(calls.at(-1), ["execute", 1, "MAIN", "anything()"]);
+assert.deepEqual(last().result, {});
 
-// 13. 原始请求只留在浏览器里：转给 daemon 的请求头抹掉了真值；重放用浏览器里的原始内容，在同源页面里发，--set 在这里应用
-tabs.set(8005, { id: 8005, windowId: 1, url: "https://www.example.com/page", title: "示例", active: true });
-const T8005 = 8005;
-const net13 = (id, extra) => listeners.runtimeMessage({ __tcrl: 1, top: true, page: "https://www.example.com/page", msg: { k: "net", t: Date.now(), via: "fetch", id, rid: `docA:${id}`, method: "GET", status: 200, ...extra } }, { id: "fake-extension-id", tab: { id: T8005 }, frameId: 0 });
-const beforeNet = journalPosts().flatMap((m) => m.events).length;
-net13(1, { url: "https://www.example.com/api/list?page=1&token=RAWTOKEN", reqHeaders: { authorization: "Bearer RAWSECRET", "x-api-version": "3.0", "x-csrf-token": "CSRF123" } });
-net13(2, { method: "POST", url: "https://www.example.com/api/save", reqHeaders: { "content-type": "application/json" }, reqBody: JSON.stringify({ filter: { page: 1 }, note: "a" }) });
-net13(3, { url: "https://api.example.com/v1/other", reqHeaders: {} }); // 同站不同源
-net13(4, { url: "https://cdn.other.net/x.json", reqHeaders: {} }); // 第三方：不存原始内容
-net13(5, { method: "POST", url: "https://www.example.com/api/upload", reqBody: "[FormData]" });
-await new Promise((r2) => setTimeout(r2, 350));
-const forwardedNet = journalPosts().flatMap((m) => m.events).slice(beforeNet).filter((e) => e.k === "net");
-assert.equal(forwardedNet.length, 5, "请求照常转给 daemon");
-assert.deepEqual(forwardedNet[0].reqHeaders, { authorization: "[redacted]", "x-api-version": "3.0", "x-csrf-token": "[redacted]" }, "名字像秘密的请求头真值不转给 daemon");
-assert.ok(!JSON.stringify(journalPosts()).includes("RAWSECRET") && !JSON.stringify(journalPosts()).includes("CSRF123"), "真值没有出现在任何发给 daemon 的消息里");
-const sentToPage = [];
-globalThis.window = globalThis;
-globalThis.__tcrReplay = async (req) => { sentToPage.push(req); return { ok: true, status: 200, ct: "application/json", size: 2, text: "{}", ms: 12 }; };
-const replayOp = async (id, args) => { await host({ id, op: "tab", name: "replay", args: { tabId: T8005, rawTab: T8005, ...args } }); await settle(); return last().result ?? { threw: last().error.message }; };
-// GET：不需要租约；原始请求头（含真值）带上，浏览器自己管的头去掉；--set 应用到查询参数
-let rr = await replayOp(60, { rid: "docA:1", sets: ["page=2", "header.x-extra=1"] });
-assert.equal(rr.ok, true); assert.equal(rr.status, 200);
-assert.equal(sentToPage[0].method, "GET");
-assert.equal(new URL(sentToPage[0].url).searchParams.get("page"), "2");
-assert.equal(new URL(sentToPage[0].url).searchParams.get("token"), "RAWTOKEN", "地址里的 token 真值原样带上");
-assert.equal(sentToPage[0].headers.authorization, "Bearer RAWSECRET", "请求头真值只在浏览器里使用");
-assert.equal(sentToPage[0].headers["x-extra"], "1");
-assert.equal(rr.sentUrl, sentToPage[0].url);
-// 非 GET 要租约
-rr = await replayOp(61, { rid: "docA:2", sets: ["body.filter.page=3"] });
-assert.equal(rr.rejected, "no-lease");
-await new Promise((r2) => setTimeout(r2, 1600)); // 前面的真人输入要静默 1.5s 才能拿租约
-await host({ id: 62, op: "tab", name: "leaseAcquire", args: { tabId: T8005 } }); await settle();
-assert.equal(last().result.granted, true);
-rr = await replayOp(63, { rid: "docA:2", sets: ["body.filter.page=3", "body.note=改了"] });
-assert.equal(rr.ok, true);
-assert.deepEqual(JSON.parse(sentToPage.at(-1).body), { filter: { page: 3 }, note: "改了" });
-// 不同源、第三方、没存、占位的请求体、--set 写错，都不会发出请求
-const sentBefore = sentToPage.length;
-assert.match((await replayOp(64, { rid: "docA:3", sets: [] })).error, /不同源/);
-assert.match((await replayOp(65, { rid: "docA:4", sets: [] })).error, /不在浏览器里了/);
-assert.match((await replayOp(66, { rid: "docA:5", sets: [] })).error, /文件、二进制或表单/);
-assert.match((await replayOp(67, { rid: "docA:99", sets: [] })).error, /不在浏览器里了/);
-assert.match((await replayOp(68, { rid: "docA:1", sets: ["page"] })).error, /名字=值/);
-assert.equal(sentToPage.length, sentBefore, "这些情况都没有发请求");
-// 原始请求存进了 chrome.storage.session（浏览器自己的会话存储）
-await new Promise((r2) => setTimeout(r2, 900));
-assert.ok(storage.rawReqs && storage.rawReqs[`${T8005}:docA:1`]?.h.authorization === "Bearer RAWSECRET", "原始内容在会话存储里（不落盘）");
-assert.equal(storage.rawReqs[`${T8005}:docA:4`], undefined, "第三方请求不存");
-delete globalThis.__tcrReplay; delete globalThis.window;
+// 5. goto
+await host({ id: 5, name: "goto", args: { tabId: 1, url: "https://a.com/next" } });
+assert.deepEqual(calls.at(-1), ["tabs.update", 1, "https://a.com/next"]);
+await host({ id: 6, name: "nope", args: {} });
+assert.match(last().error.message, /未知操作 nope/);
+
+// 6. 开关没打开：register 和 exec 说清楚怎么办
+userScriptsOn = false;
+await host({ id: 7, name: "exec", args: { tabId: 1, code: "1" } });
+assert.match(last().error.message, /允许用户脚本/);
+await host({ id: 8, name: "register", args: { scripts } });
+assert.match(last().error.message, /允许用户脚本/);
+userScriptsOn = true;
+
+// 7. 页面消息：只收自己的 bridge 发来的、带 tab 的；补上 tab / frame / top / page，原样转给 holder
+const before = posted.length;
+const forward = (m, sender) => handlers.userScriptMessage[0](m, sender);
+forward({ __tcrl: 1, top: true, page: "https://a.com/x", msg: { __tcrl: 1, k: "ev", t: 5, type: "click", trusted: true } }, { id: "fake-id", tab: { id: 1 }, frameId: 3 });
+forward({ __tcrl: 1, msg: { k: "ev" } }, { id: "other", tab: { id: 1 } });
+forward({ __tcrl: 1, msg: { k: "ev" } }, { id: "fake-id" });
+assert.equal(posted.length, before + 1);
+assert.deepEqual(posted.at(-1), { type: "page", tab: 1, frame: 3, top: true, page: "https://a.com/x", msg: { __tcrl: 1, k: "ev", t: 5, type: "click", trusted: true } }, "消息放在 msg 里，事件自己的 type 字段不会盖掉信封的 type");
+
+// 8. 标签页事件：http/https 的地址变化、关闭
+handlers.tabUpdated[0](1, { url: "https://a.com/y" });
+handlers.tabUpdated[0](1, { url: "chrome://x" });
+handlers.tabUpdated[0](1, { title: "没有 url 变化" });
+handlers.tabRemoved[0](1);
+const tabEvents = posted.filter((m) => m.msg?.k === "tab");
+assert.deepEqual(tabEvents.map((m) => [m.msg.ev, m.tab, m.msg.url]), [["url", 1, "https://a.com/y"], ["closed", 1, ""]]);
+
+// 9. 断开后退避重连；点击工具栏图标立即重连
+port.disconnect();
+await new Promise((r) => setTimeout(r, 1100));
+assert.ok(calls.filter((c) => c[0] === "connectNative").length >= 2, "断开后应重连");
+const connects = calls.filter((c) => c[0] === "connectNative").length;
+port.disconnect();
+handlers.actionClicked[0]();
+await new Promise((r) => setTimeout(r, 5));
+assert.equal(calls.filter((c) => c[0] === "connectNative").length, connects + 1, "点击图标应立即重连");
 
 console.log("extension smoke ok");

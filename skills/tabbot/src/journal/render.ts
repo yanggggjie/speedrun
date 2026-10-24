@@ -1,4 +1,4 @@
-/** 页面快照（hook.js 的 snap 输出）渲染成给 agent 读的文本，元素编号 @e1、@e2… 用于后面的 act。 */
+/** 页面快照（页面脚本 common.js 的 snap 输出）渲染成给 agent 读的文本，元素编号 @e1、@e2… 用于后面的 act。 */
 export type SnapItem = { ref: string; t: string; n?: string; k?: string; nm?: string; v?: string; c?: boolean; h?: string; s?: string };
 export type Snapshot = {
   why?: string; url: string; title: string; headings?: string[];

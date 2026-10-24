@@ -2,41 +2,9 @@
 
 ## 未发布
 
-- 新图标：整个图标面就是一个 t（手法同 yodo，配色不同）：白色的曲线（没有直线）组成 t，笔画延伸出图标边缘，把图标切成粉色、深莓色、蜜桃粉三块。替换原来继承的图标。
-- 新增常驻录制：默认录制**所有 http/https 站点**，一直记录人的操作、页面请求和响应、页面状态，落在 `~/.tabbot/journal`，总大小上限 1GB。内置排除银行、支付、密码管理、统一登录、网页邮箱等敏感站点；`tabbot sites exclude <域名>` 再排除，`sites include <域名>` 重新打开，`sites only <域名> ...` 改成只录点名的站点，`sites all` 改回来。
-- 新增只读观察命令：`tabbot log`、`sql`、`snapshot`、`tabs`、`wait`、`status`。埋点和广告自动识别为噪声，token、Cookie、密码脱敏。
-- 新增在原页面上操作：`tabbot takeover`、`release`、`act click|fill|select|check|press|scroll|goto`。agent 的动作是页面内的合成事件（不弹调试横幅）；元素用稳定引用 `@e12`；每个动作自带等页面稳定，并返回引发的请求。**人一动手（点击、按键、输入）租约立刻撤销**，agent 的动作都记在日志里（来源 `agent`）。
-- 新增请求优先：`tabbot req find`（在响应体里找页面上看到的值）、`req show`、`replay <编号> [--set ...] [--yes]`，在浏览器里把录下来的请求原样再发一次（带登录态），比点页面快。token 等真值只留在浏览器里，日志里是别名；别名改成加盐哈希，重启不变。
-- 修复：JSON 请求体里的 token 之前会原样写进日志，现在先解析再脱敏；太大或不完整的 JSON 不存内容。
-- 扩展新增 `scripting` 和 `<all_urls>` 权限；内容脚本按录制范围动态注册，被排除的站点不注入。更新后需要在 `chrome://extensions` 里刷新一次扩展。
-
-## v2.0.1
-
-- 完全以源码分发，遇到问题可让 agent 读源码修复，见「2.2 遇到问题」。
-- 从 v1 升级时给出完整的扩展加载步骤，并检查旧 task。
-- 登录失效时提醒你重新登录。
-- 超时放宽：单个步骤 60 秒，整个 task 115 秒。
-
-## v2.0.0
-
-- 改用 Chrome 扩展连接，不再需要 remote debugging 和 Allow 弹窗，首次使用加载一次扩展。
-- 录制更完整，覆盖点击、输入、勾选、滚动和页面跳转（含单页应用、新标签页、iframe）。
-- 命令统一为 `tabbot`，task 参数改为具名：`tabbot run <task> --参数 值`；`tabbot eval` 可组合多个 task。
-- 运行更稳定：超时、并发等待和失败信息统一，保存运行历史。
-- 升级自动换新版本；任务或录制进行中时，结束后运行 `tabbot daemon restart`。
-- macOS 已验证，Windows、Linux 尚未充分测试。
-- **不兼容**：v1 带参数的 task 需改成具名参数；`~/.tabbot/temp` 和 `@executor` 取消。
-
-## v1.2.0
-
-- 增加“我教你”教学入口。可以先开始演示，结束时再列出一个或多个要学习的操作。
-
-## v1.1.0
-
-- 优化了 task 表示。已学会的网站操作运行更稳定，并能覆盖更多页面交互。
-- 增加了 DOM 操作后读取 network response。查询结果和提交是否成功都更准确。
-
-## v1.0.0
-
-- 支持通过一次用户演示学习需要登录态的网站操作，并在后续任务中复用。
-- 支持组合运行多个已学会的网站操作。
+- 新图标：整个图标面就是一个 t：白色的曲线（没有直线）组成 t，笔画延伸出图标边缘，把图标切成粉色、深莓色、蜜桃粉三块。
+- 新增常驻录制：一直记录你浏览的所有 http/https 页面——人的操作、HTML 文档（渲染后的 DOM）、XHR 和 fetch 的请求与响应、页面状态，落在 `~/.tabbot/journal`。日志是一个按大小滚动的队列：50MB 一段，总共 500MB，写满就整段删除最旧的。埋点和广告自动识别为噪声；token、Cookie、密码脱敏成稳定的别名。
+- 新增观察命令：`tabbot log`、`sql`、`snapshot`、`text`、`tabs`、`wait`、`status`。
+- 新增在原页面上操作：`tabbot takeover`、`release`、`act click|fill|select|check|press|scroll|goto`。agent 的动作是页面里的 DOM 事件（不弹调试横幅）；元素用稳定引用 `@e12`；每个动作自带等页面稳定，并返回引发的请求。**人一动手（点击、按键、输入）租约立刻撤销**，动作等页面稳定的时候你动手也会立刻停。
+- 新增请求优先：`tabbot req find`（在响应体和页面 HTML 里找页面上看到的值）、`req show`、`replay <编号> [--set ...] [--yes]`，把录下来的请求原样再发一次（带登录态），比点页面快。原始请求（含 token 真值）只在本机 daemon 的内存里，绝不落盘；`--set` 里可以直接写日志里看到的别名，由 daemon 换成真值。
+- 架构：扩展只是一个固定 ABI 的管道，所有逻辑和数据在 daemon；页面脚本由 daemon 经 `chrome.userScripts` 下发，更新页面脚本不用刷新扩展。**需要在 `chrome://extensions` 里打开 TabBot 的「允许用户脚本」**，Chrome 135 及以上。

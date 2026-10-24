@@ -3,7 +3,8 @@
  * 这里只负责判断"还缺什么"：Chrome 没装、没运行、扩展未连接。
  */
 import { spawnSync } from "node:child_process";
-import { HANDSHAKE_GUIDES } from "../protocol.ts";
+import { HANDSHAKE_GUIDES, type HandshakeStatus } from "../protocol.ts";
+import { nativeHostInstalled } from "../native-messaging-host/install.ts";
 
 export class NeedInstallError extends Error {
   constructor() {
@@ -35,4 +36,15 @@ export function chromeRunning(): boolean {
     return spawnSync("tasklist", ["/FI", "IMAGENAME eq chrome.exe"]).stdout?.toString().includes("chrome.exe") ?? false;
   }
   return spawnSync("pgrep", ["-x", "chrome"]).status === 0 || spawnSync("pgrep", ["-x", "google-chrome"]).status === 0;
+}
+
+/** 没装 host → need-install；Chrome 没运行 → need-chrome；否则就是扩展没连上 → need-extension。 */
+export function missingStatus(): HandshakeStatus {
+  if (!nativeHostInstalled()) return "need-install";
+  if (!chromeRunning()) return "need-chrome";
+  return "need-extension";
+}
+
+export function handshakeError(status: HandshakeStatus): Error {
+  return status === "need-install" ? new NeedInstallError() : status === "need-chrome" ? new NeedChromeError() : new NeedExtensionError();
 }

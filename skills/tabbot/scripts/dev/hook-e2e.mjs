@@ -1,4 +1,4 @@
-// 在真实 Chrome 里验证 journal/hook.js 的动作：点击、填写、选择、勾选、按键、滚动、等页面稳定。
+// 在真实 Chrome 里验证 src/page/ 下的页面脚本（common / recorder / executor）：录制的请求和主文档、执行的点击、填写、选择、勾选、按键、滚动、等页面稳定、重放。
 // 用法：node scripts/dev/hook-e2e.mjs（本机要装 Chrome；路径不同时用 CHROME 环境变量指定）。不是自检，不在 npm test 里。
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -10,7 +10,8 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const HOOK = fs.readFileSync(path.join(HERE, "../../src/chrome-extension/journal/hook.js"), "utf8");
+const { loadPageScripts } = await import(new URL("../../src/journal/pages.ts", import.meta.url).href);
+const HOOK = loadPageScripts().find((x) => x.id === "tabbot-page").code; // holder 下发给页面的那一份
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -53,9 +54,9 @@ try {
   await send("Page.enable", {}, S);
   await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__msgs=[];addEventListener("message",(e)=>{if(e.data&&e.data.__tcrl===1)window.__msgs.push(e.data)});` + HOOK }, S);
   const open = async (p) => { await send("Page.navigate", { url: `http://127.0.0.1:8793${p}` }, S); await sleep(700); };
-  const snapRefs = async () => { const s = await ev("JSON.stringify(__tcrSnap('live', true))"); const snap = JSON.parse(s); const byId = {}; for (const i of snap.items) byId[i.s.split(">").pop()] = i.ref; return { snap, byId }; };
+  const snapRefs = async () => { const s = await ev("JSON.stringify(__tcr.exec.snapshot(true))"); const snap = JSON.parse(s); const byId = {}; for (const i of snap.items) byId[i.s.split(">").pop()] = i.ref; return { snap, byId }; };
   // 动作引发页面跳转时，页面里等"稳定"的脚本会被打断（Inspected target navigated）：这是成功，扩展里也按同样方式处理
-  const act = (cmd) => ev(`__tcrAct(${JSON.stringify(cmd)}).then(JSON.stringify)`).then(JSON.parse, (e) => {
+  const act = (cmd) => ev(`__tcr.exec.act(${JSON.stringify(cmd)}).then(JSON.stringify)`).then(JSON.parse, (e) => {
     if (/navigated|closed|destroyed/i.test(String(e.message))) return { ok: true, navigated: true };
     throw e;
   });
@@ -115,7 +116,7 @@ try {
   // 重放：在页面里原样发请求（带这个页面的登录态和请求头），不会被当成页面自己发的请求记进日志
   await open("/");
   await ev(`document.cookie = "sid=abc123; path=/"`);
-  const replay = (req) => ev(`__tcrReplay(${JSON.stringify(req)}).then(JSON.stringify)`).then(JSON.parse);
+  const replay = (req) => ev(`__tcr.exec.replay(${JSON.stringify(req)}).then(JSON.stringify)`).then(JSON.parse);
   r = await replay({ method: "POST", url: "http://127.0.0.1:8793/echo", headers: { "x-token": "RAW-VALUE", "content-type": "application/json" }, body: "{\"a\":1}" });
   assert.equal(r.ok, true, JSON.stringify(r)); assert.equal(r.status, 200);
   const echoed = JSON.parse(r.text);
@@ -138,6 +139,40 @@ try {
   assert.equal(own.length, 1); assert.match(own[0].rid, /^[a-z0-9]{1,8}:\d+$/);
   assert.equal(own[0].reqHeaders.authorization, "Bearer PAGE-RAW", "页面脚本把请求头的真值交给扩展（扩展转给 daemon 前会抹掉）");
   assert.equal(own[0].reqBody, "{\"z\":1}");
+
+  // ---- 录制：主文档的渲染结果、请求、输入的来源只看 isTrusted；WebSocket 和 sendBeacon 不录（也没有被包住）----
+  await open("/");
+  await sleep(2200);
+  const docs = JSON.parse(await ev("JSON.stringify(__msgs.filter((m) => m.k === 'doc'))"));
+  assert.ok(docs.length >= 1 && docs[0].html.startsWith("<!doctype html>") && docs[0].html.includes("<title>fixture</title>"), "主文档渲染后的 HTML 上报了：" + docs.length);
+  assert.ok(JSON.parse(await ev("JSON.stringify(__msgs.some((m) => m.k === 'nav' && m.via === 'load'))")), "load 导航上报了");
+  assert.ok(JSON.parse(await ev("JSON.stringify(__msgs.some((m) => m.k === 'snap'))")), "页面快照上报了");
+  assert.ok(await ev("/native code/.test(WebSocket.toString()) && /native code/.test(navigator.sendBeacon.toString())"), "WebSocket 和 sendBeacon 没有被包住");
+  await ev("__msgs.length = 0");
+  const third2 = await snapRefs();
+  await act({ kind: "click", ref: "@" + third2.byId["#b"] });
+  await sleep(300);
+  const agentEvents = JSON.parse(await ev("JSON.stringify(__msgs.filter((m) => m.k === 'ev'))"));
+  assert.ok(agentEvents.length > 0 && agentEvents.every((m) => m.trusted === false), "agent 的 DOM 事件如实上报，isTrusted 为假：" + JSON.stringify(agentEvents));
+  // 真人的输入（CDP 的 Input 事件 isTrusted 为真）：上报为 trusted，并带在场信号
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: 400, y: 5, button: "left", clickCount: 1 }, S);
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 400, y: 5, button: "left", clickCount: 1 }, S);
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "a", text: "a" }, S);
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: "a" }, S);
+  await sleep(300);
+  const humanMsgs = JSON.parse(await ev("JSON.stringify(__msgs.filter((m) => (m.k === 'ev' && m.trusted === true) || m.k === 'presence'))"));
+  assert.ok(humanMsgs.some((m) => m.k === 'ev' && m.type === 'click'), "真人的点击上报为 trusted");
+  assert.ok(humanMsgs.some((m) => m.k === 'presence' && m.kind === 'key'), "真人按键有在场信号");
+
+  // ---- 执行：等页面稳定的时候真人动手了，立刻停止等待，告诉 holder ----
+  await open("/"); const fourth = await snapRefs();
+  const slow = act({ kind: "click", ref: "@" + fourth.byId["#slow"] });
+  await sleep(250);
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: 400, y: 5, button: "left", clickCount: 1 }, S);
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 400, y: 5, button: "left", clickCount: 1 }, S);
+  r = await slow;
+  assert.equal(r.ok, true, JSON.stringify(r)); assert.equal(r.revokedDuring, true, "动作执行期间人动手了：" + JSON.stringify(r)); assert.equal(r.settle.aborted, true);
+  assert.ok(r.settle.waitedMs < 600, "没有等满 700ms 的请求");
 
   console.log("hook e2e ok");
 } finally {

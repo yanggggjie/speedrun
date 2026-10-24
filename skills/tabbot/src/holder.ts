@@ -1,60 +1,46 @@
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
-import { connectChrome, disconnectChrome, ExtensionLink, frame, parseFrames, setActiveLink, type CdpBrowser, type CdpContext, type CdpPage } from "./browser/index.ts";
-import { finishRecord, liveRecordName, startRecord } from "./record/index.ts";
-import { devRpc } from "./dev/rpc.ts";
-import { Ingestor, type HookMsg } from "./journal/ingest.ts";
-import { enforceCap } from "./journal/retention.ts";
-import { extensionConfig, readConfig } from "./journal/sites.ts";
-import { dayOf, JournalStore } from "./journal/store.ts";
-import { readEventBySeq } from "./journal/query.ts";
-import { missingSiteOps } from "./browser/extension.ts";
-import { isSafeMethod, pickReplayTab, summarizeBody, templateFromRow } from "./journal/replay.ts";
-import { loadAdblockEngine } from "./record/pipeline.ts";
+import { ABI, ExtensionLink, frame, parseFrames } from "./browser/extension.ts";
+import { NeedExtensionError, handshakeError, missingStatus } from "./browser/connect.ts";
+import { loadAdblockEngine } from "./journal/filter.ts";
+import { runCommand, type Ctx, type TabInfo } from "./journal/commands.ts";
+import { Ingestor, type PageMsg } from "./journal/ingest.ts";
+import { Leases } from "./journal/lease.ts";
+import { PageHost } from "./journal/pages.ts";
+import { RawStore } from "./journal/raw.ts";
+import { JournalStore } from "./journal/store.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
-import { NeedExtensionError } from "./browser/connect.ts";
-import { Mode, type Busy } from "./mode.ts";
-import { ensureHomeLayout } from "./store/layout.ts";
 import { readVersion } from "./store/version.ts";
-import { HANDSHAKE_GUIDES, RPC_ERRORS, handshakeStatusFromError, type JsonRpcNotification, type JsonRpcRequest, type JsonRpcResponse } from "./protocol.ts";
-import { JOURNAL_ALIAS_SALT_FILE, JOURNAL_DIR, CDP_COMMAND_TIMEOUT_MS, CDP_SHORT_TIMEOUT_MS, RECORDING_DIR, SESSION_DIR, SESSION_EXT_SOCK, SESSION_LOG, SESSION_SOCK, SESSION_SOCK_IS_FILE } from "./utils/constants.ts";
+import { HANDSHAKE_GUIDES, RPC_ERRORS, handshakeStatusFromError, type JsonRpcRequest, type JsonRpcResponse } from "./protocol.ts";
+import { HOLDER_IDLE_EXIT_MS, HOLDER_READY_MS, JOURNAL_ALIAS_SALT_FILE, JOURNAL_DIR, SESSION_DIR, SESSION_EXT_SOCK, SESSION_LOG, SESSION_SOCK, SESSION_SOCK_IS_FILE } from "./utils/constants.ts";
 import { createLogger, setLogFile } from "./utils/logger.ts";
 
+/**
+ * holder：本机常驻 daemon，唯一的大脑。收扩展推来的页面消息写日志，执行命令行发来的命令（租约、动作、重放、查询都在这里）。
+ * 扩展只是管道，CLI 只是把参数发过来、把文本打印出去。
+ */
 const logger = createLogger("holder");
 const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
-// 发送缓冲上限。只在 task 长时间不读 socket 时才会涨满，正常运行远低于此值；超过就结束 run 并说明原因。
-const MAX_QUEUE_BYTES = 64 * 1024 * 1024;
 
-let browser: CdpBrowser | undefined;
-let context: CdpContext | undefined;
-let chromeVersion = "";
-let chromeReady: Promise<void> | null = null;
-/** 扩展每次 hello 之后的对账；除 ping 外的请求都要等它完成。 */
-let reconciled: Promise<void> = Promise.resolve();
 let shuttingDown = false;
 let server: net.Server | null = null;
 let extServer: net.Server | null = null;
 let extSocket: net.Socket | null = null;
-let idleTimer: ReturnType<typeof setTimeout> | undefined;
-/** 扩展链路对象在 daemon 生命周期内只有一个；relay 断开只 detach，不 close。 */
-const link = new ExtensionLink();
-setActiveLink(link);
-/** run / 录制操作 / 录制进行中 的互斥和 RUN_BUSY 的 reason 都在 mode.ts。 */
-const mode = new Mode<ConnState>(liveRecordName);
+let lastActivity = Date.now();
 /** 本 daemon 启动时部署目录的 build；doctor 拿它和磁盘上的对比，不一致时提示重启（tabbot daemon restart）。 */
 const startupBuild = readVersion()?.build ?? "";
-/** 当前连着的扩展报告的 build（扩展对自己的 background.js 与 manifest.json 取的哈希）。 */
-let extensionBuild = "";
-/** 当前连着的扩展握手时报告的操作列表；旧版本的扩展没有。 */
-let extensionOps: string[] | undefined;
-// 页面事件按 sessionId（pageId）推给当前 run 的 client；client 自己按 method 过滤。
-link.onAny((method, params, sessionId) => {
-  const run = mode.runConn();
-  if (!run || !sessionId) return;
-  run.write({ jsonrpc: "2.0", method: "cdp.event", params: { sessionId, method, params } });
-});
-/** 别名的盐：第一次运行时随机生成，存在日志目录里（权限 0600）；别名由它和真值哈希得到，不能还原真值。 */
+
+const link = new ExtensionLink();
+const pages = new PageHost(link);
+const leases = new Leases();
+const raw = new RawStore();
+let ingest: Ingestor | undefined;
+let adblock: FiltersEngine | undefined;
+/** 扩展连上之后下发页面脚本：命令要等它做完；失败的原因留着，告诉用户。 */
+let installing: Promise<void> = Promise.resolve();
+let installError = "";
+
 function aliasSalt(): string {
   try { return fs.readFileSync(JOURNAL_ALIAS_SALT_FILE, "utf8").trim(); } catch { /* 第一次 */ }
   const salt = randomBytes(24).toString("hex");
@@ -62,230 +48,122 @@ function aliasSalt(): string {
   fs.writeFileSync(JOURNAL_ALIAS_SALT_FILE, salt, { mode: 0o600 });
   return salt;
 }
-/** 常驻录制：扩展推来的页面事件写进 ~/.tabbot/journal，adblock 规则加载好之前只用启发式识别噪声。 */
-let journal: Ingestor | undefined;
-let adblock: FiltersEngine | undefined;
-const RETENTION_CHECK_MS = 5 * 60_000;
-link.raw.on("lease", (params) => {
-  const m = params as { tab: number; state: string; t: number; reason?: string; by?: string };
-  journal?.recordLease(m);
-});
-link.raw.on("journal", (params) => {
-  const events = (params as { events?: HookMsg[] }).events;
-  if (Array.isArray(events)) journal?.handleBatch(events);
-});
-/** 录制范围推给扩展：扩展每次 hello 之后、CLI 改了范围之后各推一次。 */
-function pushSites(): Promise<unknown> { return link.siteOp("setSites", extensionConfig(readConfig())); }
-/** agent 的动作：经扩展在页面里执行；动作和它引发的请求记进日志（来源 agent）。返回扩展的结果，加上动作那一行的 seq。 */
-async function runAct(tabId: number, cmd: Record<string, unknown>): Promise<unknown> {
-  const kind = String(cmd.kind ?? "");
-  const ts = Date.now();
-  const target = typeof cmd.ref === "string" ? cmd.ref : typeof cmd.url === "string" ? cmd.url : typeof cmd.key === "string" ? cmd.key : "";
-  const act = journal?.beginAct(tabId, ts, kind, target, { cmd: { ...cmd, text: undefined }, chars: typeof cmd.text === "string" ? cmd.text.length : undefined });
-  try {
-    const result = (await link.siteOp("act", { tabId, cmd })) as { ok?: boolean; target?: unknown; chars?: number; error?: string; rejected?: string };
-    if (act) journal?.endAct(tabId, act, Date.now(), { target: describeTarget(result.target) || target, size: result.chars, detail: { ok: result.ok, error: result.error, rejected: result.rejected } });
-    return { ...(result as object), actSeq: act?.seq };
-  } catch (error) {
-    if (act) journal?.endAct(tabId, act, Date.now(), { detail: { ok: false, error: error instanceof Error ? error.message : String(error) } });
-    throw error;
-  }
-}
-/**
- * 重放日志里的一个请求：原始内容（含 token 真值）在浏览器里，由扩展取出、应用 --set、在同源页面里原样发出（带登录态）；
- * 这里只负责挑请求、挑标签页、把响应脱敏后记进日志。非 GET 要 `yes`（有副作用）。
- */
-async function runReplay(params: Record<string, unknown>): Promise<unknown> {
-  const fail = (error: string) => ({ ok: false, error });
-  const seq = Number(params.seq);
-  const row = Number.isInteger(seq) ? await readEventBySeq(seq) : undefined;
-  if (!row) return fail(`找不到事件 #${String(params.seq)}（用 tabbot req find 找请求）`);
-  const base = templateFromRow(row);
-  if ("error" in base) return fail(base.error);
-  let rid: string | undefined;
-  try { rid = (JSON.parse(row.detail ?? "{}") as { rid?: string }).rid; } catch { /* 没有细节 */ }
-  if (!rid) return fail(`#${row.seq} 没有保存原始内容（是升级前录的，或不是页面里发的请求）`);
-  if (!isSafeMethod(row.method!) && params.yes !== true) return fail(`${row.method} 请求可能有副作用（下单、提交、删除）：确认要重放请加 --yes，并且先问过用户`);
-  const sets = Array.isArray(params.sets) ? params.sets.map(String) : [];
-  let tabId = Number(params.tabId);
-  if (!Number.isInteger(tabId)) {
-    const listed = (await link.siteOp("siteTabs")) as { tabs: { tabId: number; active: boolean; url: string }[] };
-    const picked = pickReplayTab(listed.tabs, row.url!);
-    if (picked === undefined) return fail(`没有和这个请求同源的标签页（${new URL(row.url!).origin}）：先 tabbot act goto 打开该站点，或用 --tab 指定`);
-    tabId = picked;
-  }
-  const ts = Date.now();
-  const res = (await link.siteOp("replay", { tabId, rawTab: row.tab, rid, sets })) as { ok?: boolean; error?: string; rejected?: string; humanIdleMs?: number; status?: number; ct?: string; size?: number; text?: string; truncated?: boolean; ms?: number; sentUrl?: string; sentMethod?: string };
-  if (res.rejected) return { ...res, ok: false, tabId };
-  const setKeys = sets.map((x) => x.split("=")[0]!);
-  const rawUrl = res.sentUrl ?? row.url!;
-  const method = res.sentMethod ?? row.method!;
-  if (res.ok === false) {
-    if (res.sentUrl) journal?.recordReplay(tabId, ts, { method, rawUrl, replayOf: seq, setKeys, error: res.error });
-    return { ...res, tabId };
-  }
-  const rec = journal?.recordReplay(tabId, ts, { method, rawUrl, replayOf: seq, setKeys, status: res.status, ct: res.ct, size: res.size, text: res.text, ms: res.ms });
-  return {
-    ok: true, tabId, status: res.status, ct: res.ct, size: res.size, ms: res.ms, truncated: res.truncated === true, replaySeq: rec?.seq, bodyFile: rec?.bodyFile,
-    method, summary: summarizeBody(rec?.preview ?? "", res.ct ?? ""), preview: (rec?.preview ?? "").slice(0, 1500), warnings: base.warnings,
-  };
-}
-/** 页面里返回的元素描述 { tag, role, text, sel } 变成日志里的 `button[提交]`。 */
-function describeTarget(t: unknown): string {
-  if (typeof t === "string") return t;
-  if (!t || typeof t !== "object") return "";
-  const o = t as { tag?: string; role?: string | null; text?: string };
-  const name = (o.role || o.tag || "").trim();
-  return o.text ? `${name}[${o.text.slice(0, 30)}]` : name;
-}
-/** ponytail: 没有 relay 且没有 run/record 超过 10 分钟才退出；忙时不重试，下次 relay 断开再判断。 */
-const IDLE_EXIT_MS = 10 * 60_000;
-
-type ConnState = { runActive: boolean; write: (message: JsonRpcResponse | JsonRpcNotification, priority?: boolean) => void };
-function busyError(busy: Busy): Error { return Object.assign(new Error(busy.message), { code: RPC_ERRORS.RUN_BUSY, data: { reason: busy.reason } }); }
-
-function pagesOf(ctx: CdpContext): number { return ctx.pages().filter((page) => !page.isClosed()).length; }
-/** `extension`：扩展链路当前是否接着。holder 在 relay 断开后还会存活一段时间，ping 通不代表扩展在线。 */
-function pingBody() { return { pid: process.pid, chrome: chromeVersion, extension: extSocket !== null, pages: context ? pagesOf(context) : 0, record: liveRecordName(), mode: mode.kind(), build: startupBuild, extensionBuild, extensionOps }; }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
-async function tryConnectChrome(): Promise<void> { const connected = await connectChrome(); browser = connected.browser; context = connected.context; chromeVersion = await browser.version().catch(() => "Google Chrome (CDP)"); browser.on("disconnected", () => void shutdown(1)); }
-async function ensureChrome(): Promise<void> {
-  if (!browser) { chromeReady ??= tryConnectChrome().catch((error) => { chromeReady = null; throw error; }); await chromeReady; }
-  if (!browser || !context) throw new Error("holder 尚未连上 Chrome");
-}
 
-async function settleIdle(): Promise<void> {
-  if (!browser || !context || liveRecordName()) return;
-  const previous = browser.raw.commandTimeoutMs; browser.raw.commandTimeoutMs = CDP_SHORT_TIMEOUT_MS;
-  try { await context.detachAllPages(context.runKeepIds()).catch(warnCatch("detachAllPages")); }
-  finally { browser.raw.commandTimeoutMs = previous; }
-}
+leases.onEvent = (event) => ingest?.recordLease(event);
 
-/** 对账：扩展（重新）连上，或录制结束关掉窗口之后，让 holder 的窗口记录与扩展里的实际一致。 */
-function reconcileNow(): Promise<void> {
-  return context!.reconcile({ recordLive: liveRecordName() !== null, runActive: mode.runConn() !== null });
-}
-
-async function runEnd(conn = mode.runConn()): Promise<void> {
-  // runActive 同时防止 run.end 与连接断开同时触发时清理两遍
-  if (!conn || mode.runConn() !== conn || !conn.runActive) return;
-  conn.runActive = false;
-  try {
-    if (browser) browser.raw.commandTimeoutMs = CDP_SHORT_TIMEOUT_MS;
-    await context?.endRunTab().catch(warnCatch("endRunTab"));
-    await settleIdle().catch(warnCatch("run end settle"));
-  } finally {
-    // 清理做完才释放：下一个 run.begin 不会和这里对 run 窗口的清理同时进行
-    mode.endRun(conn);
+/** 页面消息：执行结果交给 PageHost；真人输入撤销租约；其余写日志。 */
+link.on("page", (m) => {
+  const inner = (m.msg ?? {}) as Record<string, unknown>;
+  const msg = { ...inner, k: String(inner.k ?? ""), t: typeof inner.t === "number" ? inner.t : Date.now(), tab: Number(m.tab), frame: Number(m.frame ?? 0), top: m.top === true, page: typeof m.page === "string" ? m.page : undefined } as PageMsg;
+  if (pages.onMessage(msg)) return;
+  lastActivity = Date.now();
+  if (msg.k === "presence") { leases.humanInput(msg.tab, String(msg.kind)); return; }
+  if (msg.k === "ev" && msg.trusted === true) leases.humanInput(msg.tab, String(msg.type));
+  if (msg.k === "tab") {
+    pages.onTabEvent(msg.tab, String(msg.ev));
+    if (msg.ev === "closed") leases.closed(msg.tab);
   }
+  ingest?.push(msg);
+});
+
+function pingBody() {
+  return { pid: process.pid, extension: extSocket !== null, build: startupBuild, abi: link.abi, userScripts: link.userScripts, installError };
 }
 
-function pageById(id: unknown): CdpPage { if (typeof id !== "string") throw Object.assign(new Error("缺少 pageId"), { code: RPC_ERRORS.INVALID_PARAMS }); const page = context?.getPage(id); if (!page) throw Object.assign(new Error(`page 不存在或已关闭：${id}`), { code: RPC_ERRORS.PAGE_NOT_FOUND }); return page; }
-function paramsOf(req: JsonRpcRequest): Record<string, unknown> { return req.params ?? {}; }
-/** 扩展里没有 browser 级会话：connection / browser scope 发出的命令没有 tab，会被 raw.send 拒绝。 */
-
-/** 常驻录制的 RPC：经扩展执行。 */
-async function journalDispatch(req: JsonRpcRequest, params: Record<string, unknown>): Promise<unknown> {
-  if (req.method === "journal.sync") return pushSites();
-  if (req.method === "journal.tabs") return link.siteOp("siteTabs");
-  if (req.method === "journal.lease") return link.siteOp(params.op === "release" ? "leaseRelease" : "leaseAcquire", { tabId: params.tabId, reason: params.reason });
-  if (req.method === "journal.act") return runAct(Number(params.tabId), (params.cmd ?? {}) as Record<string, unknown>);
-  if (req.method === "journal.replay") return runReplay(params);
-  if (req.method === "journal.text") return link.siteOp("text", { tabId: params.tabId, max: params.max });
-  return link.siteOp("snapshot", { tabId: params.tabId, full: params.full === true });
-}
-
-async function dispatch(req: JsonRpcRequest, conn: ConnState): Promise<unknown> {
-  if (req.method === "ping") { if (chromeReady) await chromeReady.catch(() => {}); return pingBody(); }
-  if (req.method.startsWith("journal.")) {
+async function ensureExtension(): Promise<void> {
+  if (!extSocket) {
+    const status = missingStatus();
+    if (status !== "need-extension") throw handshakeError(status);
+    // Chrome 在运行且 host 已注册：扩展可能正在（重新）连接，等一会
+    const deadline = Date.now() + HOLDER_READY_MS;
+    while (!extSocket && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
     if (!extSocket) throw new NeedExtensionError();
-    try { return await journalDispatch(req, paramsOf(req)); } catch (error) {
-      const m = error instanceof Error ? /^未知操作 (\w+)/.exec(error.message) : null;
-      if (m) throw new Error(`Chrome 里的 TabBot 扩展是旧版本，不认识 ${m[1]} 操作：请在 chrome://extensions 里刷新 TabBot 扩展（${missingSiteOps(extensionOps).length ? `还缺：${missingSiteOps(extensionOps).join("、")}` : "刷新后再试"}）`);
-      throw error;
-    }
   }
-  await ensureChrome();
-  await reconciled;
-  const params = paramsOf(req);
-  switch (req.method) {
-    case "dev.pages": case "dev.cdp": return devRpc(req.method, params, browser!.raw);
-    case "run.begin": {
-      const busy = mode.tryBeginRun(conn);
-      if (busy) throw busyError(busy);
-      conn.runActive = true;
-      try {
-        browser!.raw.commandTimeoutMs = CDP_COMMAND_TIMEOUT_MS;
-        const page = await context!.newPage(); return { pageId: page.targetId };
-      } catch (error) {
-        await runEnd(conn);
-        throw error;
-      }
-    }
-    case "run.end": await runEnd(conn); return {};
-    case "cdp.send": {
-      if (!conn.runActive) throw new Error("cdp.send 只能在 run 中使用");
-      const method = String(params.method ?? "");
-      if (!method) throw Object.assign(new Error("缺少 CDP method"), { code: RPC_ERRORS.INVALID_PARAMS });
-      const page = pageById(params.pageId);
-      return await browser!.raw.send(method, (params.params as Record<string, unknown> | undefined) ?? {}, page.sessionId, typeof params.timeoutMs === "number" ? params.timeoutMs : undefined);
-    }
-    case "record.start": {
-      const busy = mode.tryBeginRecordStart();
-      if (busy) throw busyError(busy);
-      try { return await startRecord(browser!, context!, { name: typeof params.name === "string" ? params.name : undefined }); }
-      catch (error) { await finishRecord("abort").catch(warnCatch("record start abort")); throw error; }
-      finally { mode.endRecordOp(); if (!liveRecordName()) await settleIdle(); }
-    }
-    case "record.stop": case "record.abort": {
-      const busy = mode.tryBeginRecordFinish();
-      if (busy) throw busyError(busy);
-      try { return await finishRecord(req.method === "record.stop" ? "stop" : "abort"); }
-      finally { mode.endRecordOp(); await settleIdle(); await reconcileNow().catch(warnCatch("reconcile after record")); }
-    }
-    default: throw Object.assign(new Error(`未知 method：${String(req.method)}`), { code: RPC_ERRORS.METHOD_NOT_FOUND });
-  }
+  if (!link.compatible()) throw new Error(`Chrome 里的 TabBot 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 TabBot 扩展`);
+  await installing;
+  if (installError) throw new Error(installError);
 }
 
-function responseError(id: string, error: unknown): JsonRpcResponse { const status = handshakeStatusFromError(error); if (status) return { jsonrpc: "2.0", id, error: { code: RPC_ERRORS.HANDSHAKE, message: HANDSHAKE_GUIDES[status], data: { status } } }; const value = error as { code?: number; data?: unknown }; return { jsonrpc: "2.0", id, error: { code: typeof value?.code === "number" ? value.code : RPC_ERRORS.INTERNAL, message: error instanceof Error ? error.message : String(error), ...(value?.data === undefined ? {} : { data: value.data }) } }; }
+async function listTabs(): Promise<TabInfo[]> {
+  return ((await link.request("tabs")) as { tabs: TabInfo[] }).tabs;
+}
 
+const ctx: Ctx = {
+  ensureExtension,
+  tabs: listTabs,
+  call: (tab, expr, options) => pages.call(tab, expr, options),
+  goto: async (tab, url) => { await link.request("goto", { tabId: tab, url }); },
+  waitLoaded: async (tab) => {
+    const deadline = Date.now() + 15_000;
+    let last: TabInfo | undefined;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150));
+      last = (await listTabs()).find((t) => t.tabId === tab);
+      if (!last) return undefined;
+      if (last.status === "complete") break;
+    }
+    return last ? { url: last.url, title: last.title } : undefined;
+  },
+  get leases() { return leases; },
+  get ingest() { return ingest!; },
+  get raw() { return raw; },
+  daemon: () => ({ extension: extSocket !== null, pid: process.pid }),
+};
+
+async function dispatch(req: JsonRpcRequest): Promise<unknown> {
+  lastActivity = Date.now();
+  if (req.method === "ping") return pingBody();
+  if (req.method === "run") {
+    const argv = req.params?.argv;
+    if (!Array.isArray(argv) || !argv.every((x) => typeof x === "string")) throw Object.assign(new Error("run 需要字符串数组 argv"), { code: RPC_ERRORS.INVALID_PARAMS });
+    ingest?.flush();
+    return runCommand(argv as string[], ctx);
+  }
+  throw Object.assign(new Error(`未知 method：${String(req.method)}`), { code: RPC_ERRORS.METHOD_NOT_FOUND });
+}
+
+function responseError(id: string, error: unknown): JsonRpcResponse {
+  const status = handshakeStatusFromError(error);
+  if (status) return { jsonrpc: "2.0", id, error: { code: RPC_ERRORS.HANDSHAKE, message: HANDSHAKE_GUIDES[status], data: { status } } };
+  const value = error as { code?: number; data?: unknown };
+  return { jsonrpc: "2.0", id, error: { code: typeof value?.code === "number" ? value.code : RPC_ERRORS.INTERNAL, message: error instanceof Error ? error.message : String(error), ...(value?.data === undefined ? {} : { data: value.data }) } };
+}
+
+/** CLI 连上来：一行一个 JSON-RPC 请求，一行一个应答。 */
 function onConnection(socket: net.Socket): void {
   socket.setEncoding("utf8"); // 一个汉字的字节可能被拆在两个数据块里，按字节拼接会变成替换字符
-  let overflowed = false; let buffer = ""; let writing = false; let queuedBytes = 0; const responses: string[] = []; const notifications: string[] = [];
-  const flush = (): void => { if (writing || socket.destroyed) return; const message = responses.shift() ?? notifications.shift(); if (!message) return; queuedBytes -= Buffer.byteLength(message); writing = true; socket.write(message, () => { writing = false; flush(); }); };
-  /** 写队列超限：绕过队列写一行没有 id 的错误说明原因（client 据此报错），写完断开，同时结束这次 run。 */
-  const overflow = (why: string): void => {
-    if (overflowed) return;
-    overflowed = true;
-    logger.warn("连接写队列超限，结束 run", { why, queuedBytes });
-    const message = `daemon 推给 task 的数据超过上限（${why}），已结束这次 run。task 不需要的页面事件不要开启对应的 CDP 域（如 Network.enable），或者在页面里先缩小要取的数据。`;
-    if (!socket.destroyed) socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: "", error: { code: RPC_ERRORS.INTERNAL, message } })}\n`, () => socket.destroy());
-    void runEnd(conn);
+  let buffer = "";
+  const write = (message: JsonRpcResponse): void => {
+    const line = `${JSON.stringify(message)}\n`;
+    if (Buffer.byteLength(line) > MAX_MESSAGE_BYTES) { write({ jsonrpc: "2.0", id: message.id, error: { code: RPC_ERRORS.INTERNAL, message: "应答超过上限，缩小查询范围" } }); return; }
+    if (!socket.destroyed) socket.write(line);
   };
-  const write = (message: JsonRpcResponse | JsonRpcNotification, priority = false): void => { if (overflowed) return; const line = `${JSON.stringify(message)}\n`; const bytes = Buffer.byteLength(line); if (bytes > MAX_MESSAGE_BYTES) { overflow(`单条消息 ${bytes} 字节，上限 ${MAX_MESSAGE_BYTES}`); return; } if (queuedBytes + bytes > MAX_QUEUE_BYTES) { overflow(`排队中的数据超过 ${MAX_QUEUE_BYTES} 字节`); return; } (priority ? responses : notifications).push(line); queuedBytes += bytes; flush(); };
-  const conn: ConnState = { runActive: false, write };
   socket.on("data", (chunk) => {
-    buffer += chunk.toString(); if (Buffer.byteLength(buffer) > MAX_MESSAGE_BYTES) { write({ jsonrpc: "2.0", id: "", error: { code: RPC_ERRORS.INVALID_REQUEST, message: "RPC message too large" } }, true); socket.end(); return; }
-    let nl: number; while ((nl = buffer.indexOf("\n")) >= 0) { const line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1); if (!line.trim()) continue; let req: JsonRpcRequest; try { req = JSON.parse(line) as JsonRpcRequest; } catch { write({ jsonrpc: "2.0", id: "", error: { code: RPC_ERRORS.PARSE, message: "Parse error" } }, true); continue; }
-      if (req.jsonrpc !== "2.0" || typeof req.id !== "string" || typeof req.method !== "string") { write({ jsonrpc: "2.0", id: typeof req.id === "string" ? req.id : "", error: { code: RPC_ERRORS.INVALID_REQUEST, message: "Invalid Request" } }, true); continue; }
-      void dispatch(req, conn).then((result) => write({ jsonrpc: "2.0", id: req.id, result }, true), (error) => write(responseError(req.id, error), true));
+    buffer += chunk.toString();
+    if (Buffer.byteLength(buffer) > MAX_MESSAGE_BYTES) { write({ jsonrpc: "2.0", id: "", error: { code: RPC_ERRORS.INVALID_REQUEST, message: "RPC message too large" } }); socket.end(); return; }
+    let nl: number;
+    while ((nl = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
+      if (!line.trim()) continue;
+      let req: JsonRpcRequest;
+      try { req = JSON.parse(line) as JsonRpcRequest; } catch { write({ jsonrpc: "2.0", id: "", error: { code: RPC_ERRORS.PARSE, message: "Parse error" } }); continue; }
+      if (req.jsonrpc !== "2.0" || typeof req.id !== "string" || typeof req.method !== "string") { write({ jsonrpc: "2.0", id: typeof req.id === "string" ? req.id : "", error: { code: RPC_ERRORS.INVALID_REQUEST, message: "Invalid Request" } }); continue; }
+      void dispatch(req).then((result) => write({ jsonrpc: "2.0", id: req.id, result }), (error) => write(responseError(req.id, error)));
     }
   });
-  socket.on("close", () => { if (conn.runActive) void runEnd(conn).catch(warnCatch("run cleanup on close")); });  socket.on("error", () => {});
+  socket.on("error", () => {});
 }
 
 async function shutdown(code: number): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("holder exit", { code });
-  if (liveRecordName()) await finishRecord("disconnect").catch(warnCatch("disconnect flush"));
-  await context?.closeRunWindow().catch(warnCatch("closeRunWindow"));
-  await settleIdle().catch(warnCatch("settleIdle"));
+  try { ingest?.flush(); } catch (error) { warnCatch("flush on exit")(error); }
   server?.close();
   extServer?.close();
   extSocket?.destroy();
   if (SESSION_SOCK_IS_FILE) { fs.rmSync(SESSION_SOCK, { force: true }); fs.rmSync(SESSION_EXT_SOCK, { force: true }); }
-  if (browser) await disconnectChrome(browser).catch(warnCatch("disconnectChrome"));
   process.exit(code);
 }
 
@@ -330,17 +208,16 @@ function onRelay(sock: net.Socket): void {
           // 只有合法 hello 才替换旧连接：单例探测等无效连接不能把正在用的扩展踢掉。
           const previous = extSocket;
           extSocket = sock;
-          clearTimeout(idleTimer);
           previous?.destroy();
           link.hello(msg);
-          chromeVersion = link.chromeVersion;
-          extensionBuild = typeof msg.buildId === "string" ? msg.buildId : "";
-          extensionOps = Array.isArray(msg.ops) ? msg.ops.filter((x): x is string => typeof x === "string") : undefined;
           link.attach((out) => sock.write(frame(out)));
           helloDone = true;
-          logger.info("extension connected");
-          pushSites().catch(warnCatch("push sites"));
-          reconciled = ensureChrome().then(reconcileNow).catch(warnCatch("reconcile on hello"));
+          lastActivity = Date.now();
+          logger.info("extension connected", { abi: link.abi, userScripts: link.userScripts });
+          installError = "";
+          if (!link.compatible()) installError = `Chrome 里的 TabBot 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 TabBot 扩展`;
+          else if (!link.userScripts) installError = "TabBot 扩展没有用户脚本权限：请在 chrome://extensions 的 TabBot 详情页打开『允许用户脚本』，再点一下扩展图标";
+          else installing = pages.install().catch((error: unknown) => { installError = `页面脚本没有装上：${error instanceof Error ? error.message : String(error)}`; logger.warn(installError); });
           return;
         }
         link.receive(msg);
@@ -354,12 +231,8 @@ function onRelay(sock: net.Socket): void {
     if (extSocket !== sock) return;
     extSocket = null;
     link.detach();
+    lastActivity = Date.now();
     logger.info("extension link closed");
-    extensionBuild = "";
-    extensionOps = undefined;
-    if (mode.runConn()) void runEnd().catch(warnCatch("run cleanup on relay close"));
-    idleTimer = setTimeout(() => { if (!extSocket && mode.kind() === "idle") void shutdown(0); }, IDLE_EXIT_MS);
-    idleTimer.unref();
   });
   sock.on("error", () => {});
 }
@@ -367,18 +240,17 @@ function onRelay(sock: net.Socket): void {
 export async function runHolder(): Promise<void> {
   fs.mkdirSync(SESSION_DIR, { recursive: true });
   setLogFile(SESSION_LOG);
-  ensureHomeLayout();
   extServer = await listenUnique(SESSION_EXT_SOCK, onRelay);
   if (!extServer) { logger.warn("已有 holder 在运行，本进程退出"); process.exit(0); }
   server = await listenUnique(SESSION_SOCK, onConnection);
   if (!server) { logger.warn("CLI socket 被占用，本进程退出"); extServer.close(); if (SESSION_SOCK_IS_FILE) fs.rmSync(SESSION_EXT_SOCK, { force: true }); process.exit(0); }
-  fs.rmSync(RECORDING_DIR, { recursive: true, force: true });
   const store = new JournalStore();
   await store.open();
-  journal = new Ingestor(store, { engine: () => adblock, aliasKey: aliasSalt() });
+  store.enforceCap();
+  ingest = new Ingestor(store, { engine: () => adblock, aliasKey: aliasSalt(), raw });
   loadAdblockEngine().then((engine) => { adblock = engine; }).catch(warnCatch("adblock engine"));
-  const retention = setInterval(() => { try { enforceCap({ today: dayOf(Date.now()) }); } catch (error) { warnCatch("retention")(error); } }, RETENTION_CHECK_MS);
-  retention.unref();
+  // 没有扩展连接、也没有命令请求超过 HOLDER_IDLE_EXIT_MS 就退出；下次需要时由 relay 或 CLI 重新拉起
+  setInterval(() => { if (!extSocket && Date.now() - lastActivity > HOLDER_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();
   process.on("SIGINT", () => void shutdown(0));
   process.on("SIGTERM", () => void shutdown(0));
   process.on("uncaughtException", (error) => { logger.error("uncaughtException", error); void shutdown(1); });

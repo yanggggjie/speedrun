@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TabBot",
-  "version": "0.1.0",
-  "description": "TabBot 的 Chrome 连接扩展：常驻录制你浏览的站点（排除敏感站点），并只操作它自己打开的标签页。",
+  "version": "0.2.0",
+  "description": "TabBot 的 Chrome 扩展：一个把 holder 和页面连起来的管道。常驻录制你浏览的页面，并让 agent 在你的原页面上操作，你一碰就停。",
   "icons": {
     "16": "icons/16.png",
     "32": "icons/32.png",
@@ -20,12 +20,10 @@
   },
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqPjJiXTypA42pfdUe7r2ziS3eln/nMDYBhLaL2SE2WmGRnFhkL5ip5QqHdtODc6udOFz1Hb2gmv8lO/tZgtkHmxea9ayoC5rJjckBo2iQiEaAS6J6HEpfdkPtSjdg2luktVCtxM2DWH7YfT3Lrp6pErWv4feBEvkaKTf7RVO1Sc9HYdSQAbCl40paO0n14Ricni8ruodOsIAre6x82RHFAIuVIbr8rh/2x9ZttVqoP8QsOWXxszLm6Eldc+ICExIRJwX2mYLt4nu9a87DrbEVbHyucG9tAHqjn+LivOAAnaSIWXdgcDprCFKPcd4CWSyOA2Uc5RCDYZQnsTxb6sdEwIDAQAB",
   "permissions": [
-    "debugger",
     "tabs",
     "nativeMessaging",
-    "storage",
     "alarms",
-    "scripting"
+    "userScripts"
   ],
   "background": {
     "service_worker": "background.js",
@@ -33,5 +31,6 @@
   },
   "host_permissions": [
     "<all_urls>"
-  ]
+  ],
+  "minimum_chrome_version": "135"
 }

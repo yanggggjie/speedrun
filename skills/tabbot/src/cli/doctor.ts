@@ -1,17 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import {
-  RECORD_DIR,
-  SESSION_DIR,
-  TASK_DIR,
-  TABBOT_HOME,
-} from "../utils/constants.ts";
+import { SESSION_DIR, TABBOT_HOME } from "../utils/constants.ts";
 import { tryPing } from "./session.ts";
 import { status as journalStatus } from "../journal/query.ts";
-import { readConfig } from "../journal/sites.ts";
 import { readVersion } from "../store/version.ts";
 import { chromeRunning } from "../browser/connect.ts";
-import { missingSiteOps } from "../browser/extension.ts";
+import { ABI } from "../browser/extension.ts";
 import { EXTENSION_ID, HOLDER_ENTRY, RELAY_ENTRY, launcherPath, manifestPath, nativeHostInstalled } from "../native-messaging-host/install.ts";
 
 const DEPS_MARKER = path.join("node_modules", "tldts", "dist", "cjs", "index.js");
@@ -49,13 +43,7 @@ async function collectChecks(): Promise<Check[]> {
   const marker = path.join(srcPath, DEPS_MARKER);
   add({ name: "deps", ok: exists(marker), detail: marker, fix: SETUP_FIX });
 
-  for (const [name, dir] of [
-    ["task", TASK_DIR],
-    ["record", RECORD_DIR],
-    ["session", SESSION_DIR],
-  ] as const) {
-    add({ name, ok: exists(dir), detail: dir, fix: SETUP_FIX });
-  }
+  add({ name: "session", ok: exists(SESSION_DIR), detail: SESSION_DIR, fix: SETUP_FIX });
 
   const manifest = manifestPath();
   const manifestOk = nativeHostInstalled();
@@ -89,15 +77,13 @@ async function collectChecks(): Promise<Check[]> {
     optional: true,
   });
 
-  // 常驻录制：录制范围、日志占了多少。只录点名站点却一个也没点名时只是提示，不影响退出码。
-  const sites = readConfig();
+  // 日志：几段、多少事件、占了多少空间
   const journal = await journalStatus().catch(() => null);
-  const scope = sites.mode === "all" ? "录制所有站点（内置排除敏感站点）" : sites.only.length ? `只录 ${sites.only.length} 个站点` : "没有要录制的站点";
   add({
     name: "journal",
-    ok: sites.mode === "all" || sites.only.length > 0,
-    detail: `${scope}，${journal?.days.length ?? 0} 天日志，${((journal?.bytes ?? 0) / 1024 / 1024).toFixed(1)}MB`,
-    fix: "tabbot sites all",
+    ok: true,
+    detail: `${journal?.segments ?? 0} 段 ${journal?.events ?? 0} 条事件，${((journal?.bytes ?? 0) / 1024 / 1024).toFixed(1)}MB`,
+    fix: "",
     optional: true,
   });
 
@@ -105,7 +91,7 @@ async function collectChecks(): Promise<Check[]> {
   const installed = readVersion();
   if (installed && ping) {
     // 旧 daemon 的 ping 里没有 build，显示成"(无)"，同样算和已安装的不同。
-    // 换代码只在 setup.js 或 tabbot daemon restart 时发生，不是哪条命令自动做的；忙（run、录制）时换不掉，等空闲后再运行。
+    // 换代码只在 setup.js 或 tabbot daemon restart 时发生，不是哪条命令自动做的。
     const same = ping.build === installed.build;
     add({
       name: "daemon-build",
@@ -114,25 +100,25 @@ async function collectChecks(): Promise<Check[]> {
       fix: "运行 tabbot daemon restart",
       optional: true,
     });
-    if (ping.extension) {
-      // 版本哈希是扩展启动时读磁盘文件算的，扩展没刷新时会骗人；操作列表是正在运行的代码自己报的，以它为准
-      const missing = missingSiteOps(ping.extensionOps);
-      add({
-        name: "extension-ops",
-        ok: missing.length === 0,
-        detail: missing.length === 0 ? "扩展支持全部操作" : ping.extensionOps ? `扩展正在运行的是旧代码，缺少：${missing.join("、")}` : "扩展正在运行的是旧代码（握手里没有操作列表）",
-        fix: "在 chrome://extensions 里刷新 TabBot 扩展",
-        optional: true,
-      });
-      const loaded = ping.extensionBuild ?? "";
-      add({
-        name: "extension-build",
-        ok: loaded === installed.extension,
-        detail: loaded === installed.extension ? loaded : loaded ? `已加载 ${loaded}，已安装 ${installed.extension}` : "扩展没有报告版本，可能是旧版本",
-        fix: "在 chrome://extensions 里刷新 TabBot 扩展",
-        optional: true,
-      });
-    }
+  }
+
+  if (ping?.extension) {
+    // 扩展的 ABI 版本不对：扩展是旧版本，刷新
+    add({
+      name: "extension-abi",
+      ok: ping.abi === ABI,
+      detail: ping.abi === ABI ? `ABI ${ABI}` : `扩展的 ABI 是 ${ping.abi ?? "无"}，需要 ${ABI}`,
+      fix: "在 chrome://extensions 里刷新 TabBot 扩展",
+      optional: true,
+    });
+    // 页面脚本由 holder 经 chrome.userScripts 下发：没打开开关，录制和 act 都不工作
+    add({
+      name: "user-scripts",
+      ok: ping.userScripts === true && !ping.installError,
+      detail: ping.installError ? ping.installError : ping.userScripts ? "已打开，页面脚本已下发" : "扩展没有用户脚本权限",
+      fix: "在 chrome://extensions 的 TabBot 详情页打开『允许用户脚本』，再点一下扩展图标",
+      optional: true,
+    });
   }
 
   return checks;
