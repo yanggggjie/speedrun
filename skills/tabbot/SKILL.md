@@ -1,19 +1,32 @@
 ---
 name: tabbot
 description: >-
-  触发词 tabbot；人和 agent 共用用户本机已登录的 Google Chrome：读用户刚才在浏览器里做了什么，并在用户正在用的原页面上接着做。
+  触发词 tabbot；人和 agent 共用用户本机已登录的 Google Chrome。先读录制（用户最近在做什么、站点有哪些接口），能重放接口就不点页面，必要时才在用户正在用的原页面上操作。
 ---
 
 # TabBot
 
 人和 agent 共用同一个 Chrome。页面脚本常驻录制用户浏览的所有 http/https 页面（人的操作、页面的请求和响应、页面渲染后的 HTML、页面状态），agent 读日志了解现场；需要动手时在用户正在用的原页面上操作，人一碰就停。
 
-## 1. 流程
+## 1. 流程：先读录制，再动手
 
-1. 先读日志：`tabbot log`、`tabbot text`、`tabbot req find`，弄清用户刚才做了什么、页面现在什么样、哪个接口返回了某个值。
-2. **请求优先**：能直接拿到数据或完成动作的接口，用 `tabbot replay`，不要去点页面（第 5 节）。
-3. 接口走不通（401/403、签名类参数、原始内容已丢失）再降级到页面操作：`tabbot snapshot` → `tabbot takeover` → `tabbot act`（第 4 节）。
-4. 需要人做的（登录、验证码、支付确认）：`tabbot release --reason "请登录"`，告诉用户要做什么，再 `tabbot wait` 等人停手，然后读日志判断是否完成。
+**每个任务都从读录制开始，不要先打开页面、滚动、截图去探索。** 用户刚才做过的事，页面发过的请求，都已经录下来了，能让你省掉大部分点页面的步骤，而且知道用户在做什么。
+
+1. **恢复上下文**：`tabbot context`（可加站点，如 `tabbot context x.com`）。看用户最近在哪些站点上、访问了哪些页面、做了哪些操作、这些操作引发了哪些请求。这一步决定你接下来做什么，也让你知道用户在做的事。
+2. **查有没有现成的接口**：`tabbot api <站点>`。列出这个站点出现过的接口：方法 + 接口名、次数、请求里能改的变量、**是哪个用户操作触发的**（如 `← human click button[Like]` 说明这个接口就是点赞）、响应结构、现在能不能直接重放（✓ / ✗）。
+3. **有就重放，不要点页面**：`tabbot replay <编号> [--set ...]`。点赞、翻页、取列表、提交，只要接口清单里有，就用它——一条命令，比滚动和点击快一个数量级。取数据时响应体已经存成文件，直接读文件，不必滚动页面把内容再读一遍。
+4. **没有就降级**：接口清单里没有（你要做的事用户没做过）、重放被拒（401/403、签名类参数）、原始内容已失效（✗）：先让页面触发一次（读到的页面内容用 `tabbot text`，要操作用 `snapshot` → `takeover` → `act`），触发之后再 `tabbot api` 就有了，之后同类操作回到第 3 步。
+5. **需要人做的**（登录、验证码、支付确认）：`tabbot release --reason "请登录"`，告诉用户要做什么，再 `tabbot wait` 等人停手，然后读日志判断是否完成。
+
+写操作（下单、支付、删除、发送、点赞这类公开动作）：用户明确要求的才做；没明确要求的先问。
+
+### 例子：给 X 首页里符合条件的帖子点赞
+
+1. `tabbot context x.com` → 看到 `human click span[19K] → POST graphql FavoriteTweet  最近 #1639`：用户之前点过赞，点赞的接口已经录到了。
+2. `tabbot api x.com` → `POST graphql FavoriteTweet … ✓ 变量：tweet_id`、`GET graphql HomeTimeline … 变量：variables.count, variables.cursor`。
+3. 取帖子：`tabbot replay <HomeTimeline 的编号> --set variables.count=40 --set variables.cursor=<上一页的 cursor>`，响应存成文件，从文件里取帖子（含长文的全文），不滚动页面。
+4. 判断哪些要点赞之后：`tabbot takeover`，再对每条 `tabbot replay <FavoriteTweet 的编号> --yes --set body.variables.tweet_id=<帖子 id>`。不需要 `snapshot`，不需要点按钮。
+5. 如果 `FavoriteTweet` 没出现在清单里（用户从没点过赞），或重放被 401/403 拒绝：回到第 4 步，用 `snapshot` + `act click` 点一次，之后同类操作再走接口。
 
 ## 2. 命令
 
@@ -21,6 +34,8 @@ description: >-
 
 | 命令 | 作用 |
 |---|---|
+| `tabbot context [站点] [--minutes 180]` | **第一步**。用户最近在各个站点上做了什么：访问的页面、自己的操作、操作引发的请求、agent 的命令 |
+| `tabbot api <站点> [-n 30]` | 这个站点出现过的接口清单：触发它的用户操作、变量、响应结构、能不能直接重放 |
 | `tabbot tabs` | 打开的 http/https 标签页，标出前台或后台、哪个有租约、人静默了多久 |
 | `tabbot log [--since 游标] [--tab N] [--src human\|agent\|page] [--all] [-n 50] [--json]` | 读事件，一行一个。第一行是结论和下次的游标 |
 | `tabbot sql "SELECT ..."` | 只读查询，表 `events`，最近 7 天；用于统计和关联（单条 SELECT，默认最多 200 行） |
@@ -77,7 +92,7 @@ description: >-
 | `tabbot req show <编号>` | 看这个请求：地址、请求头、请求体（秘密是别名或 `[redacted]`）、能改哪些参数、有什么风险 |
 | `tabbot replay <编号> [--set 名字=值 ...] [--tab N] [--yes]` | 在浏览器里把这个请求原样再发一次，返回状态、响应摘要和前 1500 字符，响应体存成文件（可以 `rg`） |
 
-- **`--set` 怎么写**：`page=2` 改地址里的查询参数（没有就加）；`header.名字=值` 改请求头（值为空就删掉）；`body.filter.page=2` 改 JSON 或表单请求体里的字段（路径用点，数组用下标 `body.items.0.id=7`，数字、布尔字段会按原类型转换）；`body=内容` 整个请求体换掉。可以重复写多个。
+- **`--set` 怎么写**：`page=2` 改地址里的查询参数（没有就加）；`variables.cursor=xxx` 当查询参数的值是 JSON 时（GraphQL 的 `variables=…`）改里面的字段；`header.名字=值` 改请求头（值为空就删掉）；`body.filter.page=2` 改 JSON 或表单请求体里的字段（路径用点，数组用下标 `body.items.0.id=7`，数字、布尔字段会按原类型转换）；`body=内容` 整个请求体换掉。可以重复写多个。
 - **真值只在 holder 的内存里**：你看到的 token 是别名，原始请求（含 token 真值）只放在 holder 的内存里（绝不落盘，holder 重启就没了），重放时原样带上，**你拿不到真值**。要把一个 token 用到别的请求里，在 `--set` 里写它的别名；cookie 登录态由浏览器自己带。
 - **只能在能发的标签页里发**：标签页要和请求同站，且 origin 等于这个请求原来发出时的页面 origin（效果和页面原来发的完全一致）；不写 `--tab` 就自动挑，前台的优先；没有这样的标签页时，先 `tabbot act goto` 打开原来的页面。
 - **GET、HEAD 随便用**；**POST、PUT、DELETE 等有副作用**（下单、提交、删除）：要加 `--yes`，要先拿到租约（`takeover`），并且**先问用户**，和 `act` 的写操作一样。

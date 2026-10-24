@@ -11,6 +11,16 @@ let t = ok(["page=2", "q=你好 世界", "sort=new"]);
 const u = new URL(t.url);
 assert.equal(u.searchParams.get("page"), "2"); assert.equal(u.searchParams.get("q"), "你好 世界"); assert.equal(u.searchParams.get("sort"), "new");
 
+// 查询参数的值是 JSON（GraphQL 的 variables=...）：改里面的字段，按已有类型转换；名字本身带点的参数仍按整体名字处理
+const gql: RawRequest = { method: "GET", url: `https://x.com/i/api/graphql/abc/HomeTimeline?variables=${encodeURIComponent(JSON.stringify({ count: 20, cursor: "OLD", opts: { on: true } }))}&features=%7B%7D&a.b=1&q=hello`, headers: {} };
+t = ok(["variables.cursor=NEW", "variables.count=40", "variables.opts.on=false", "variables.extra=x", "a.b=2"], gql);
+const vars = JSON.parse(new URL(t.url).searchParams.get("variables")!);
+assert.deepEqual(vars, { count: 40, cursor: "NEW", opts: { on: false }, extra: "x" });
+assert.equal(new URL(t.url).searchParams.get("a.b"), "2", "完整名字存在时按整体处理");
+assert.equal(new URL(t.url).searchParams.get("features"), "{}", "别的参数不动");
+assert.match(bad(["q.x=1"], gql), /不是 JSON/);
+assert.equal(new URL(ok(["nope.x=1"], gql).url).searchParams.get("nope.x"), "1", "点前面不是已有参数：当成新的查询参数");
+
 // 请求头：改、加、删（值为空）
 t = ok(["header.x-trace=abc", "header.Authorization=Bearer OTHER"]);
 assert.equal(t.headers["x-trace"], "abc"); assert.equal(t.headers.authorization, "Bearer OTHER", "名字不分大小写");

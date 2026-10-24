@@ -20,7 +20,7 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 
 ## 1. 命令入口
 
-`src/cli/tabbot.ts` 没有命令逻辑：`tabbot <argv>` 原样发给 holder 的 `run` RPC，holder 调 `journal/commands.ts` 的 `runCommand`，返回 `{ stdout, code }`。命令：`tabs`、`log`、`sql`、`snapshot`、`text`、`wait`、`status`、`takeover`、`release`、`act`、`req`、`replay`；`daemon restart`、`doctor` 留在 CLI。
+`src/cli/tabbot.ts` 没有命令逻辑：`tabbot <argv>` 原样发给 holder 的 `run` RPC，holder 调 `journal/commands.ts` 的 `runCommand`，返回 `{ stdout, code }`。命令：`context`、`api`、`tabs`、`log`、`sql`、`snapshot`、`text`、`wait`、`status`、`takeover`、`release`、`act`、`req`、`replay`；`daemon restart`、`doctor` 留在 CLI。
 
 - holder 不在时 CLI 会拉起它（读历史日志不应该依赖 Chrome 开着）：`session.ts` 的 `ensureHolder`，存活判据只有一条——socket 能不能回 `ping`。
 - 要经扩展的命令（`tabs`、`snapshot`、`text`、`takeover`、`act`、`replay`）先 `ensureExtension`：没装 host → `need-install`；Chrome 没运行 → `need-chrome`；Chrome 在运行 → 等扩展连上（`HOLDER_READY_MS`），等不到 `need-extension`；扩展 ABI 不对、用户脚本开关没打开、页面脚本没装上，都用明确的错误说怎么办。读日志的命令（`log`、`sql`、`wait`、`status`、`req`）不需要扩展。
@@ -71,6 +71,7 @@ CLI → holder: runCommand（读日志、问扩展、执行动作）
 - **过滤**（`filter.ts`）：`@ghostery/adblocker` 规则加第一方埋点启发式（只对非 GET：host 含 analytics / apm / datahub 等、路径含 collect / events / logs 等、204）标 `noise`，默认隐藏；adblock 规则要联网下载，加载好之前只用启发式；非噪声的第三方请求只留索引；失败的请求只留小于 4KB 的响应体。同一个请求（方法 + 地址 + 响应内容哈希）5 分钟内重复出现只给上一行 `dup` 加一。
 - **脱敏**（`sanitize.ts`）：一条带单词边界的正则（`token`、`secret`、`password`、`csrf`、`jwt`、`auth`、`api key` 等）加严格的 JWT 判断，只作用于请求头名、URL 查询参数名、JSON 的 key；正文里的自由文本不扫描，响应体正文原样写盘。秘密换成别名 `⟨secret_<12 位十六进制>:<形状>⟩`：盐 + 真值的 HMAC，盐在 `~/.tabbot/journal/alias-salt`（0600），所以同一个秘密永远是同一个别名（重启也不变），不能还原。**别名 → 真值的对照表只在 holder 内存里**，`--set` 里写别名由它换回真值；holder 重启后失效。
 - **租约**（`journal/lease.ts`）：agent 能不能在某个标签页上动手（只管写，读不受影响）。状态在 holder 里；页面把来源为 `human` 的事件立即上报，`humanInput` 立即撤销租约（滚轮、滚动只记"人在场"）；`acquire` 要求人静默超过 1.5 秒；租约 10 分钟没有动作失效。租约变化写进日志（kind `lease`）。
+- **整理成 agent 能直接用的材料**（`journal/digest.ts`，纯函数）：`context` 把时间窗口内的行按站点（注册域名）分组，给出访问的页面、用户自己的操作、**操作引发的请求**（用 `cause` 把用户操作和请求配对，如 `human click button[Like] → POST graphql FavoriteTweet`）、agent 的命令；`api <站点>` 按“方法 + 接口名”分组（GraphQL 取操作名，queryId 会变；其它路径把长数字、哈希、uuid 换成 `:id`），每组给次数、最近一次的编号、请求变量（请求体的 `variables`，或查询参数里 JSON 的 `variables.*`）、触发它的用户操作、响应结构（沿着单键对象往下走）、原始请求现在还在不在 holder 内存里（能不能直接重放）。写操作、有用户操作触发的排前面。目的是让 agent 接到任务的第一步就能知道上下文，并发现“这件事有现成接口”，不用探索页面。
 - **wait**：轮询日志：有人的事件且静默 `--idle` 秒就返回，超时则返回"无变化"或"人还在操作"。
 
 ### 5.1 在原页面上操作（takeover / release / act）
@@ -85,7 +86,7 @@ CLI → holder: runCommand（读日志、问扩展、执行动作）
 
 - **原始请求只在 holder 内存里**（`journal/raw.ts`）：页面里发的每个同站请求（`rid = docId:序号`）的方法、地址、请求头、请求体，键是 `tab:rid`，上限 50MB、单条 64KB，先丢最旧的；**绝不落盘**。日志里是脱敏后的版本。
 - `replay <编号> [--set ...] [--tab N] [--yes]`：按 `rid` 取原始内容 → 把 `--set` 里的别名换回真值 → `applySets`（`journal/replay-core.ts`）→ 挑标签页 → `window.__tcr.exec.replay(请求)` 在页面里用原始 `fetch` 发出（带登录态）→ 响应脱敏后记一行 `agent replay`，响应体存成文件。
-- **`--set`**：`名字=值` 改查询参数；`header.名字=值` 改请求头（值为空就删）；`body.路径=值` 改 JSON 或表单请求体（按已有值的类型转换）；`body=内容` 整个换掉。
+- **`--set`**：`名字=值` 改查询参数；`名字.路径=值` 当该查询参数的值是 JSON 时改里面的字段（GraphQL 的 GET 请求 `variables.cursor=xxx`，翻页用）；`header.名字=值` 改请求头（值为空就删）；`body.路径=值` 改 JSON 或表单请求体（按已有值的类型转换）；`body=内容` 整个换掉。
 - **安全**：标签页必须与该请求同站，且标签页的 origin 等于请求原来发出时的页面 origin（效果和页面原来发的完全一致，包括 CORS）；GET、HEAD 不要租约，其它方法要租约和 `--yes`；浏览器自己管的请求头（`cookie`、`origin`、`referer`、`sec-*` 等）去掉；`exec.replay` 用保存下来的原始 `fetch`，所以重放不会被录制端当成页面自己发的请求记下来。
 - `req find`：在保留的响应体和 HTML 文档里找文字，返回是哪个请求（或哪个文档）里有；`req show` 用 `templateFromRow` 把日志里的一行还原成请求的样子，并给出风险提示（签名类参数、非 GET）。
 

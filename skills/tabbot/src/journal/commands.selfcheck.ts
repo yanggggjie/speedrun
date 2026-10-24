@@ -152,6 +152,44 @@ assert.equal(r.code, 1); assert.match(r.stdout, /已失效|holder 重启/);
 r = await run("replay", "99");
 assert.match(r.stdout, /找不到事件/);
 
+// ---- context / api：把日志整理成"用户最近做了什么"和"这个站点有哪些接口" ----
+const T2 = Date.now() - 5_000;
+const gql = (t: number, over: Record<string, unknown>) => ({ k: "net", t, tab: 7, page, via: "fetch", status: 200, ct: "application/json", ...over });
+ingest.handleBatch([
+  { k: "doc", t: T2 - 200, tab: 7, page, url: "https://www.example.com/home", html: "<html></html>" },
+  { k: "ev", t: T2, tab: 7, page, type: "click", trusted: true, target: { tag: "button", text: "Like", sel: "#like" } },
+  gql(T2 + 40, { id: 10, rid: "d:10", method: "POST", url: "https://www.example.com/i/api/graphql/qid123/FavoriteTweet", reqBody: "{\"variables\":{\"tweet_id\":\"111\"},\"queryId\":\"qid123\"}", reqHeaders: { "content-type": "application/json" }, body: "{\"data\":{\"favorite_tweet\":\"Done\"}}", size: 30 }),
+  gql(T2 + 3500, { id: 12, method: "GET", url: "https://www.example.com/i/api/graphql/qidU/UserByScreenName?variables=%7B%22screen_name%22%3A%22a%22%7D", body: "{\"data\":{\"user\":{\"result\":{\"id\":\"1\",\"legacy\":{}}}}}", size: 40 }), // 没有 rid：原始内容没存下来
+  gql(T2 + 3000, { id: 11, rid: "d:11", method: "GET", url: `https://www.example.com/i/api/graphql/qidABC/HomeTimeline?variables=${encodeURIComponent(JSON.stringify({ count: 20, cursor: "c1" }))}`, body: "{\"data\":{\"home\":{\"home_timeline_urt\":{\"instructions\":[],\"metadata\":{}}}}}", size: 70 }),
+]);
+raw.put(7, "d:10", { method: "POST", url: "https://www.example.com/i/api/graphql/qid123/FavoriteTweet", headers: { "content-type": "application/json" }, body: "{\"variables\":{\"tweet_id\":\"111\"},\"queryId\":\"qid123\"}", page, t: T2 });
+const ctxOut = (await run("context")).stdout;
+assert.match(ctxOut, /^最近 180 分钟的活动：1 个站点/);
+assert.match(ctxOut, /■ example\.com .*tab7/);
+assert.match(ctxOut, /访问：www\.example\.com\/home/);
+assert.match(ctxOut, /你的操作：.*click button\[Like\]/);
+assert.match(ctxOut, /human click button\[Like\] → POST graphql FavoriteTweet/, "用户的操作和它引发的请求配好对");
+assert.match((await run("context", "other.com")).stdout, /没有 other\.com 的活动记录/);
+assert.match((await run("context", "www.example.com", "--minutes", "10")).stdout, /^最近 10 分钟的活动/);
+const apiOut = (await run("api", "example.com")).stdout;
+assert.match(apiOut, /^example\.com 的接口：\d+ 个/);
+assert.match(apiOut, /POST graphql FavoriteTweet  ×1  #\d+ 200 ✓  变量：tweet_id  ← human click button\[Like\]/, "写操作排前面，带触发它的用户操作、变量、能不能直接重放");
+assert.match(apiOut, /GET  graphql HomeTimeline  ×1  #\d+ 200 ✓  变量：variables\.count, variables\.cursor\n\s+响应：data\.home\.home_timeline_urt\.\{instructions,metadata\}/);
+assert.match(apiOut, /GET  graphql UserByScreenName  ×1  #\d+ 200 ✗  变量：variables\.screen_name/, "没存下原始内容的标 ✗：要先在页面上再触发一次");
+assert.ok(apiOut.indexOf("FavoriteTweet") < apiOut.indexOf("HomeTimeline"));
+assert.match((await run("api", "nowhere.org")).stdout, /没有 nowhere\.org 的请求记录/);
+assert.equal((await run("api")).code, 1);
+// 能直接拿这一行去重放：点赞换一个帖子 id
+const likeSeq = /#(\d+) 200 ✓/.exec(apiOut)![1]!;
+(leases as unknown as { humanAt: Map<number, number> }).humanAt.clear();
+await run("takeover");
+r = await run("replay", likeSeq, "--yes", "--set", "body.variables.tweet_id=222");
+assert.equal(r.code, 0, r.stdout);
+assert.equal(JSON.parse(lastReplay().body!).variables.tweet_id, "222");
+// req show 列出 JSON 查询参数里能改的字段
+const homeSeq = /GET  graphql HomeTimeline  ×1  #(\d+)/.exec(apiOut)![1]!;
+assert.match((await run("req", "show", homeSeq)).stdout, /可以改的查询参数：variables\.count, variables\.cursor/);
+
 // 日志和磁盘上任何地方都没有 token 真值
 ingest.flush();
 const files = fs.readdirSync(path.join(home, ".tabbot"), { recursive: true, withFileTypes: true }).filter((e) => e.isFile());

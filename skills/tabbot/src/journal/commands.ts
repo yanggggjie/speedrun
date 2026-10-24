@@ -5,6 +5,7 @@
 import * as os from "node:os";
 import { USAGE, handshakeStatusFromError, formatErrorStdout, formatHandshakeStdout } from "../protocol.ts";
 import { JOURNAL_CAP_BYTES, JOURNAL_DIR } from "../utils/constants.ts";
+import { buildCatalog, buildContext, formatCatalog, normalizeSite } from "./digest.ts";
 import { formatEvent } from "./format.ts";
 import type { Ingestor } from "./ingest.ts";
 import type { Leases } from "./lease.ts";
@@ -13,7 +14,7 @@ import type { RawStore } from "./raw.ts";
 import { applySets, isSafeMethod, replayHeaders, UNREPLAYABLE_BODY } from "./replay-core.ts";
 import { pickReplayTab, summarizeBody, templateFromRow } from "./replay.ts";
 import { renderSnapshot, type Snapshot } from "./render.ts";
-import type { Src } from "./types.ts";
+import type { EventRow, Src } from "./types.ts";
 
 export type TabInfo = { tabId: number; windowId: number; active: boolean; url: string; title: string; status: string };
 
@@ -78,6 +79,8 @@ export async function runCommand(argv: string[], ctx: Ctx): Promise<{ stdout: st
   const [cmd, ...args] = argv;
   try {
     switch (cmd) {
+      case "context": await contextCommand(args, out); break;
+      case "api": await apiCommand(args, ctx, out); break;
       case "tabs": await tabsCommand(ctx, out); break;
       case "log": await logCommand(args, out); break;
       case "sql": await sqlCommand(args, out); break;
@@ -101,6 +104,43 @@ export async function runCommand(argv: string[], ctx: Ctx): Promise<{ stdout: st
 }
 
 // ---- 观察 ----
+
+/** 日志行里有 cause 指向更早的行（可能不在已读出的这批里）：把缺的补读出来，返回按 seq 查的函数。 */
+async function causeResolver(rows: EventRow[]): Promise<(seq: number) => EventRow | undefined> {
+  const bySeq = new Map(rows.map((r) => [r.seq, r]));
+  for (const seq of new Set(rows.map((r) => r.cause).filter((c): c is number => typeof c === "number" && !bySeq.has(c)))) {
+    const row = await readEventBySeq(seq);
+    if (row) bySeq.set(seq, row);
+  }
+  return (seq) => bySeq.get(seq);
+}
+
+/** tabbot context [站点] [--minutes 180]：用户最近在各个站点上做了什么——接到任务的第一步。 */
+async function contextCommand(args: string[], out: Output): Promise<void> {
+  const flags = parseFlags(args);
+  if ("error" in flags) return out.fail(flags.error);
+  const minutes = intFlag(flags, "minutes"); if (isError(minutes)) return out.fail(minutes.error);
+  const window = (minutes as number | undefined) || 180;
+  const site = flags.rest[0] ? normalizeSite(flags.rest[0]) : undefined;
+  if (flags.rest[0] && !site) return out.fail(`不是有效的站点：${flags.rest[0]}`);
+  const since = Date.now() - window * 60_000;
+  const rows = (await readEvents({ limit: 5000 })).filter((r) => r.ts >= since);
+  for (const line of buildContext(rows, { causeOf: await causeResolver(rows), minutes: window, site })) out.line(line);
+}
+
+/** tabbot api <站点> [-n 30]：这个站点上出现过的接口，以及触发它们的用户操作——找"能不能直接重放"的第一步。 */
+async function apiCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+  const flags = parseFlags(args);
+  if ("error" in flags) return out.fail(flags.error);
+  const n = intFlag(flags, "n"); if (isError(n)) return out.fail(n.error);
+  const site = normalizeSite(flags.rest[0] ?? "");
+  if (!site) return out.fail("用法：tabbot api <站点>（如 tabbot api x.com）");
+  const rows = await readEvents({ limit: 20_000 });
+  const canReplay = (row: EventRow): boolean => {
+    try { const rid = (JSON.parse(row.detail ?? "{}") as { rid?: string }).rid; return !!rid && !!ctx.raw.get(row.tab, rid); } catch { return false; }
+  };
+  for (const line of formatCatalog(buildCatalog(rows, site, { causeOf: await causeResolver(rows), canReplay }), site, (n as number | undefined) || 30)) out.line(line);
+}
 
 async function tabsCommand(ctx: Ctx, out: Output): Promise<void> {
   await ctx.ensureExtension();
@@ -375,7 +415,10 @@ async function reqCommand(args: string[], out: Output): Promise<void> {
     if (headers.length) lines.push(`请求头：\n${headers.map(([k, v]) => `  ${k}: ${v}`).join("\n")}`);
     if (t.template.body !== undefined) lines.push(`请求体：${t.template.body.length > 600 ? `${t.template.body.slice(0, 600)}…` : t.template.body}`);
     if (row.body) lines.push(`响应体文件：${row.body}（在 ~/.tabbot/journal/seg-<序号>/bodies 下，可以直接 rg）`);
-    const params = [...u.searchParams.keys()];
+    const params = [...u.searchParams.entries()].flatMap(([k, v]) => {
+      try { const j = JSON.parse(v) as unknown; if (j && typeof j === "object" && !Array.isArray(j)) return Object.keys(j).map((x) => `${k}.${x}`); } catch { /* 不是 JSON */ }
+      return [k];
+    });
     lines.push(`重放：tabbot replay ${seq}${isSafeMethod(row.method!) ? "" : " --yes"} [--set 名字=值 ...]；可以改的查询参数：${params.length ? params.join(", ") : "（无）"}${t.template.body !== undefined ? "；请求体字段用 body.字段名=值" : ""}；请求头 header.名字=值`);
     lines.push("token 等秘密在日志里是别名或 [redacted]；--set 里可以直接写别名（holder 内存里有对照表，holder 重启后失效），你拿不到真值。");
     for (const w of t.warnings) lines.push(`⚠ ${w}`);

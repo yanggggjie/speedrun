@@ -7,4 +7,5 @@
 - 新增观察命令：`tabbot log`、`sql`、`snapshot`、`text`、`tabs`、`wait`、`status`。
 - 新增在原页面上操作：`tabbot takeover`、`release`、`act click|fill|select|check|press|scroll|goto`。agent 的动作是页面里的 DOM 事件（不弹调试横幅）；元素用稳定引用 `@e12`；每个动作自带等页面稳定，并返回引发的请求。**人一动手（点击、按键、输入）租约立刻撤销**，动作等页面稳定的时候你动手也会立刻停。
 - 新增请求优先：`tabbot req find`（在响应体和页面 HTML 里找页面上看到的值）、`req show`、`replay <编号> [--set ...] [--yes]`，把录下来的请求原样再发一次（带登录态），比点页面快。原始请求（含 token 真值）只在本机 daemon 的内存里，绝不落盘；`--set` 里可以直接写日志里看到的别名，由 daemon 换成真值。
+- 新增 `tabbot context`（用户最近在各个站点上做了什么，包括哪个操作引发了哪个请求）和 `tabbot api <站点>`（这个站点出现过的接口清单：触发它的用户操作、变量、响应结构、能不能直接重放）；`replay --set` 可以改查询参数里的 JSON 字段（`variables.cursor=…`，GraphQL 翻页用）。skill 改成“先读录制，再动手”的流程：有现成接口就重放，不点页面。
 - 架构：扩展只是一个固定 ABI 的管道，所有逻辑和数据在 daemon；页面脚本由 daemon 经 `chrome.userScripts` 下发，更新页面脚本不用刷新扩展。**需要在 `chrome://extensions` 里打开 TabBot 的「允许用户脚本」**，Chrome 135 及以上。

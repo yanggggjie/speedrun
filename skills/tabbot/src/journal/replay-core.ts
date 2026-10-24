@@ -38,6 +38,7 @@ function setPath(root: Record<string, unknown>, keys: string[], value: string): 
 /**
  * 改请求再重放。--set 的写法：
  *   名字=值            改地址里的查询参数（没有就加上）
+ *   名字.路径=值       查询参数的值是 JSON 时改里面的字段，如 variables.cursor=xxx、variables.count=40（GraphQL 的 GET 请求）
  *   header.名字=值     改请求头（值为空就删掉）
  *   body.路径=值       改 JSON 请求体或表单请求体里的字段，路径用点分隔，数组用下标，如 body.filter.page=2、body.items.0.id=7
  *   body=内容          整个请求体换成这段文字
@@ -72,7 +73,19 @@ export function applySets(template: RawRequest, sets: string[]): { template: Raw
     } else {
       let u: URL;
       try { u = new URL(out.url); } catch { return { error: `地址不是有效的网址：${out.url}` }; }
-      u.searchParams.set(key, value);
+      // 名字里带点、且点前面是一个值为 JSON 的查询参数（GraphQL 的 variables=...）：改 JSON 里的字段，如 variables.cursor=xxx
+      const dot = key.indexOf(".");
+      const head = dot > 0 ? key.slice(0, dot) : "";
+      if (head && !u.searchParams.has(key) && u.searchParams.has(head)) {
+        let doc: unknown;
+        try { doc = JSON.parse(u.searchParams.get(head)!); } catch { return { error: `查询参数 ${head} 的值不是 JSON，没法设置 ${key}` }; }
+        if (typeof doc !== "object" || doc === null) return { error: `查询参数 ${head} 的值不是对象或数组，没法设置 ${key}` };
+        const r = setPath(doc as Record<string, unknown>, key.slice(dot + 1).split("."), value);
+        if (r.error) return { error: r.error };
+        u.searchParams.set(head, JSON.stringify(doc));
+      } else {
+        u.searchParams.set(key, value);
+      }
       out.url = u.href;
     }
   }

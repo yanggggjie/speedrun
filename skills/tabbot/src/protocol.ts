@@ -1,4 +1,4 @@
-export const USAGE = "用法：tabbot tabs | log | sql | snapshot | text | wait | status | takeover | release | act | req | replay | daemon restart | doctor [--json]";
+export const USAGE = "用法：tabbot context | api | tabs | log | sql | snapshot | text | wait | status | takeover | release | act | req | replay | daemon restart | doctor [--json]";
 export type HandshakeStatus = "need-install" | "need-chrome" | "need-extension";
 export type RpcMethod = "ping" | "run";
 export type JsonRpcRequest = { jsonrpc: "2.0"; id: string; method: RpcMethod; params?: Record<string, unknown> };

@@ -19,7 +19,7 @@
 - **所有逻辑和数据在 holder，扩展、relay、CLI 只做 I/O。** 扩展的安装、重启、分发都不方便；holder 和 CLI 随 `~/.tabbot/src` 更新。扩展是固定 ABI 的管道，页面脚本由 holder 经 `chrome.userScripts` 下发。
 - **录制与执行解耦。** 录制如实反映浏览器状态，无论是谁造成的；执行只管执行，不写日志。两者之间没有共享状态。
 - **判人只看 `isTrusted`。** agent 的动作全是页面里的 DOM 事件（`dispatchEvent`、原生 setter），`isTrusted` 一定为假；`isTrusted` 为真就是人。不用 `chrome.debugger`，所以不弹"正在调试此浏览器"横幅。代价：个别站点不认 DOM 事件（文件选择框、部分风控、iframe 里的元素），`act` 冻结为兜底，不为个别站点加兼容代码。
-- **请求优先。** 能直接拿到数据或完成动作的接口，用 `replay`，不去点页面——速度快、灵活。被拒（401/403、签名类参数、原始内容已丢失）再降级到 `act`。
+- **请求优先，而且从读录制开始。** 每个任务先 `context`（用户最近做了什么）、`api`（站点有哪些接口、哪个用户操作触发它），能直接拿到数据或完成动作的接口就 `replay`，不去点页面——速度快、灵活，也让 agent 知道上下文。被拒（401/403、签名类参数、原始内容已丢失）或用户从没做过这件事，才降级到 `act`，触发一次之后接口就录到了。
 - **原始请求的 token 真值可以进 holder，但只在内存里，绝不落盘。** 日志里是别名；`replay --set` 里可以写别名，由 holder 在内存里换回真值，agent 拿不到真值。
 - **日志是按大小滚动的队列，和时间无关**：50MB 一段，总共 500MB，写满整段删除最旧的。
 - **先把产品做好**：不为敏感内容做额外保护（默认录所有 http/https 站点，没有排除列表；HTML 文档原样存；脱敏只做最简单的）。
@@ -47,7 +47,7 @@
 
 ## 6. 命令
 
-见 `skills/tabbot/SKILL.md`：观察 `tabs`、`log`、`sql`、`snapshot`、`text`、`wait`、`status`；请求优先 `req find`、`req show`、`replay`；在原页面上操作 `takeover`、`release`、`act click|fill|select|check|press|scroll|goto`。元素用稳定引用 `@e12`（来自 `snapshot`，页面不刷新就不变，元素被移除后失效）；每个 `act` 自带等页面稳定，返回这一步引起的变化。输出是文本，第一行是结论，失败退出码非零。
+见 `skills/tabbot/SKILL.md`：先恢复上下文 `context`、`api`；观察 `tabs`、`log`、`sql`、`snapshot`、`text`、`wait`、`status`；请求优先 `req find`、`req show`、`replay`；在原页面上操作 `takeover`、`release`、`act click|fill|select|check|press|scroll|goto`。元素用稳定引用 `@e12`（来自 `snapshot`，页面不刷新就不变，元素被移除后失效）；每个 `act` 自带等页面稳定，返回这一步引起的变化。输出是文本，第一行是结论，失败退出码非零。
 
 ## 7. 设计 TODO（没想清楚的）
 
