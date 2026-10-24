@@ -1,4 +1,4 @@
-// 在真实 Chrome 里验证 src/page/ 下的页面脚本（common / recorder / executor）：录制的请求和主文档、执行的点击、填写、选择、勾选、按键、滚动、等页面稳定、重放。
+// 在真实 Chrome 里验证 src/chrome-extension/page/ 下的页面脚本（common / recorder / executor）：录制的请求和主文档、执行的点击、填写、选择、勾选、按键、滚动、等页面稳定、重放。
 // 用法：node scripts/dev/hook-e2e.mjs（本机要装 Chrome；路径不同时用 CHROME 环境变量指定）。不是自检，不在 npm test 里。
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -10,8 +10,8 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const { loadPageScripts } = await import(new URL("../../src/journal/pages.ts", import.meta.url).href);
-const HOOK = loadPageScripts().find((x) => x.id === "tabbot-page").code; // holder 下发给页面的那一份
+const PAGE_DIR = path.join(HERE, "..", "..", "src", "chrome-extension", "page");
+const HOOK = ["common.js", "recorder.js", "executor.js"].map((f) => fs.readFileSync(path.join(PAGE_DIR, f), "utf8")).join("\n;\n"); // 扩展用静态内容脚本注入的那三份
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

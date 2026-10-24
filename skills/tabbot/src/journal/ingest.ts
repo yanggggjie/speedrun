@@ -45,7 +45,7 @@ function bodyText(sanitizer: Sanitizer, raw: string, ct: string | undefined): st
   return raw;
 }
 
-export type IngestOptions = { engine?: () => FiltersEngine | undefined; aliasKey?: string; raw?: RawStore };
+export type IngestOptions = { engine?: () => FiltersEngine | undefined; aliasKey?: string; raw?: RawStore; /** 是不是 tabbot run 窗口里的标签页：那里发生的一切记为 agent 的（不是用户做的）。 */ isAgentTab?: (tab: number) => boolean };
 type Ref = { seq: number; seg: number };
 type Base = Pick<NewEvent, "ts" | "tab" | "frame" | "page">;
 
@@ -54,6 +54,7 @@ export class Ingestor {
   private readonly store: JournalStore;
   private readonly engine: () => FiltersEngine | undefined;
   private readonly raw: RawStore | undefined;
+  private readonly isAgentTab: (tab: number) => boolean;
   private readonly seen = new Map<string, Ref & { ts: number }>();
   private readonly lastAction = new Map<number, { seq: number; ts: number }>();
   private queue: PageMsg[] = [];
@@ -64,6 +65,7 @@ export class Ingestor {
     this.sanitizer = new Sanitizer(options.aliasKey ?? "");
     this.engine = options.engine ?? (() => undefined);
     this.raw = options.raw;
+    this.isAgentTab = options.isAgentTab ?? (() => false);
   }
 
   /** 收一条页面消息：攒一小会儿，一批放进一个事务。 */
@@ -105,7 +107,7 @@ export class Ingestor {
    * 记一次重放：agent 的一行（来源 agent，类型 net，动作 replay），响应体存成文件；返回给 CLI 看的预览。
    * `rawUrl` 是实际发出的地址（含查询参数里的秘密），这里脱敏成别名再写日志。--set 的值可能是秘密，所以只记名字不记值。
    */
-  recordReplay(tab: number, ts: number, info: { method: string; rawUrl: string; replayOf: number; setKeys: string[]; status?: number; ct?: string; size?: number; text?: string; ms?: number; error?: string }): { seq: number; bodyFile?: string; preview: string } {
+  recordReplay(tab: number, ts: number, info: { method: string; rawUrl: string; replayOf: number; setKeys: string[]; status?: number; ct?: string; size?: number; text?: string; ms?: number; error?: string; reqBody?: string }): { seq: number; bodyFile?: string; preview: string } {
     const url = readableUrl(this.sanitizer.url(info.rawUrl));
     return this.store.batch(() => {
       let bodyFile: string | undefined;
@@ -116,16 +118,14 @@ export class Ingestor {
       }
       const { seq } = this.insert({
         ts, tab, frame: 0, src: "agent", kind: "net", verb: "replay", method: info.method, url, status: info.status, size: info.size, body: bodyFile,
-        detail: JSON.stringify({ replayOf: info.replayOf, set: info.setKeys, ms: info.ms, error: info.error, ct: info.ct }),
+        detail: JSON.stringify({ replayOf: info.replayOf, set: info.setKeys, ms: info.ms, error: info.error, ct: info.ct, ...(info.reqBody ? { reqBody: this.reqBodyJson(info.reqBody) } : {}) }),
       });
       return { seq, bodyFile, preview };
     });
   }
 
-  /** 租约变化：人撤销记为 human，其余记为 agent。 */
-  recordLease(msg: { tab: number; state: string; t: number; reason?: string; by?: string }): void {
-    const src: Src = msg.state === "revoked" ? "human" : "agent";
-    this.store.batch(() => this.insert({ ts: msg.t, tab: msg.tab, frame: 0, src, kind: "lease", verb: msg.state, target: msg.by ?? msg.reason, detail: JSON.stringify({ reason: msg.reason, by: msg.by }) }));
+  private reqBodyJson(body: string): string | undefined {
+    try { return JSON.stringify(this.sanitizer.body(JSON.parse(body))).slice(0, DETAIL_BODY_MAX); } catch { return undefined; }
   }
 
   private handle(msg: PageMsg): void {
@@ -143,7 +143,8 @@ export class Ingestor {
 
   private bare(url: string): string { return parseUrl(url).bareUrl; }
 
-  private insert(ev: NewEvent): Ref { return this.store.insert(ev); }
+  /** run 窗口里的标签页：页面里发生的一切（请求、导航、脚本事件）记为 agent 的。 */
+  private insert(ev: NewEvent): Ref { return this.store.insert(ev.src === "page" && this.isAgentTab(ev.tab) ? { ...ev, src: "agent" } : ev); }
 
   private net(msg: PageMsg, base: Base): void {
     const rawUrl = str(msg.url) ?? "";

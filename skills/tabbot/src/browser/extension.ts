@@ -2,15 +2,15 @@
  * 扩展通道：holder 经 relay（Chrome 拉起的 native messaging host，只转发字节）与 TabBot Chrome 扩展说话。
  * 帧：4 字节小端长度前缀 + UTF-8 JSON。
  *
- * holder → 扩展：{ id, name, args }   name：register / exec / tabs / goto，见 chrome-extension/background.js
+ * holder → 扩展：{ id, name, args }   name：call / tabs / goto / openWindow / openTab / activateTab / closeTab / closeWindow，见 chrome-extension/background.js
  * 扩展 → holder：{ id, result|error }（应答）| { type: "hello" | "page", ... }（推送：握手、页面消息、标签页的地址变化和关闭）
  *
  * 只支持一个扩展连接、一个 holder。
  */
 import { EXTENSION_COMMAND_TIMEOUT_MS } from "../utils/constants.ts";
 
-/** 扩展 ABI 版本：holder 和扩展之间的操作集合（register、exec、tabs、goto）。只有改 ABI 才加一，用户才需要刷新扩展。 */
-export const ABI = 1;
+/** 扩展 ABI 版本：holder 和扩展之间的操作集合（call、tabs、goto、openWindow 等）。只有改 ABI 才加一，用户才需要刷新扩展。 */
+export const ABI = 2;
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
 
@@ -59,13 +59,11 @@ export class ExtensionLink {
   }
 
   abi: number | undefined;
-  userScripts = false;
 
   /** 扩展握手：记下 ABI 版本和能力。版本不符不抛错（扩展还连着，需要让 holder 能告诉用户去刷新）。 */
   hello(msg: Record<string, unknown>): void {
     this.chromeVersion = String(msg.chromeVersion ?? "");
     this.abi = typeof msg.abi === "number" ? msg.abi : undefined;
-    this.userScripts = msg.userScripts === true;
   }
 
   compatible(): boolean { return this.abi === ABI; }

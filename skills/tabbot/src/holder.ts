@@ -5,9 +5,11 @@ import { ABI, ExtensionLink, frame, parseFrames } from "./browser/extension.ts";
 import { NeedExtensionError, handshakeError, missingStatus } from "./browser/connect.ts";
 import { loadAdblockEngine } from "./journal/filter.ts";
 import { runCommand, type Ctx, type TabInfo } from "./journal/commands.ts";
+import { RunHost, Session } from "./run/host.ts";
+import { TaskRunner } from "./run/runner.ts";
+import { syncTaskLib } from "./run/tasks.ts";
+import { RunWindow } from "./run/window.ts";
 import { Ingestor, type PageMsg } from "./journal/ingest.ts";
-import { Leases } from "./journal/lease.ts";
-import { PageHost } from "./journal/pages.ts";
 import { RawStore } from "./journal/raw.ts";
 import { JournalStore } from "./journal/store.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
@@ -32,14 +34,14 @@ let lastActivity = Date.now();
 const startupBuild = readVersion()?.build ?? "";
 
 const link = new ExtensionLink();
-const pages = new PageHost(link);
-const leases = new Leases();
+const win = new RunWindow(link);
 const raw = new RawStore();
 let ingest: Ingestor | undefined;
 let adblock: FiltersEngine | undefined;
-/** 扩展连上之后下发页面脚本：命令要等它做完；失败的原因留着，告诉用户。 */
-let installing: Promise<void> = Promise.resolve();
-let installError = "";
+let host: RunHost | undefined;
+let runner: TaskRunner | undefined;
+const explore = new Session();
+const replaySession = new Session();
 
 function aliasSalt(): string {
   try { return fs.readFileSync(JOURNAL_ALIAS_SALT_FILE, "utf8").trim(); } catch { /* 第一次 */ }
@@ -50,25 +52,16 @@ function aliasSalt(): string {
 }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
 
-leases.onEvent = (event) => ingest?.recordLease(event);
-
-/** 页面消息：执行结果交给 PageHost；真人输入撤销租约；其余写日志。 */
+/** 页面消息：写日志。tabbot run 窗口里的标签页记为 agent 的（Ingestor 按 win.isRunTab 判断）。 */
 link.on("page", (m) => {
   const inner = (m.msg ?? {}) as Record<string, unknown>;
   const msg = { ...inner, k: String(inner.k ?? ""), t: typeof inner.t === "number" ? inner.t : Date.now(), tab: Number(m.tab), frame: Number(m.frame ?? 0), top: m.top === true, page: typeof m.page === "string" ? m.page : undefined } as PageMsg;
-  if (pages.onMessage(msg)) return;
   lastActivity = Date.now();
-  if (msg.k === "presence") { leases.humanInput(msg.tab, String(msg.kind)); return; }
-  if (msg.k === "ev" && msg.trusted === true) leases.humanInput(msg.tab, String(msg.type));
-  if (msg.k === "tab") {
-    pages.onTabEvent(msg.tab, String(msg.ev));
-    if (msg.ev === "closed") leases.closed(msg.tab);
-  }
   ingest?.push(msg);
 });
 
 function pingBody() {
-  return { pid: process.pid, extension: extSocket !== null, build: startupBuild, abi: link.abi, userScripts: link.userScripts, installError };
+  return { pid: process.pid, extension: extSocket !== null, build: startupBuild, abi: link.abi };
 }
 
 async function ensureExtension(): Promise<void> {
@@ -81,8 +74,6 @@ async function ensureExtension(): Promise<void> {
     if (!extSocket) throw new NeedExtensionError();
   }
   if (!link.compatible()) throw new Error(`Chrome 里的 TabBot 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 TabBot 扩展`);
-  await installing;
-  if (installError) throw new Error(installError);
 }
 
 async function listTabs(): Promise<TabInfo[]> {
@@ -92,20 +83,11 @@ async function listTabs(): Promise<TabInfo[]> {
 const ctx: Ctx = {
   ensureExtension,
   tabs: listTabs,
-  call: (tab, expr, options) => pages.call(tab, expr, options),
-  goto: async (tab, url) => { await link.request("goto", { tabId: tab, url }); },
-  waitLoaded: async (tab) => {
-    const deadline = Date.now() + 15_000;
-    let last: TabInfo | undefined;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 150));
-      last = (await listTabs()).find((t) => t.tabId === tab);
-      if (!last) return undefined;
-      if (last.status === "complete") break;
-    }
-    return last ? { url: last.url, title: last.title } : undefined;
-  },
-  get leases() { return leases; },
+  get host() { return host!; },
+  get runner() { return runner!; },
+  win,
+  explore,
+  replaySession,
   get ingest() { return ingest!; },
   get raw() { return raw; },
   daemon: () => ({ extension: extSocket !== null, pid: process.pid }),
@@ -213,11 +195,7 @@ function onRelay(sock: net.Socket): void {
           link.attach((out) => sock.write(frame(out)));
           helloDone = true;
           lastActivity = Date.now();
-          logger.info("extension connected", { abi: link.abi, userScripts: link.userScripts });
-          installError = "";
-          if (!link.compatible()) installError = `Chrome 里的 TabBot 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 TabBot 扩展`;
-          else if (!link.userScripts) installError = "TabBot 扩展没有用户脚本权限：请在 chrome://extensions 的 TabBot 详情页打开『允许用户脚本』，再点一下扩展图标";
-          else installing = pages.install().catch((error: unknown) => { installError = `页面脚本没有装上：${error instanceof Error ? error.message : String(error)}`; logger.warn(installError); });
+          logger.info("extension connected", { abi: link.abi });
           return;
         }
         link.receive(msg);
@@ -231,6 +209,7 @@ function onRelay(sock: net.Socket): void {
     if (extSocket !== sock) return;
     extSocket = null;
     link.detach();
+    win.forget();
     lastActivity = Date.now();
     logger.info("extension link closed");
   });
@@ -247,7 +226,10 @@ export async function runHolder(): Promise<void> {
   const store = new JournalStore();
   await store.open();
   store.enforceCap();
-  ingest = new Ingestor(store, { engine: () => adblock, aliasKey: aliasSalt(), raw });
+  ingest = new Ingestor(store, { engine: () => adblock, aliasKey: aliasSalt(), raw, isAgentTab: (tab) => win.isRunTab(tab) });
+  host = new RunHost({ link, win, ingest, raw });
+  runner = new TaskRunner(host);
+  try { syncTaskLib(); } catch (error) { warnCatch("sync task lib")(error); }
   loadAdblockEngine().then((engine) => { adblock = engine; }).catch(warnCatch("adblock engine"));
   // 没有扩展连接、也没有命令请求超过 HOLDER_IDLE_EXIT_MS 就退出；下次需要时由 relay 或 CLI 重新拉起
   setInterval(() => { if (!extSocket && Date.now() - lastActivity > HOLDER_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();

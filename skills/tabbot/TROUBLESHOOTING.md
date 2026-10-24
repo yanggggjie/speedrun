@@ -21,7 +21,6 @@ TabBot 完全以原始源码分发：`~/.tabbot` 是 skill 目录的原样镜像
 | `need-extension`，且从没加载过扩展 | 打开 `chrome://extensions`，开启「开发者模式」，「加载已解压的扩展程序」，选择 `~/.tabbot/src/chrome-extension` |
 | `need-extension`，扩展已加载 | 在 `chrome://extensions` 确认 TabBot 开着，点一下它的工具栏图标 |
 | `extension-abi` 提示 ABI 不对，或命令报"扩展是旧版本" | 扩展代码太旧（ABI 变了才会出现），在 `chrome://extensions` 里点 TabBot 卡片上的刷新 |
-| `user-scripts` 失败，或命令报"允许用户脚本" | 页面脚本由 holder 经 `chrome.userScripts` 下发，开关没打开时录制和 `act` 都不工作。在 `chrome://extensions` 打开 TabBot 的详情页，打开『允许用户脚本』，再点一下扩展图标 |
 | `extension-id` 失败 | 重跑 `setup.js` 重写 native host manifest；扩展 ID 由 `manifest.json` 里的 key 固定 |
 | `need-chrome` | 启动 Google Chrome |
 | 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |
@@ -36,7 +35,8 @@ TabBot 完全以原始源码分发：`~/.tabbot` 是 skill 目录的原样镜像
 
 | 现象 | 处理 |
 |---|---|
-| `act` 或 `replay` 被拒（`no-lease`） | 没有租约或人刚动过。先 `tabbot takeover`；被拒说明人 1.5 秒内有输入，按 `SKILL.md` 先读日志，不要抢回 |
+| `task` 报“没有可继承的请求头” | 这个站点的页面还没自己发过请求：`tabbot open` 站点页面，或让用户在 Chrome 里浏览一下 |
+| `task` 在 run 窗口里一直不动 | run 窗口被最小化到后台也没关系；窗口被用户关了会自动重开。`tabbot close` 后重试 |
 | `snapshot`、`act` 报"页面里没有 TabBot 的脚本" | 页面脚本没装上（开关没打开、页面是 `chrome://` 之类的），或页面是在脚本下发之前打开的：刷新这个页面后再试 |
 | 日志里没有某个站点的事件 | 后台标签页只记导航和请求数，不记响应体；先看 `tabbot doctor` 里的 `user-scripts` |
 | `replay` 报"原始内容已经不在 holder 的内存里" | holder 重启过或太旧被清掉；在页面上再触发一次这个操作，然后重试 |
@@ -45,7 +45,7 @@ TabBot 完全以原始源码分发：`~/.tabbot` 是 skill 目录的原样镜像
 ## 5. 取日志与现场
 
 - 运行时日志：`~/.tabbot/session/log.jsonl`
-- daemon 状态：`tabbot doctor --json`，其中 `holder` 项会 ping daemon（含 `build`、`abi`、`userScripts`）
+- daemon 状态：`tabbot doctor --json`，其中 `holder` 项会 ping daemon（含 `build`、`abi`）
 - 进入运行中的 daemon：`kill -USR1 <holder pid>` 用 Node inspector 连入（注意：能看到内存里的 token 真值）
 - 仍无法解决：把 `doctor --json` 的输出和日志末尾给用户，说明需要用户做的一件事
 

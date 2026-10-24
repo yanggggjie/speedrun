@@ -1,4 +1,4 @@
-// 命令层：参数解析，以及用假的 holder 能力（假页面、假标签页）端到端跑 log / tabs / takeover / act / replay / req。HOME 指向临时目录。
+// 命令层：参数解析，以及用假的 holder 能力（假页面、假标签页）端到端跑 log / tabs / open / act / replay / req / task。HOME 指向临时目录。
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -9,7 +9,6 @@ process.on("exit", () => fs.rmSync(home, { recursive: true, force: true })); // 
 process.env.HOME = home;
 const { parseAct, parseReplayArgs, runCommand } = await import("./commands.ts");
 const { Ingestor } = await import("./ingest.ts");
-const { Leases } = await import("./lease.ts");
 const { RawStore } = await import("./raw.ts");
 const { JournalStore } = await import("./store.ts");
 const { NeedExtensionError } = await import("../browser/connect.ts");
@@ -21,21 +20,25 @@ const ok = (args: string[]) => { const r = parseAct(args); assert.ok("cmd" in r,
 const bad = (args: string[]) => { const r = parseAct(args); assert.ok("error" in r, JSON.stringify(r)); return r.error; };
 assert.deepEqual(ok(["click", "@e12"]), { kind: "click", ref: "@e12" });
 assert.deepEqual(ok(["click", "e12"]), { kind: "click", ref: "@e12" }, "@ 可以省略");
+assert.deepEqual(ok(["click", "#go"]), { kind: "click", loc: "#go" }, "CSS 选择器是持久定位");
+assert.deepEqual(ok(["click", '{"role":"button","name":"提交"}']), { kind: "click", loc: { role: "button", name: "提交" } });
 assert.deepEqual(ok(["fill", "@e5", "你好", "世界"]), { kind: "fill", ref: "@e5", text: "你好 世界" });
 assert.deepEqual(ok(["fill", "@e5", ""]), { kind: "fill", ref: "@e5", text: "" }, "可以清空");
 assert.deepEqual(ok(["select", "@e9", "香蕉"]), { kind: "select", ref: "@e9", text: "香蕉" });
 assert.deepEqual(ok(["check", "@e3", "--off"]), { kind: "check", ref: "@e3", checked: false });
 assert.deepEqual(ok(["press", "Ctrl+K", "@e5"]), { kind: "press", key: "Ctrl+K", ref: "@e5" });
+assert.deepEqual(ok(["press", "Enter"]), { kind: "press", key: "Enter" });
 assert.deepEqual(ok(["scroll", "up", "200"]), { kind: "scroll", dy: -200 });
+assert.deepEqual(ok(["scroll", "down", "300", "@e2"]), { kind: "scroll", dy: 300, ref: "@e2" });
 assert.deepEqual(ok(["scroll", "bottom"]), { kind: "scroll", to: "bottom" });
-assert.deepEqual(ok(["goto", "example.com/a?b=1"]), { kind: "goto", url: "https://example.com/a?b=1" });
-assert.match(bad(["click"]), /需要元素引用/);
+assert.match(bad(["click"]), /需要目标/);
+assert.match(bad(["click", "{坏的"]), /不是合法 JSON/);
 assert.match(bad(["fill", "@e5"]), /用法：tabbot act fill/);
-assert.match(bad(["scroll", "down", "很多"]), /数字/);
-assert.match(bad(["goto", "file:///etc/passwd"]), /不是有效的网址/, "只允许 http / https");
+assert.match(bad(["scroll", "sideways"]), /用法：tabbot act scroll/);
+assert.match(bad(["goto", "example.com"]), /用法：tabbot act click/, "打开网址用 tabbot open");
 assert.match(bad([]), /用法：tabbot act click/);
 const rp = (args: string[]) => { const r = parseReplayArgs(args); assert.ok(!("error" in r), JSON.stringify(r)); return r; };
-assert.deepEqual(rp(["#210", "--set", "page=2", "--set=body.filter.on=false", "--tab", "5", "--yes"]), { seq: 210, sets: ["page=2", "body.filter.on=false"], tabId: 5, yes: true });
+assert.deepEqual(rp(["#210", "--set", "page=2", "--set=body.filter.on=false", "--yes"]), { seq: 210, sets: ["page=2", "body.filter.on=false"], yes: true });
 for (const [args, re] of [[[], /用法：tabbot replay/], [["abc"], /请求编号要是整数/], [["1", "2"], /多余的参数/], [["1", "--set"], /缺少值/], [["1", "--wat"], /不认识的参数/]] as [string[], RegExp][]) {
   const r = parseReplayArgs(args); assert.ok("error" in r && re.test(r.error), JSON.stringify([args, r]));
 }
@@ -45,26 +48,42 @@ const store = new JournalStore();
 await store.open();
 const raw = new RawStore();
 const ingest = new Ingestor(store, { aliasKey: "k", raw });
-const leases = new Leases();
 const SECRET = "REAL-TOKEN-0123456789abcdef";
 const page = "https://www.example.com/p";
-const tabs = [{ tabId: 7, windowId: 1, active: true, url: page, title: "示例", status: "complete" }];
+const tabs = [
+  { tabId: 7, windowId: 1, active: true, url: page, title: "示例", status: "complete" },
+  { tabId: 20, windowId: 9, active: true, url: "https://www.example.com/robots.txt", title: "", status: "complete" },
+  { tabId: 21, windowId: 9, active: true, url: "chrome-extension://x/anchor.html", title: "tabbot run", status: "complete", anchor: true },
+];
 const calls: string[] = [];
 let extension = true;
+const taskDir = path.join(home, "tasks");
+const { Session } = await import("../run/host.ts");
+const explore = new Session();
+const replaySession = new Session();
+const hostOps: string[] = [];
+const host = {
+  op: async (s: InstanceType<typeof Session>, name: string, a: Record<string, unknown>) => {
+    hostOps.push(`${name} ${JSON.stringify(a)}`);
+    if (name === "goto") { s.tab = 20; s.origin = "https://www.example.com"; ingest.endCmd(ingest.beginCmd(20, Date.now(), "goto", "https://www.example.com/p", { bareUrl: "https://www.example.com/p", query: { q: "x" } }), { detail: { bareUrl: "https://www.example.com/p", query: { q: "x" }, ok: true } }); return { url: page, title: "示例" }; }
+    if (name === "act") { ingest.endCmd(ingest.beginCmd(20, Date.now(), "click", "x", { kind: "click" }), { detail: { kind: "click", loc: { role: "button", name: "提交" }, ok: true } }); return { ok: true, loc: { role: "button", name: "提交" }, settle: { settled: true, waitedMs: 130 }, url: page, title: "示例" }; }
+    if (name === "snapshot") return { url: page, title: "示例", interactiveTotal: 3, interactiveVisible: 2, inViewShown: 2, items: [{ ref: "e1", t: "button", n: "提交" }] };
+    if (name === "text") return { url: page, title: "示例", total: 4, text: "你好世界" };
+    throw new Error(`没有预期的操作 ${name}`);
+  },
+  bind: async (s: InstanceType<typeof Session>) => { s.tab = 20; return 20; },
+  end: async (s: InstanceType<typeof Session>) => { s.tab = undefined; },
+  callTab: async (_tab: number, fn: string, args: unknown[]) => {
+    calls.push(`${fn} ${JSON.stringify(args[0])}`);
+    if (fn === "replay") return { ok: true, status: 200, ct: "application/json", size: 17, text: "{\"items\":[1,2,3]}", ms: 9 };
+    throw new Error(`没有预期的调用：${fn}`);
+  },
+};
+const runner = { runTask: async (name: string, params: Record<string, string>) => ({ status: "success", result: { name, params } }), runEval: async (code: string) => ({ status: "success", result: code }) };
 const ctx = {
   ensureExtension: async () => { if (!extension) throw new NeedExtensionError(); },
   tabs: async () => tabs,
-  call: async (_tab: number, expr: string) => {
-    calls.push(expr);
-    if (expr.includes("exec.act(")) return { ok: true, target: { tag: "button", text: "提交" }, settle: { settled: true, waitedMs: 130 }, url: page, title: "示例" };
-    if (expr.includes("exec.snapshot(")) return { url: page, title: "示例", interactiveTotal: 3, interactiveVisible: 2, inViewShown: 2, items: [{ ref: "e1", t: "button", n: "提交" }] };
-    if (expr.includes("exec.text(")) return { url: page, title: "示例", total: 4, text: "你好世界" };
-    if (expr.includes("exec.replay(")) return { ok: true, status: 200, ct: "application/json", size: 17, text: "{\"items\":[1,2,3]}", ms: 9 };
-    throw new Error(`没有预期的调用：${expr}`);
-  },
-  goto: async () => {},
-  waitLoaded: async () => ({ url: page, title: "示例" }),
-  leases, ingest, raw,
+  host, runner, win: { isRunTab: (t: number) => t === 20 }, explore, replaySession, ingest, raw, taskDir,
   daemon: () => ({ extension, pid: process.pid }),
 };
 const run = (...argv: string[]) => runCommand(argv, ctx as never);
@@ -100,35 +119,46 @@ const shown = (await run("req", "show", "2")).stdout;
 assert.match(shown, /地址：https:\/\/www\.example\.com\/api\/list/);
 assert.match(shown, /tabbot replay 2/);
 
-// tabs / snapshot / text
-assert.match((await run("tabs")).stdout, /^1 个标签页\ntab7 win1 前台 https:\/\/www\.example\.com\/p "示例"/);
-assert.match((await run("snapshot")).stdout, /^tab7 https:\/\/www\.example\.com\/p "示例"\n.*\n@e1 button "提交"/);
+// tabs 只列用户自己的页面（run 窗口的和 anchor 页不算）
+assert.match((await run("tabs")).stdout, /^1 个标签页\ntab7 win1 前台 https:\/\/www\.example\.com\/p "示例"$/);
+
+// 探索：先 open；没 open 时 snapshot / act 提示；之后都在 run 窗口里
+{
+  const r = await run("snapshot");
+  assert.equal(r.code, 1); assert.match(r.stdout, /先 tabbot open/);
+}
+let r = await run("open", "example.com/p");
+assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /已在 tabbot run 窗口打开 https:\/\/www\.example\.com\/p "示例"/);
+assert.match((await run("snapshot")).stdout, /^tab20 https:\/\/www\.example\.com\/p "示例"\n.*\n@e1 button "提交"/);
 assert.match((await run("text", "--max", "100")).stdout, /你好世界/);
-
-// 没有租约不能动手；takeover 之后可以；人一动手撤销
-let r = await run("act", "click", "@e1", "--tab", "7");
-assert.equal(r.code, 1); assert.match(r.stdout, /没有租约/);
-r = await run("takeover");
-assert.equal(r.code, 0); assert.match(r.stdout, /已获取 tab7 的租约/);
 r = await run("act", "click", "@e1");
-assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /^✓ click @e1（页面已稳定，等了 0\.1s）/);
-assert.ok(calls.some((c) => c.includes('exec.act({"kind":"click","ref":"@e1"})')));
-leases.humanInput(7, "click");
-r = await run("act", "click", "@e1", "--tab", "7");
-assert.equal(r.code, 1); assert.match(r.stdout, /租约被撤销了/);
-assert.match((await run("takeover")).stdout, /没有获取租约：人还在操作 tab7/);
-leases.humanInput(7, "wheel"); // 滚轮不影响下面
-// 命令记录进了日志（含被拒绝的），输入的文字不进日志
-const cmds = (await run("log", "--all", "-n", "100")).stdout;
-assert.match(cmds, /cmd click @e1|cmd click button\[提交\]/);
-assert.match((await run("release", "--tab", "7")).stdout, /本来就没有租约/);
+assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /^✓ click \{"role":"button","name":"提交"\}（页面已稳定，等了 0\.1s）/);
+assert.ok(hostOps.some((o) => o.startsWith('act {"kind":"click","ref":"@e1"}')));
+assert.match((await run("act", "click")).stdout, /需要目标/);
+assert.match((await run("close")).stdout, /已还回/);
 
-// 重放：原始内容在内存里；--set 里可以写别名；非 GET 要 --yes 和租约
+// task：列出、运行、从探索记录生成草稿
+assert.match((await run("task")).stdout, /还没有 task/);
+fs.mkdirSync(taskDir, { recursive: true });
+fs.writeFileSync(path.join(taskDir, "demo.js"), "/**\n * @summary 演示\n * @param q 查询词\n */\n");
+assert.deepEqual(JSON.parse((await run("task")).stdout)[0], { name: "demo", status: "verified", summary: "演示", params: ["q 查询词"] });
+assert.deepEqual(JSON.parse((await run("task", "demo", "--q", "你好")).stdout), { status: "success", result: { name: "demo", params: { q: "你好" } } });
+assert.equal((await run("task", "demo", "q")).code, 1);
+assert.match((await run("eval", "return 1")).stdout, /"result": "return 1"/);
+const made = await run("task", "new", "demo-new", "--summary", "探索出来的");
+assert.equal(made.code, 0, made.stdout); assert.match(made.stdout, /已生成草稿/);
+const draft = fs.readFileSync(path.join(taskDir, "demo-new.js"), "utf8");
+assert.match(draft, /@status: draft/);
+assert.match(draft, /await goto\(page, serializeUrl\(\{ bareUrl: "https:\/\/www\.example\.com\/p", query: \{ "q": "x" \} \}\)\);/);
+assert.match(draft, /await click\(page, \{"role":"button","name":"提交"\}\);/);
+assert.equal((await run("task", "new", "demo-new")).code, 1, "不覆盖已有的");
+
+// 重放：原始内容在内存里；--set 里可以写别名；非 GET 要 --yes
 const alias = /access_token=(⟨secret_[0-9a-f]{12}:\w+⟩)/.exec(log[2]!)![1]!;
 raw.put(7, "d:2", { method: "POST", url: "https://www.example.com/api/save", headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` }, body: "{\"a\":1}", page, t: T });
 const lastReplay = (): { method: string; url: string; headers: Record<string, string>; body: string | null } => {
-  const expr = calls.filter((c) => c.includes("exec.replay(")).at(-1)!;
-  return JSON.parse(expr.slice("window.__tcr.exec.replay(".length, -1));
+  const c = calls.filter((x) => x.startsWith("replay ")).at(-1)!;
+  return JSON.parse(c.slice("replay ".length));
 };
 r = await run("replay", "2", "--set", "page=2", "--set", `header.x-token=${alias}`);
 assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /^✓ 重放 #2（改了 page, header\.x-token）：GET → 200/);
@@ -138,10 +168,6 @@ assert.equal(new URL(sent.url).searchParams.get("page"), "2", "--set 生效");
 assert.match(r.stdout, /JSON 对象，字段：items/);
 r = await run("replay", "3");
 assert.equal(r.code, 1); assert.match(r.stdout, /--yes/);
-r = await run("replay", "3", "--yes");
-assert.equal(r.code, 1); assert.match(r.stdout, /需要租约/);
-(leases as unknown as { humanAt: Map<number, number> }).humanAt.clear(); // 人早就停手了
-await run("takeover");
 r = await run("replay", "3", "--yes", "--set", "body.a=5");
 assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /POST → 200/);
 sent = lastReplay();
@@ -181,8 +207,6 @@ assert.match((await run("api", "nowhere.org")).stdout, /没有 nowhere\.org 的�
 assert.equal((await run("api")).code, 1);
 // 能直接拿这一行去重放：点赞换一个帖子 id
 const likeSeq = /#(\d+) 200 ✓/.exec(apiOut)![1]!;
-(leases as unknown as { humanAt: Map<number, number> }).humanAt.clear();
-await run("takeover");
 r = await run("replay", likeSeq, "--yes", "--set", "body.variables.tweet_id=222");
 assert.equal(r.code, 0, r.stdout);
 assert.equal(JSON.parse(lastReplay().body!).variables.tweet_id, "222");

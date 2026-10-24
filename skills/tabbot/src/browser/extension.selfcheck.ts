@@ -20,10 +20,9 @@ import { ABI, ExtensionLink, frame, parseFrames } from "./extension.ts";
   const written: Record<string, unknown>[] = [];
   const link = new ExtensionLink();
   link.attach((m) => written.push(m));
-  link.hello({ type: "hello", abi: ABI, chromeVersion: "Chrome/x", userScripts: true });
+  link.hello({ type: "hello", abi: ABI, chromeVersion: "Chrome/x" });
   assert.equal(link.chromeVersion, "Chrome/x");
   assert.equal(link.compatible(), true);
-  assert.equal(link.userScripts, true);
 
   const pages: unknown[] = [];
   link.on("page", (m) => pages.push(m));
@@ -36,7 +35,7 @@ import { ABI, ExtensionLink, frame, parseFrames } from "./extension.ts";
   link.receive({ id: req.id, result: { tabs: [{ tabId: 7 }] } });
   assert.equal(((await listed) as { tabs: { tabId: number }[] }).tabs[0]?.tabId, 7);
 
-  const failed = link.request("exec", { tabId: 7 });
+  const failed = link.request("call", { tabId: 7 });
   link.receive({ id: written[written.length - 1]!.id, error: { message: "boom" } });
   await assert.rejects(failed, /boom/);
 }
@@ -46,7 +45,6 @@ import { ABI, ExtensionLink, frame, parseFrames } from "./extension.ts";
   const link = new ExtensionLink();
   link.hello({ type: "hello", protocolVersion: 1 });
   assert.equal(link.compatible(), false);
-  assert.equal(link.userScripts, false);
   link.hello({ type: "hello", abi: ABI + 1 });
   assert.equal(link.compatible(), false);
 }

@@ -1,19 +1,23 @@
-// TabBot Chrome 扩展：一个固定 ABI 的管道。没有业务逻辑，也不放任何页面脚本——页面脚本由 holder 在连接时下发。
+// TabBot Chrome 扩展：一个固定 ABI 的管道。没有业务逻辑；页面脚本是扩展包里的静态内容脚本（page/）。
 // holder 端的协议见 src/browser/extension.ts。改 ABI 才需要加 ABI 版本并让用户刷新扩展。
 //
 // holder → 扩展：{ id, name, args }，应答 { id, result | error }
-//   register { scripts: [{ id, code, world }] }  用 chrome.userScripts 注册常驻脚本（所有 http/https 页面，document_start），并补注入已打开的页面
-//   exec { tabId, code }                          在页面（MAIN world）里执行任意代码；结果由页面脚本自己经 bridge 发回
-//   tabs {}                                       http/https 标签页列表
-//   goto { tabId, url }                           在这个标签页里打开网址
+//   call { tabId, fn, args }          在页面（MAIN world）里调用 window.__tcr.exec[fn](...args)，等它的结果（可以是 Promise）
+//   tabs {}                            http/https 标签页，加上 anchor 页（标题 tabbot run，extension 页，anchor: true）
+//   goto { tabId, url, wait }          在这个标签页里打开网址；wait 为真时等加载完成（最多 20 秒）
+//   openWindow { url, anchor }         新开窗口（不抢焦点）；anchor 为真时打开 anchor 页
+//   openTab { windowId, url, active }  在窗口里新开标签页
+//   activateTab { tabId }              把标签页切到所在窗口的前台（后台标签页浏览器不渲染）
+//   closeTab { tabId } | closeWindow { windowId }
 // 扩展 → holder：{ type: "hello", abi, ... } | { type: "page", tab, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化和关闭）
 
-const ABI = 1;
+const ABI = 2;
 const HOST = "com.tabbot.connect";
-const MATCHES = ["http://*/*", "https://*/*"];
 const RETRY_MAX_MS = 30_000;
 const KEEPALIVE_MINUTES = 0.5;
-const NO_USER_SCRIPTS = "chrome.userScripts 不可用：请在 chrome://extensions 的 TabBot 详情页打开『允许用户脚本』";
+const LOAD_WAIT_MS = 20_000;
+const PAGE_FILES = ["page/common.js", "page/recorder.js", "page/executor.js"];
+const ANCHOR_URL = chrome.runtime.getURL("anchor.html");
 
 let port = null;
 let retryCount = 0;
@@ -24,10 +28,6 @@ function postToHost(message) {
 }
 
 const isWeb = (url) => typeof url === "string" && /^https?:/i.test(url);
-
-async function userScriptsAvailable() {
-  try { await chrome.userScripts.getScripts(); return true; } catch { return false; }
-}
 
 async function connect() {
   if (port) return;
@@ -41,9 +41,21 @@ async function connect() {
   port.onMessage.addListener((msg) => { void handleHostMessage(msg); });
   port.onDisconnect.addListener(() => { port = null; scheduleRetry(); });
   retryCount = 0;
-  const userScripts = await userScriptsAvailable();
-  if (port !== current) return; // 等探测的时候连接已经断了
-  current.postMessage({ type: "hello", abi: ABI, chromeVersion: navigator.userAgent, extensionVersion: chrome.runtime.getManifest().version, userScripts });
+  current.postMessage({ type: "hello", abi: ABI, chromeVersion: navigator.userAgent, extensionVersion: chrome.runtime.getManifest().version });
+  void injectExisting();
+}
+
+// 内容脚本只在新加载的页面里生效；已经打开的页面补注入一次（脚本自己防重复）
+async function injectExisting() {
+  for (const tab of await chrome.tabs.query({})) {
+    if (tab.id == null || !isWeb(tab.url)) continue;
+    try {
+      const [probe] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => !!window.__tcr });
+      if (probe?.result) continue;
+      await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, world: "MAIN", files: PAGE_FILES, injectImmediately: true });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["page/bridge.js"], injectImmediately: true });
+    } catch { /* 受限页面（商店、PDF 查看器等）注入不了 */ }
+  }
 }
 
 function scheduleRetry() {
@@ -65,40 +77,70 @@ async function handleHostMessage(msg) {
   }
 }
 
+function waitComplete(tabId, ms) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (loaded) => { if (done) return; done = true; clearTimeout(timer); chrome.tabs.onUpdated.removeListener(listener); resolve(loaded); };
+    const listener = (id, info) => { if (id === tabId && info.status === "complete") finish(true); };
+    const timer = setTimeout(() => finish(false), ms);
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+const view = (tab) => ({ tabId: tab.id, windowId: tab.windowId, active: tab.active, url: tab.url || tab.pendingUrl || "", title: tab.title || "", status: tab.status || "" });
+
 async function runOp(name, args) {
   switch (name) {
-    case "register": {
-      if (!(await userScriptsAvailable())) throw new Error(NO_USER_SCRIPTS);
-      await chrome.userScripts.configureWorld({ messaging: true }); // USER_SCRIPT world 里的 bridge 才能给扩展发消息
-      const old = await chrome.userScripts.getScripts();
-      if (old.length) await chrome.userScripts.unregister({ ids: old.map((s) => s.id) });
-      await chrome.userScripts.register(args.scripts.map((s) => ({ id: s.id, matches: MATCHES, js: [{ code: s.code }], runAt: "document_start", allFrames: true, world: s.world })));
-      // 已经打开的页面不会重新加载，补注入一次（脚本自己防重复）
-      for (const tab of await chrome.tabs.query({})) {
-        if (tab.id == null || !isWeb(tab.url)) continue;
-        for (const s of args.scripts) {
-          chrome.userScripts.execute({ target: { tabId: tab.id, allFrames: true }, js: [{ code: s.code }], world: s.world, injectImmediately: true }).catch(() => {});
-        }
-      }
-      return { scripts: args.scripts.length };
-    }
-    case "exec": {
-      if (!(await userScriptsAvailable())) throw new Error(NO_USER_SCRIPTS);
-      const results = await chrome.userScripts.execute({ target: { tabId: args.tabId }, js: [{ code: args.code }], world: "MAIN", injectImmediately: true });
-      const failed = results.find((r) => r.error);
-      if (failed) throw new Error(String(failed.error));
-      return {};
+    case "call": {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: args.tabId, frameIds: [args.frameId ?? 0] }, world: "MAIN",
+        func: async (fn, fnArgs) => {
+          const T = window.__tcr;
+          if (!T || !T.exec || typeof T.exec[fn] !== "function") return { __tcrError: "页面里没有 TabBot 的脚本（刷新这个页面后再试）" };
+          try { return { v: await T.exec[fn](...fnArgs) }; } catch (e) { return { __tcrError: String((e && e.message) || e) }; }
+        },
+        args: [args.fn, args.args ?? []],
+      });
+      const out = res?.result;
+      if (!out) throw new Error("页面没有返回结果");
+      if (out.__tcrError) throw new Error(out.__tcrError);
+      return { v: out.v ?? null };
     }
     case "tabs": {
       const out = [];
       for (const tab of await chrome.tabs.query({})) {
-        if (tab.id == null || !isWeb(tab.url)) continue;
-        out.push({ tabId: tab.id, windowId: tab.windowId, active: tab.active, url: tab.url, title: tab.title || "", status: tab.status || "" });
+        if (tab.id == null) continue;
+        if (tab.url === ANCHOR_URL) out.push({ ...view(tab), anchor: true });
+        else if (isWeb(tab.url) || isWeb(tab.pendingUrl)) out.push(view(tab));
       }
       return { tabs: out };
     }
     case "goto": {
+      const wait = args.wait ? waitComplete(args.tabId, LOAD_WAIT_MS) : null;
       await chrome.tabs.update(args.tabId, { url: args.url });
+      const loaded = wait ? await wait : undefined;
+      const tab = await chrome.tabs.get(args.tabId);
+      return { url: tab.url || "", title: tab.title || "", loaded };
+    }
+    case "openWindow": {
+      const win = await chrome.windows.create({ url: args.anchor ? ANCHOR_URL : args.url, focused: false, type: "normal" });
+      const tab = win.tabs?.[0];
+      return { windowId: win.id, tabId: tab?.id };
+    }
+    case "openTab": {
+      const tab = await chrome.tabs.create({ windowId: args.windowId, url: args.url, active: args.active !== false });
+      return { tabId: tab.id, windowId: tab.windowId };
+    }
+    case "activateTab": {
+      await chrome.tabs.update(args.tabId, { active: true });
+      return {};
+    }
+    case "closeTab": {
+      await chrome.tabs.remove(args.tabId);
+      return {};
+    }
+    case "closeWindow": {
+      await chrome.windows.remove(args.windowId);
       return {};
     }
     default:
@@ -107,7 +149,7 @@ async function runOp(name, args) {
 }
 
 // 页面脚本经 bridge 发来的消息：补上 tab、frame，原样转给 holder。页面自己的脚本也能发，所以只当观察记录。
-chrome.runtime.onUserScriptMessage.addListener((m, sender) => {
+chrome.runtime.onMessage.addListener((m, sender) => {
   if (!m || m.__tcrl !== 1 || sender.id !== chrome.runtime.id || !sender.tab) return;
   postToHost({ type: "page", tab: sender.tab.id, frame: sender.frameId ?? 0, top: m.top, page: m.page, msg: m.msg ?? {} });
 });

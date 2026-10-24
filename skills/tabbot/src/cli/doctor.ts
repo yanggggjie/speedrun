@@ -111,14 +111,6 @@ async function collectChecks(): Promise<Check[]> {
       fix: "在 chrome://extensions 里刷新 TabBot 扩展",
       optional: true,
     });
-    // 页面脚本由 holder 经 chrome.userScripts 下发：没打开开关，录制和 act 都不工作
-    add({
-      name: "user-scripts",
-      ok: ping.userScripts === true && !ping.installError,
-      detail: ping.installError ? ping.installError : ping.userScripts ? "已打开，页面脚本已下发" : "扩展没有用户脚本权限",
-      fix: "在 chrome://extensions 的 TabBot 详情页打开『允许用户脚本』，再点一下扩展图标",
-      optional: true,
-    });
   }
 
   return checks;

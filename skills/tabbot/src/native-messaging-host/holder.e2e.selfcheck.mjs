@@ -1,4 +1,4 @@
-// 端到端：relay 作为 native host 运行（拉起 daemon），一个假扩展经 stdio 实现 ABI（register / exec / tabs / goto）并模拟页面；
+// 端到端：relay 作为 native host 运行（拉起 daemon），一个假扩展经 stdio 实现 ABI 2 并模拟 run 窗口里的页面；
 // 命令经 Unix socket 的 run RPC 执行，也走真实的 CLI。在临时 HOME 下运行，不碰真实 ~/.tabbot。由 npm test 调用。
 import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -24,14 +24,37 @@ function frame(obj) {
   return Buffer.concat([head, body]);
 }
 
-/** 假扩展 + 假页面：实现 ABI，exec 时按表达式模拟页面的回应（经 page 消息发回 res）。 */
-function fakeExtension(child, { userScripts = true } = {}) {
-  const log = { registered: [], execs: [], gotos: [] };
+/** 假扩展 + 假页面：实现 ABI 2（call / tabs / goto / openWindow / openTab / activateTab / closeTab / closeWindow），run 窗口里的页面由它模拟。 */
+function fakeExtension(child) {
+  const log = { calls: [], gotos: [], opened: [], windows: 0, activated: [], closed: [] };
+  const runTabs = new Map(); // tabId → url
+  let anchor = null;
+  let nextTab = 100;
   let buf = Buffer.alloc(0);
   const send = (obj) => child.stdin.write(frame(obj));
   const reply = (id, result) => send({ id, result });
-  const page = (tab, msg) => send({ type: "page", tab, frame: 0, top: true, page: PAGE, msg: { __tcrl: 1, t: Date.now(), ...msg } });
-  const respond = (tab, uid, v) => setTimeout(() => page(tab, { k: "res", u: uid, ok: true, v }), 5);
+  const page = (tab, msg, pageUrl = PAGE) => send({ type: "page", tab, frame: 0, top: true, page: pageUrl, msg: { __tcrl: 1, t: Date.now(), ...msg } });
+  const tabsList = () => [
+    { tabId: 77, windowId: 1, active: true, url: PAGE, title: "示例", status: "complete" },
+    ...(anchor ? [{ tabId: anchor, windowId: 9, active: false, url: "chrome-extension://x/anchor.html", title: "tabbot run", status: "complete", anchor: true }] : []),
+    ...[...runTabs].map(([tabId, url]) => ({ tabId, windowId: 9, active: true, url, title: "run", status: "complete" })),
+  ];
+  const callPage = (tab, fn, args) => {
+    log.calls.push({ tab, fn, args });
+    switch (fn) {
+      case "act": return { ok: true, loc: { role: "searchbox", name: "搜索" }, target: { tag: "input", text: "搜索", type: "text" }, settle: { settled: true, waitedMs: 150 }, url: PAGE, title: "示例" };
+      case "replay": {
+        // 页面自己的请求也会被录制端看到：run 窗口里的请求记为 agent 的
+        page(tab, { k: "net", via: "fetch", id: 9, rid: `run:${tab}:${log.calls.length}`, method: args[0].method, url: args[0].url, status: 200, ct: "application/json", body: "{\"echo\":1}", size: 10 });
+        return { ok: true, status: 200, ct: "application/json", size: 20, ms: 9, text: JSON.stringify({ name: "x", token: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig12345678abcdef", n: 1 }) };
+      }
+      case "text": return { url: PAGE, title: "示例", total: 5, text: "你好，世界" };
+      case "snapshot": return { url: PAGE, title: "示例", interactiveTotal: 1, interactiveVisible: 1, inViewShown: 1, items: [{ ref: "e1", t: "input", n: "搜索" }] };
+      case "waitFor": return { ok: true, count: 1, ms: 5 };
+      case "query": return [{ title: "第一条" }, { title: "第二条" }];
+      default: throw new Error(`页面里没有 ${fn}`);
+    }
+  };
   child.stdout.on("data", (chunk) => {
     buf = Buffer.concat([buf, chunk]);
     while (buf.length >= 4) {
@@ -40,25 +63,21 @@ function fakeExtension(child, { userScripts = true } = {}) {
       const msg = JSON.parse(buf.subarray(4, 4 + len).toString("utf8"));
       buf = buf.subarray(4 + len);
       const a = msg.args ?? {};
-      switch (msg.name) {
-        case "register": log.registered.push(a.scripts.map((s) => s.id)); reply(msg.id, { scripts: a.scripts.length }); break;
-        case "tabs": reply(msg.id, { tabs: [{ tabId: 77, windowId: 1, active: true, url: PAGE, title: "示例", status: "complete" }] }); break;
-        case "goto": log.gotos.push(a); reply(msg.id, {}); break;
-        case "exec": {
-          log.execs.push(a.code);
-          reply(msg.id, {});
-          const uid = /const u="([^"]+)"/.exec(a.code)[1];
-          if (a.code.includes("exec.act(")) respond(a.tabId, uid, { ok: true, target: { tag: "input", text: "搜索" }, chars: 4, settle: { settled: true, waitedMs: 150 }, url: PAGE, title: "示例" });
-          else if (a.code.includes("exec.replay(")) respond(a.tabId, uid, { ok: true, status: 200, ct: "application/json", size: 20, ms: 9, text: JSON.stringify({ name: "x", token: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig12345678abcdef" }) });
-          else if (a.code.includes("exec.text(")) respond(a.tabId, uid, { url: PAGE, title: "示例", total: 5, text: "你好，世界" });
-          else if (a.code.includes("exec.snapshot(")) respond(a.tabId, uid, { url: PAGE, title: "示例", interactiveTotal: 1, interactiveVisible: 1, inViewShown: 1, items: [{ ref: "e1", t: "input", n: "搜索" }] });
-          break;
+      try {
+        switch (msg.name) {
+          case "tabs": reply(msg.id, { tabs: tabsList() }); break;
+          case "openWindow": log.windows++; anchor = 90; reply(msg.id, { windowId: 9, tabId: 90 }); break;
+          case "openTab": { const id = nextTab++; runTabs.set(id, a.url); log.opened.push(a.url); reply(msg.id, { tabId: id, windowId: 9 }); break; }
+          case "goto": log.gotos.push(a); if (runTabs.has(a.tabId)) runTabs.set(a.tabId, a.url); reply(msg.id, { url: a.url, title: "示例", loaded: true }); break;
+          case "activateTab": log.activated.push(a.tabId); reply(msg.id, {}); break;
+          case "closeTab": log.closed.push(a.tabId); runTabs.delete(a.tabId); reply(msg.id, {}); break;
+          case "call": reply(msg.id, { v: callPage(a.tabId, a.fn, a.args ?? []) }); break;
+          default: send({ id: msg.id, error: { message: `未知操作 ${msg.name}` } });
         }
-        default: send({ id: msg.id, error: { message: `未知操作 ${msg.name}` } });
-      }
+      } catch (e) { send({ id: msg.id, error: { message: String(e.message) } }); }
     }
   });
-  const hello = (extra = {}) => send({ type: "hello", abi: 1, chromeVersion: "Chrome/e2e", extensionVersion: "0.2.0", userScripts, ...extra });
+  const hello = (extra = {}) => send({ type: "hello", abi: 2, chromeVersion: "Chrome/e2e", extensionVersion: "0.3.0", ...extra });
   return { log, page, hello };
 }
 
@@ -104,68 +123,129 @@ ext.hello();
 await waitFor(() => fs.existsSync(SOCK));
 await waitFor(async () => (await rpc("ping")).extension === true);
 const ping = await rpc("ping");
-assert.equal(ping.abi, 1); assert.equal(ping.userScripts, true);
+assert.equal(ping.abi, 2);
 assert.equal(typeof ping.build, "string");
-await waitFor(() => ext.log.registered.length === 1);
-assert.deepEqual(ext.log.registered[0], ["tabbot-page", "tabbot-bridge"], "扩展连上后 holder 下发页面脚本");
-console.log("ping + register ok");
+console.log("ping ok");
 
 // 第二个 daemon：扩展通道 socket 活着，应当直接退出，不覆盖
 const second = spawn(process.execPath, [path.join(SRC, "holder.ts")], { env, stdio: ["pipe", "pipe", "pipe"], cwd: SRC });
 assert.equal(await new Promise((r) => second.on("exit", r)), 0, "已有活的 holder 时，新 holder 应退出");
 console.log("singleton ok");
 
-// 页面消息进日志：人的点击撤销租约；agent 的 DOM 事件记成 page；请求带 token，真值只在内存里
+// 用户自己的页面消息进日志；请求带 token，真值只在内存里
 const P = (msg) => ext.page(77, msg);
-P({ k: "net", via: "fetch", id: 1, rid: "dz:1", method: "GET", url: `${PAGE}api/x?page=1&access_token=${SECRET}`, reqHeaders: { "x-token": SECRET }, status: 200, ct: "application/json", body: "{\"v\":1}", size: 7 });
+P({ k: "net", via: "fetch", id: 1, rid: "dz:1", method: "GET", url: `${PAGE}api/x?page=1&access_token=${SECRET}`, reqHeaders: { "x-token": SECRET, authorization: `Bearer ${SECRET}` }, status: 200, ct: "application/json", body: "{\"v\":1}", size: 7 });
 P({ k: "net", via: "fetch", id: 2, rid: "dz:2", method: "POST", url: `${PAGE}api/save`, reqHeaders: { "content-type": "application/json" }, reqBody: "{\"a\":1}", status: 200, ct: "application/json", body: "{}", size: 2 });
 await waitFor(async () => (await run("log")).stdout.includes("/api/save"));
 const log = (await run("log")).stdout;
 assert.match(log, /GET \/api\/x\?page=1&access_token=⟨secret_[0-9a-f]{12}:\w+⟩ 200/);
 assert.ok(!log.includes(SECRET), "日志里没有真值");
+assert.match((await run("tabs")).stdout, /^1 个标签页\ntab77 win1 前台 https:\/\/example\.com\/ "示例"$/, "tabs 只列用户自己的页面");
 
-// tabs / snapshot / text 经假页面
-assert.match((await run("tabs")).stdout, /^1 个标签页\ntab77 win1 前台 https:\/\/example\.com\/ "示例"/);
-assert.match((await run("snapshot")).stdout, /@e1 input "搜索"/);
+// 探索：第一次 open 才开 tabbot run 窗口（anchor），页面在窗口里，不动用户的 tab77
+let r = await run("snapshot");
+assert.equal(r.code, 1); assert.match(r.stdout, /先 tabbot open/);
+r = await run("open", PAGE + "search?q=1");
+assert.equal(r.code, 0, r.stdout);
+assert.equal(ext.log.windows, 1, "开了一个 run 窗口");
+assert.deepEqual(ext.log.opened, [PAGE.slice(0, -1) + "/robots.txt"], "暖页面是 robots.txt，很轻");
+assert.ok(ext.log.gotos.some((g) => g.url === PAGE + "search?q=1" && g.wait === true && g.tabId === 100), "在 run 窗口的标签页里导航并等加载");
+assert.ok(!ext.log.calls.some((c) => c.tab === 77), "没有碰用户的 tab77");
+assert.match((await run("snapshot")).stdout, /tab100 [\s\S]*@e1 input "搜索"/);
 assert.match((await run("text")).stdout, /你好，世界/);
-
-// 租约与动作
-let r = await run("act", "click", "@e1");
-assert.equal(r.code, 1, r.stdout); assert.match(r.stdout, /没有持有租约的标签页/);
-r = await run("act", "click", "@e1", "--tab", "77");
-assert.equal(r.code, 1); assert.match(r.stdout, /没有租约/);
-r = await run("takeover");
-assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /已获取 tab77 的租约/);
 r = await run("act", "fill", "@e1", "你好世界");
-assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /^✓ fill @e1/);
-assert.ok(ext.log.execs.at(-1).includes("\"text\":\"你好世界\""), "文字原样交给页面");
-// 真人输入：isTrusted 的点击立刻撤销租约；agent 的 DOM 事件（isTrusted 为假）不会
-P({ k: "ev", type: "click", trusted: false, target: { tag: "button", text: "提交", sel: "#go" } });
-await waitFor(async () => (await run("log", "--src", "page")).stdout.includes("click button[提交]"));
-assert.match((await run("act", "click", "@e1")).stdout, /^✓ click @e1/, "DOM 事件不撤销租约");
+assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /^✓ fill \{"role":"searchbox","name":"搜索"\}/);
+assert.deepEqual(ext.log.calls.at(-1).args[0], { kind: "fill", ref: "@e1", text: "你好世界" }, "文字原样交给页面");
+// run 窗口里发生的记为 agent 的；输入的文字不进日志之外的地方
 P({ k: "ev", type: "click", trusted: true, target: { tag: "button", text: "取消", sel: "#no" } });
-await waitFor(async () => (await run("act", "click", "@e1", "--tab", "77")).code === 1);
-assert.match((await run("log", "--src", "human")).stdout, /human click button\[取消\]/);
-assert.match((await run("log", "--all", "-n", "100")).stdout, /human lease revoked \(click\)/);
-// 输入的文字不进日志，只有字数
-const all = (await run("log", "--all", "-n", "200")).stdout;
-assert.ok(!all.includes("你好世界") && /cmd fill/.test(all), "命令记录在，文字不在");
-console.log("takeover/act ok");
+await waitFor(async () => (await run("log", "--src", "human")).stdout.includes("human click button[取消]"));
+const agentLog = (await run("log", "--src", "agent", "--all")).stdout;
+assert.match(agentLog, /agent cmd goto/); assert.match(agentLog, /agent cmd fill/);
+console.log("explore ok");
 
-// 重放：原始内容在 holder 内存里，--set 里可以写别名；页面里发的是真值
+// 做过的事成为知识：探索记录生成 task 草稿
+r = await run("task", "new", "search-demo", "--summary", "搜索演示");
+assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /已生成草稿/);
+const draft = fs.readFileSync(path.join(HOME, ".tabbot", "task", "search-demo.js"), "utf8");
+assert.match(draft, /@status: draft/); assert.match(draft, /await goto\(page, serializeUrl\(/); assert.match(draft, /await fill\(page, \{"role":"searchbox","name":"搜索"\}, "你好世界"\);/);
+assert.match((await run("task")).stdout, /search-demo/);
+assert.match((await run("close")).stdout, /已还回/);
+
+// 重放（请求优先）：原始内容在 holder 内存里，--set 里可以写别名；在 run 窗口里发，不碰用户的页面
 const alias = /access_token=(⟨secret_[0-9a-f]{12}:\w+⟩)/.exec(log)[1];
 r = await run("replay", "1", "--set", "page=2", "--set", `header.x-token2=${alias}`);
 assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /^✓ 重放 #1/);
-const sent = JSON.parse(ext.log.execs.at(-1).match(/exec\.replay\((\{.*\})\)\)\)\.then\(\(v\)/s)[1]);
+const sent = ext.log.calls.filter((c) => c.fn === "replay").at(-1).args[0];
 assert.equal(new URL(sent.url).searchParams.get("page"), "2");
 assert.equal(sent.headers["x-token"], SECRET, "原始请求头里的真值原样带上");
 assert.equal(sent.headers["x-token2"], SECRET, "别名换成了真值");
-assert.match(r.stdout, /JSON 对象，字段：name, token/);
+assert.ok(!ext.log.calls.some((c) => c.tab === 77), "仍然没碰用户的 tab77");
+assert.match(r.stdout, /JSON 对象，字段：name, token, n/);
 assert.doesNotMatch(r.stdout, /eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxIn0/, "响应里的 token 在预览里是别名");
 r = await run("replay", "2");
 assert.equal(r.code, 1); assert.match(r.stdout, /--yes/);
 assert.match((await run("req", "find", "\"v\": 1")).stdout, /1 处有/);
 console.log("replay ok");
+
+// task 运行时：worker 里跑 SDK，同站点复用 run 窗口里的标签页；请求头继承页面自己发过的（authorization 真值只在内存）
+const tasks = path.join(HOME, ".tabbot", "task");
+fs.writeFileSync(path.join(tasks, "lookup.js"), `/**
+ * @summary 查一个词
+ * @param q 查询词
+ * @param n? 条数
+ */
+import { tabbot, request, goto, query, click, serializeUrl } from "../task/lib/index.js";
+await tabbot.run(async ({ page }) => {
+  const res = await request(page, { url: serializeUrl({ bareUrl: "${PAGE}api/x", query: { q: tabbot.params.q } }) });
+  if (!res.ok) throw new Error("请求失败 " + res.status);
+  const body = res.json();
+  return { n: body.n, q: tabbot.params.q, count: Number(tabbot.params.n ?? 1) };
+});
+`);
+fs.writeFileSync(path.join(tasks, "dom.js"), `/**
+ * @summary 页面操作
+ */
+import { tabbot, goto, click, query, waitFor, text } from "../task/lib/index.js";
+await tabbot.run(async ({ page }) => {
+  await goto(page, "${PAGE}list");
+  await waitFor(page, "article");
+  await click(page, { role: "button", name: "更多" });
+  return { items: await query(page, { css: "article", fields: { title: "h2" } }), text: (await text(page)).text };
+});
+`);
+fs.writeFileSync(path.join(tasks, "boom.js"), `/**\n * @summary 失败\n */\nimport { tabbot, request } from "../task/lib/index.js";\nawait tabbot.run(async ({ page }) => { await request(page, { url: "${PAGE}api/x", method: "NOPE", inherit: true }); throw new Error("故意失败"); });\n`);
+fs.writeFileSync(path.join(tasks, "slow.js"), `/**\n * @summary 很慢\n * @timeout 1\n */\nimport { tabbot, sleep } from "../task/lib/index.js";\nawait tabbot.run(async () => { await sleep(5000); });\n`);
+const openedBefore = ext.log.opened.length;
+r = await run("task", "lookup", "--q", "你好");
+assert.equal(r.code, 0, r.stdout);
+assert.deepEqual(JSON.parse(r.stdout), { status: "success", result: { n: 1, q: "你好", count: 1 } });
+const lookupCall = ext.log.calls.filter((c) => c.fn === "replay").at(-1);
+assert.equal(lookupCall.args[0].headers.authorization, `Bearer ${SECRET}`, "继承了用户页面自己发过的 authorization");
+assert.equal(new URL(lookupCall.args[0].url).searchParams.get("q"), "你好");
+assert.ok(lookupCall.tab >= 100, "在 run 窗口里发的");
+const openedAfterFirst = ext.log.opened.length;
+r = await run("task", "lookup", "--q", "再来一次", "--n", "3");
+assert.equal(JSON.parse(r.stdout).result.count, 3);
+assert.equal(ext.log.opened.length, openedAfterFirst, "第二次运行复用池里的标签页，不再开新的");
+assert.equal(openedAfterFirst - openedBefore <= 1, true);
+r = await run("task", "lookup");
+assert.equal(r.code, 1); assert.match(JSON.parse(r.stdout).error, /缺少必填参数：--q/);
+r = await run("task", "lookup", "--zzz", "1", "--q", "a");
+assert.match(JSON.parse(r.stdout).error, /没有这些参数/);
+r = await run("task", "dom");
+assert.equal(r.code, 0, r.stdout);
+assert.deepEqual(JSON.parse(r.stdout).result.items, [{ title: "第一条" }, { title: "第二条" }]);
+assert.ok(ext.log.calls.some((c) => c.fn === "act" && c.args[0].kind === "click" && c.args[0].loc.role === "button"), "click 带着持久定位交给页面");
+r = await run("task", "boom");
+assert.equal(r.code, 1); assert.equal(JSON.parse(r.stdout).status, "failure"); assert.match(JSON.parse(r.stdout).error, /故意失败|NOPE/);
+r = await run("task", "slow");
+assert.equal(r.code, 1); assert.match(JSON.parse(r.stdout).error, /超过 1 秒未结束/);
+r = await run("eval", 'const a = await task("lookup", { q: "组合" }); return { got: a.q, n: a.n };');
+assert.equal(r.code, 0, r.stdout); assert.deepEqual(JSON.parse(r.stdout).result, { got: "组合", n: 1 });
+r = await run("task", "nope");
+assert.match(JSON.parse(r.stdout).error, /task 不存在/);
+assert.ok(fs.readdirSync(path.join(HOME, ".tabbot", "run", "lookup")).length >= 2, "运行历史落盘");
+console.log("task runtime ok");
 
 // CLI：真实命令行 → holder（holder 已经在跑）
 const cli = (...args) => spawnSync(process.execPath, [path.join(SRC, "cli", "tabbot.ts"), ...args], { env, encoding: "utf8", timeout: 30_000 });
@@ -197,27 +277,17 @@ r = await run("tabs");
 assert.equal(r.code, 1); assert.match(r.stdout, /need-(install|chrome|extension)/);
 console.log("relay exit keeps daemon ok");
 
-// 旧版扩展（没有 ABI）：连上了，但命令告诉用户去刷新；开关没开：告诉用户去打开
+// 旧版扩展（没有 ABI 2）：连上了，但命令告诉用户去刷新
 const relay2 = spawn(process.execPath, [RELAY], { env, stdio: ["pipe", "pipe", "pipe"], cwd: SRC });
-const old = fakeExtension(relay2);
-relay2.stdin.write(frame({ type: "hello", protocolVersion: 1, chromeVersion: "Chrome/old" }));
+fakeExtension(relay2);
+relay2.stdin.write(frame({ type: "hello", abi: 1, chromeVersion: "Chrome/old" }));
 await waitFor(async () => (await rpc("ping")).extension === true);
 assert.equal((await rpc("ping")).pid, daemonPid, "重连后 daemon pid 不变");
 r = await run("tabs");
 assert.equal(r.code, 1); assert.match(r.stdout, /扩展是旧版本.*刷新 TabBot 扩展/);
+console.log("old extension ok");
 relay2.stdin.end();
 await new Promise((r2) => relay2.on("exit", r2));
-await waitFor(async () => (await rpc("ping")).extension === false);
-const relay3 = spawn(process.execPath, [RELAY], { env, stdio: ["pipe", "pipe", "pipe"], cwd: SRC });
-const noScripts = fakeExtension(relay3, { userScripts: false });
-noScripts.hello();
-await waitFor(async () => (await rpc("ping")).extension === true);
-r = await run("tabs");
-assert.equal(r.code, 1); assert.match(r.stdout, /允许用户脚本/);
-assert.equal(old.log.registered.length, 0);
-console.log("old extension / no user scripts ok");
-relay3.stdin.end();
-await new Promise((r2) => relay3.on("exit", r2));
 
 // SIGTERM 走 shutdown：退出后 socket 文件被清掉（tabbot daemon restart 就是按 pid 发这个信号）
 process.kill(daemonPid, "SIGTERM");

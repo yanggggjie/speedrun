@@ -1,4 +1,4 @@
-// 用桩对象模拟 chrome.* 运行 background.js：握手、固定的几个操作（register / exec / tabs / goto）、页面消息转发、标签页事件、重连。
+// 用桩对象模拟 chrome.* 运行 background.js：握手、固定的几个操作（call / tabs / goto / 窗口与标签页）、页面消息转发、标签页事件、重连。
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,10 +7,16 @@ const posted = [];
 const port = { message: null, disconnect: null };
 const calls = [];
 const handlers = {};
-const onEvt = (name) => ({ addListener: (fn) => { (handlers[name] ??= []).push(fn); } });
-const tabs = new Map([[1, { id: 1, windowId: 1, active: true, url: "https://a.com/x", title: "A", status: "complete" }], [2, { id: 2, windowId: 1, active: false, url: "chrome://extensions", title: "E", status: "complete" }]]);
-let userScriptsOn = true;
-let registered = [];
+const onEvt = (name) => ({ addListener: (fn) => { (handlers[name] ??= []).push(fn); }, removeListener: () => {} });
+const ANCHOR = "chrome-extension://fake-id/anchor.html";
+const tabs = new Map([
+  [1, { id: 1, windowId: 1, active: true, url: "https://a.com/x", title: "A", status: "complete" }],
+  [2, { id: 2, windowId: 1, active: false, url: "chrome://extensions", title: "E", status: "complete" }],
+  [3, { id: 3, windowId: 9, active: true, url: ANCHOR, title: "tabbot run", status: "complete" }],
+]);
+let nextTab = 10;
+const navigated = new Map();
+let scriptResult = { v: 42 };
 
 globalThis.chrome = {
   runtime: {
@@ -19,23 +25,32 @@ globalThis.chrome = {
       calls.push(["connectNative", name]);
       return { postMessage: (m) => posted.push(m), onMessage: { addListener: (fn) => (port.message = fn) }, onDisconnect: { addListener: (fn) => (port.disconnect = fn) } };
     },
-    getManifest: () => ({ version: "0.2.0" }),
+    getManifest: () => ({ version: "0.3.0" }),
+    getURL: (p) => `chrome-extension://fake-id/${p}`,
     onStartup: onEvt("startup"),
     onInstalled: onEvt("installed"),
-    onUserScriptMessage: onEvt("userScriptMessage"),
+    onMessage: onEvt("message"),
   },
-  userScripts: new Proxy({
-    getScripts: async () => { if (!userScriptsOn) throw new Error("User scripts are not enabled"); return registered; },
-    configureWorld: async (o) => { calls.push(["configureWorld", o.messaging]); },
-    unregister: async ({ ids }) => { registered = registered.filter((s) => !ids.includes(s.id)); },
-    register: async (list) => { registered.push(...list); },
-    execute: async ({ target, js, world }) => { calls.push(["execute", target.tabId, world, js[0].code]); return [{ frameId: 0 }]; },
-  }, {}),
+  scripting: {
+    executeScript: async (o) => {
+      calls.push(["executeScript", o.target.tabId, o.world ?? "ISOLATED", o.files ?? "func", o.args]);
+      if (o.func) return [{ result: o.args ? scriptResult : false }];
+      return [{}];
+    },
+  },
   tabs: {
     query: async () => [...tabs.values()],
-    update: async (id, { url }) => { calls.push(["tabs.update", id, url]); },
+    get: async (id) => ({ ...(tabs.get(id) ?? { id }), ...(navigated.get(id) ?? {}) }),
+    update: async (id, props) => { calls.push(["tabs.update", id, props]); if (props.url) navigated.set(id, { url: props.url, title: "next" });
+      if (props.url) setTimeout(() => handlers.tabUpdated.forEach((h) => h(id, { status: "complete" })), 5); return {}; },
+    create: async (props) => { calls.push(["tabs.create", props]); return { id: nextTab++, windowId: props.windowId }; },
+    remove: async (id) => { calls.push(["tabs.remove", id]); },
     onUpdated: onEvt("tabUpdated"),
     onRemoved: onEvt("tabRemoved"),
+  },
+  windows: {
+    create: async (props) => { calls.push(["windows.create", props]); return { id: 11, tabs: [{ id: nextTab++ }] }; },
+    remove: async (id) => { calls.push(["windows.remove", id]); },
   },
   action: { onClicked: onEvt("actionClicked") },
   alarms: { create: (n, o) => calls.push(["alarm", n, o.periodInMinutes]), onAlarm: onEvt("alarm") },
@@ -43,54 +58,53 @@ globalThis.chrome = {
 
 await import(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "background.js") + "?t=1");
 await new Promise((r) => setTimeout(r, 10));
-const host = async (msg) => { await port.message(msg); await new Promise((r) => setTimeout(r, 5)); };
+const host = async (msg) => { await port.message(msg); await new Promise((r) => setTimeout(r, 30)); };
 const last = () => [...posted].reverse().find((m) => "id" in m);
 
-// 1. 启动即连接，握手带 ABI 版本和用户脚本能力；ABI 必须和 holder 一侧一致
+// 1. 启动即连接，握手带 ABI 版本；ABI 必须和 holder 一侧一致
 assert.deepEqual(calls.find((c) => c[0] === "connectNative"), ["connectNative", "com.tabbot.connect"]);
 const { ABI } = await import(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../browser/extension.ts"));
-assert.deepEqual(posted[0], { type: "hello", abi: ABI, chromeVersion: posted[0].chromeVersion, extensionVersion: "0.2.0", userScripts: true });
+assert.deepEqual(posted[0], { type: "hello", abi: ABI, chromeVersion: posted[0].chromeVersion, extensionVersion: "0.3.0" });
+assert.equal(ABI, 2);
 assert.deepEqual(calls.find((c) => c[0] === "alarm"), ["alarm", "tabbot-keepalive", 0.5]);
+// 已经打开的 http 页面补注入（chrome:// 不注入）：探测不到页面脚本时注入 MAIN 三个文件和隔离世界的 bridge
+assert.ok(calls.some((c) => c[0] === "executeScript" && c[1] === 1 && Array.isArray(c[3]) && c[3].includes("page/recorder.js")));
+assert.ok(calls.some((c) => c[0] === "executeScript" && c[1] === 1 && Array.isArray(c[3]) && c[3][0] === "page/bridge.js"));
+assert.ok(!calls.some((c) => c[0] === "executeScript" && c[1] === 2), "chrome:// 页面不注入");
 
-// 2. tabs：只列 http/https
+// 2. tabs：http/https 页面，加上 anchor 页（标 anchor）
 await host({ id: 1, name: "tabs", args: {} });
-assert.deepEqual(last().result.tabs.map((t) => t.tabId), [1]);
-assert.equal(last().result.tabs[0].status, "complete");
+assert.deepEqual(last().result.tabs.map((t) => [t.tabId, !!t.anchor]), [[1, false], [3, true]]);
 
-// 3. register：开消息通道、注册常驻脚本（所有 http/https，document_start），已打开的页面补注入；旧的先清掉
-const scripts = [{ id: "page", code: "/*page*/", world: "MAIN" }, { id: "bridge", code: "/*bridge*/", world: "USER_SCRIPT" }];
-await host({ id: 2, name: "register", args: { scripts } });
-assert.deepEqual(last().result, { scripts: 2 });
-assert.ok(calls.some((c) => c[0] === "configureWorld" && c[1] === true));
-assert.deepEqual(registered.map((s) => [s.id, s.world, s.runAt, s.allFrames]), [["page", "MAIN", "document_start", true], ["bridge", "USER_SCRIPT", "document_start", true]]);
-assert.deepEqual(registered[0].matches, ["http://*/*", "https://*/*"]);
-assert.equal(calls.filter((c) => c[0] === "execute" && c[1] === 1).length, 2, "已打开的 http 页面补注入两个脚本");
-assert.ok(!calls.some((c) => c[0] === "execute" && c[1] === 2), "chrome:// 页面不注入");
-await host({ id: 3, name: "register", args: { scripts: [scripts[0]] } });
-assert.deepEqual(registered.map((s) => s.id), ["page"], "再次注册先清掉旧的");
+// 3. call：在页面里调用 window.__tcr.exec[fn]，结果原样带回；页面脚本报的错变成错误
+await host({ id: 2, name: "call", args: { tabId: 1, fn: "text", args: [100] } });
+assert.deepEqual(last().result, { v: 42 });
+assert.deepEqual(calls.at(-1).slice(0, 3), ["executeScript", 1, "MAIN"]);
+assert.deepEqual(calls.at(-1)[4], ["text", [100]]);
+scriptResult = { __tcrError: "元素已不在页面上" };
+await host({ id: 3, name: "call", args: { tabId: 1, fn: "act", args: [{}] } });
+assert.match(last().error.message, /元素已不在页面上/);
 
-// 4. exec：在 MAIN world 执行任意代码，不限制内容
-await host({ id: 4, name: "exec", args: { tabId: 1, code: "anything()" } });
-assert.deepEqual(calls.at(-1), ["execute", 1, "MAIN", "anything()"]);
-assert.deepEqual(last().result, {});
-
-// 5. goto
-await host({ id: 5, name: "goto", args: { tabId: 1, url: "https://a.com/next" } });
-assert.deepEqual(calls.at(-1), ["tabs.update", 1, "https://a.com/next"]);
-await host({ id: 6, name: "nope", args: {} });
+// 4. goto（等加载）、窗口与标签页
+await host({ id: 4, name: "goto", args: { tabId: 1, url: "https://a.com/next", wait: true } });
+assert.deepEqual(calls.filter((c) => c[0] === "tabs.update").at(-1), ["tabs.update", 1, { url: "https://a.com/next" }]);
+assert.deepEqual(last().result, { url: "https://a.com/next", title: "next", loaded: true });
+await host({ id: 5, name: "openWindow", args: { anchor: true } });
+assert.deepEqual(calls.find((c) => c[0] === "windows.create")[1], { url: ANCHOR, focused: false, type: "normal" }, "新窗口不抢焦点");
+assert.equal(last().result.windowId, 11);
+await host({ id: 6, name: "openTab", args: { windowId: 11, url: "https://a.com/robots.txt" } });
+assert.deepEqual(calls.find((c) => c[0] === "tabs.create")[1], { windowId: 11, url: "https://a.com/robots.txt", active: true });
+await host({ id: 7, name: "activateTab", args: { tabId: 10 } });
+assert.deepEqual(calls.filter((c) => c[0] === "tabs.update").at(-1), ["tabs.update", 10, { active: true }]);
+await host({ id: 8, name: "closeTab", args: { tabId: 10 } });
+await host({ id: 9, name: "closeWindow", args: { windowId: 11 } });
+assert.ok(calls.some((c) => c[0] === "tabs.remove" && c[1] === 10) && calls.some((c) => c[0] === "windows.remove" && c[1] === 11));
+await host({ id: 10, name: "nope", args: {} });
 assert.match(last().error.message, /未知操作 nope/);
 
-// 6. 开关没打开：register 和 exec 说清楚怎么办
-userScriptsOn = false;
-await host({ id: 7, name: "exec", args: { tabId: 1, code: "1" } });
-assert.match(last().error.message, /允许用户脚本/);
-await host({ id: 8, name: "register", args: { scripts } });
-assert.match(last().error.message, /允许用户脚本/);
-userScriptsOn = true;
-
-// 7. 页面消息：只收自己的 bridge 发来的、带 tab 的；补上 tab / frame / top / page，原样转给 holder
+// 5. 页面消息：只收自己的 bridge 发来的、带 tab 的；补上 tab / frame / top / page，原样转给 holder
 const before = posted.length;
-const forward = (m, sender) => handlers.userScriptMessage[0](m, sender);
+const forward = (m, sender) => handlers.message[0](m, sender);
 forward({ __tcrl: 1, top: true, page: "https://a.com/x", msg: { __tcrl: 1, k: "ev", t: 5, type: "click", trusted: true } }, { id: "fake-id", tab: { id: 1 }, frameId: 3 });
 forward({ __tcrl: 1, msg: { k: "ev" } }, { id: "other", tab: { id: 1 } });
 forward({ __tcrl: 1, msg: { k: "ev" } }, { id: "fake-id" });

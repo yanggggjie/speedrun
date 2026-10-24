@@ -44,32 +44,29 @@ macOS（`darwin`）：
 > 请在 Chrome 里加载 TabBot 扩展：
 > 1. 打开 `chrome://extensions`，打开右上角「开发者模式」
 > 2. 点「加载已解压的扩展程序」，按 `Cmd+Shift+G`，粘贴 `<扩展目录>`，选择它
-> 3. 点 TabBot 卡片上的「详细信息」，打开「允许用户脚本」
-> 4. 完成后告诉我「好了」
+> 3. 完成后告诉我「好了」
 
 Windows（`win32`）：
 
 > 请在 Chrome 里加载 TabBot 扩展：
 > 1. 打开 `chrome://extensions`，打开右上角「开发者模式」
 > 2. 点「加载已解压的扩展程序」，在窗口顶部的地址栏粘贴 `<扩展目录>`，回车，再点「选择文件夹」
-> 3. 点 TabBot 卡片上的「详细信息」，打开「允许用户脚本」
-> 4. 完成后告诉我「好了」
+> 3. 完成后告诉我「好了」
 
 Linux（`linux`）：
 
 > 请在 Chrome 里加载 TabBot 扩展：
 > 1. 打开 `chrome://extensions`，打开右上角「开发者模式」
 > 2. 点「加载已解压的扩展程序」，按 `Ctrl+L`，粘贴 `<扩展目录>`，回车，再点「选择」
-> 3. 点 TabBot 卡片上的「详细信息」，打开「允许用户脚本」
-> 4. 完成后告诉我「好了」
+> 3. 完成后告诉我「好了」
 
 **扩展已连上、但 ABI 不同（`extension-abi` 提示）**：只说「请在 `chrome://extensions` 里点 TabBot 扩展卡片上的刷新，完成后告诉我『好了』」。
 
 以下是给 agent 的背景，不要讲给用户：
 
-- 「允许用户脚本」这个开关必须打开：页面脚本由 holder 经 `chrome.userScripts` 下发，开关没开，录制和 `act` 都不工作；`doctor` 的 `user-scripts` 会检查。
+- 旧版本（ABI 1）的扩展装过的用户：先在 `chrome://extensions` 里移除旧的 TabBot 再重新加载，否则旧的动态内容脚本会残留、重复录制。
 - daemon 一般不用手动重启：`setup.js` 发现运行中的 daemon 是旧代码时，会让它退出，并在扩展重连时换成新的。之后没有任何命令会自动帮你换，需要时运行 `tabbot daemon restart`。
-- 扩展本身不能自动更新，但它只是一个固定 ABI 的管道，只有 ABI 变化或权限变化时才需要刷新；页面脚本由 holder 下发，更新它们不需要刷新扩展。刷新扩展会断开旧的 relay，Chrome 随后用新的 manifest 重新拉起 relay；扩展代码或 relay 代码有改动时，必须做刷新才会生效。
+- 扩展本身不能自动更新，但它只是一个固定 ABI 的管道，只有 ABI 变化或权限变化时才需要刷新；页面脚本现在是扩展包里的静态内容脚本（`chrome-extension/page/`），改它们要刷新扩展。刷新扩展会断开旧的 relay，Chrome 随后用新的 manifest 重新拉起 relay；扩展代码或 relay 代码有改动时，必须做刷新才会生效。
 
 ## 5. 验收
 
@@ -82,7 +79,6 @@ Linux（`linux`）：
 - 全部通过：进入第 6 步。
 - 扩展未连接（`need-extension`）：对用户只说「请在 `chrome://extensions` 里确认 TabBot 扩展是开着的，再点一下它的图标」，然后重新运行 `doctor`。
 - `extension-abi` 提示扩展 ABI 不对：对用户只说「请在 `chrome://extensions` 里刷新 TabBot 扩展」
-- `user-scripts` 失败：对用户只说「请在 `chrome://extensions` 里点开 TabBot 的『详细信息』，打开『允许用户脚本』，再点一下 TabBot 的图标，完成后告诉我『好了』」（没有这个开关录制和操作都不工作，装完一定要确认），然后重新运行 `doctor`。
 - 其它失败：按 `doctor` 输出的修复命令自己处理，再重新运行 `doctor`；处理不了时，对用户说清需要他做的一件事。
 
 通过后进入第 6 步。可以自己做冒烟测试（例如 `tabbot status`、`tabbot tabs`）。
