@@ -1,5 +1,5 @@
-// recipe 的 SDK：recipe 脚本跑在 holder 的 worker 线程里，每个函数都是向 holder 发一个操作，holder 在 tabbot kitchen 窗口的标签页里执行。
-// 这个目录由 holder 启动时同步到 ~/.tabbot/recipe/lib，recipe 里 `import { ... } from "../recipe/lib/index.js"`（recipe 在 ~/.tabbot/recipe/ 下）。
+// task 的 SDK：task 脚本跑在 holder 的 worker 线程里，每个函数都是向 holder 发一个操作，holder 在 tabbot agent 窗口的标签页里执行。
+// 这个目录由 holder 启动时同步到 ~/.tabbot/task/lib，task 里 `import { ... } from "../task/lib/index.js"`（task 在 ~/.tabbot/task/ 下）。
 import { parentPort, workerData } from "node:worker_threads";
 
 let nextId = 1;
@@ -15,7 +15,7 @@ parentPort?.on("message", (m) => {
 });
 
 function call(op, args = {}) {
-  if (!parentPort) throw new Error("这个 SDK 只能在 tabbot 的 recipe 里运行：tabbot recipe <名字>");
+  if (!parentPort) throw new Error("这个 SDK 只能在 tabbot 的 task 里运行：tabbot task <名字>");
   const id = nextId++;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
@@ -32,7 +32,7 @@ const PAGE = Object.freeze({ kind: "page" });
 /** 命令行 `--名字 值` 传进来的参数，值都是字符串；没传的可选参数不存在。 */
 export const tabbot = {
   params: workerData?.params ?? {},
-  /** recipe 入口：fn({ page }) 的返回值就是 result。 */
+  /** task 入口：fn({ page }) 的返回值就是 result。 */
   async run(fn) {
     try {
       const result = await fn({ page: PAGE });
@@ -41,8 +41,8 @@ export const tabbot = {
       parentPort?.postMessage({ type: "fail", error: String((e && e.stack) || e), message: String((e && e.message) || e) });
     }
   },
-  /** 在这次运行里顺序调用另一个 recipe（共用同一个页面），返回它的 result；失败时抛错。 */
-  recipe: (name, params = {}) => call("recipe", { name, params }),
+  /** 在这次运行里顺序调用另一个 task（共用同一个页面），返回它的 result；失败时抛错。 */
+  task: (name, params = {}) => call("task", { name, params }),
 };
 
 /** 打开网址并等加载完成。 */

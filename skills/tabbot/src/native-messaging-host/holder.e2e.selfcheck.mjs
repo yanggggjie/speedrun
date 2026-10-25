@@ -37,7 +37,7 @@ function fakeExtension(child) {
   const page = (tab, msg, pageUrl = PAGE) => send({ type: "page", tab, frame: 0, top: true, page: pageUrl, msg: { __tcrl: 1, t: Date.now(), ...msg } });
   const tabsList = () => [
     { tabId: 77, windowId: 1, active: true, url: PAGE, title: "示例", status: "complete" },
-    ...[...anchors].map(([windowId, tabId]) => ({ tabId, windowId, active: false, url: "chrome-extension://x/anchor.html", title: "tabbot kitchen", status: "complete", anchor: true })),
+    ...[...anchors].map(([windowId, tabId]) => ({ tabId, windowId, active: false, url: "chrome-extension://x/anchor.html", title: "tabbot agent", status: "complete", anchor: true })),
     ...[...runTabs].map(([tabId, t]) => ({ tabId, windowId: t.windowId, active: true, url: t.url, title: "run", status: "complete" })),
   ];
   const callPage = (tab, fn, args) => {
@@ -144,17 +144,17 @@ assert.match(log, /GET \/api\/x\?page=1&access_token=⟨secret_[0-9a-f]{12}:\w+�
 assert.ok(!log.includes(SECRET), "日志里没有真值");
 assert.match((await run("tabs")).stdout, /^1 个标签页\ntab77 win1 前台 https:\/\/example\.com\/ "示例"$/, "tabs 只列用户自己的页面");
 
-// Chef 没有调试权限；cook 发票据；Cook 带票据在自己的 kitchen 窗口里调试，不动用户的 tab77
+// Chef 没有调试权限；learn 发票据；Cook 带票据在自己的 agent 窗口里调试，不动用户的 tab77
 let r = await run("debug", "open", PAGE);
 assert.equal(r.code, 1); assert.match(r.stdout, /Chef 没有调试权限/);
-r = await run("cook", "search-demo", "--goal", "搜索演示", "--site", "example.com");
+r = await run("learn", "search-demo", "--goal", "搜索演示", "--site", "example.com");
 assert.equal(r.code, 0, r.stdout);
 const tk = /票据：(t-[0-9a-f]+)/.exec(r.stdout)[1];
 r = await run("debug", "--ticket", tk, "open", PAGE + "search?q=1");
 assert.equal(r.code, 0, r.stdout);
-assert.equal(ext.log.windows, 1, "第一次调试才开一个 kitchen 窗口（带 anchor）");
+assert.equal(ext.log.windows, 1, "第一次调试才开一个 agent 窗口（带 anchor）");
 assert.deepEqual(ext.log.opened, [PAGE.slice(0, -1) + "/robots.txt"], "暖页面是 robots.txt，很轻");
-assert.ok(ext.log.gotos.some((g) => g.url === PAGE + "search?q=1" && g.wait === true && g.tabId === 100), "在 kitchen 窗口的标签页里导航并等加载");
+assert.ok(ext.log.gotos.some((g) => g.url === PAGE + "search?q=1" && g.wait === true && g.tabId === 100), "在 agent 窗口的标签页里导航并等加载");
 assert.ok(!ext.log.calls.some((c) => c.tab === 77), "没有碰用户的 tab77");
 assert.match((await run("debug", "--ticket", tk, "snapshot")).stdout, /tab100 [\s\S]*@e1 input "搜索"/);
 assert.match((await run("debug", "--ticket", tk, "text")).stdout, /你好，世界/);
@@ -165,8 +165,8 @@ P({ k: "ev", type: "click", trusted: true, target: { tag: "button", text: "取�
 await waitFor(async () => (await run("log", "--src", "human")).stdout.includes("human click button[取消]"));
 const agentLog = (await run("log", "--src", "agent", "--all")).stdout;
 assert.match(agentLog, /agent cmd goto/); assert.match(agentLog, /agent cmd fill/);
-assert.match((await run("tabs")).stdout, /^1 个标签页/, "kitchen 窗口里的页面不算用户的标签页");
-console.log("cook/debug ok");
+assert.match((await run("tabs")).stdout, /^1 个标签页/, "agent 窗口里的页面不算用户的标签页");
+console.log("learn/debug ok");
 
 // 重放（请求优先）：原始内容在 holder 内存里，--set 里可以写别名；在 run 窗口里发，不碰用户的页面
 const alias = /access_token=(⟨secret_[0-9a-f]{12}:\w+⟩)/.exec(log)[1];
@@ -184,14 +184,14 @@ assert.equal(r.code, 1); assert.match(r.stdout, /--yes/);
 assert.match((await run("req", "find", "\"v\": 1")).stdout, /1 处有/);
 console.log("replay ok");
 
-// recipe 运行时：worker 里跑 SDK，同站点复用 run 窗口里的标签页；请求头继承页面自己发过的（authorization 真值只在内存）
-const recipes = path.join(HOME, ".tabbot", "recipe");
-fs.writeFileSync(path.join(recipes, "lookup.js"), `/**
+// task 运行时：worker 里跑 SDK，同站点复用 run 窗口里的标签页；请求头继承页面自己发过的（authorization 真值只在内存）
+const tasks = path.join(HOME, ".tabbot", "task");
+fs.writeFileSync(path.join(tasks, "lookup.js"), `/**
  * @summary 查一个词
  * @param q 查询词
  * @param n? 条数
  */
-import { tabbot, request, goto, query, click, serializeUrl } from "../recipe/lib/index.js";
+import { tabbot, request, goto, query, click, serializeUrl } from "../task/lib/index.js";
 await tabbot.run(async ({ page }) => {
   const res = await request(page, { url: serializeUrl({ bareUrl: "${PAGE}api/x", query: { q: tabbot.params.q } }) });
   if (!res.ok) throw new Error("请求失败 " + res.status);
@@ -199,10 +199,10 @@ await tabbot.run(async ({ page }) => {
   return { n: body.n, q: tabbot.params.q, count: Number(tabbot.params.n ?? 1) };
 });
 `);
-fs.writeFileSync(path.join(recipes, "dom.js"), `/**
+fs.writeFileSync(path.join(tasks, "dom.js"), `/**
  * @summary 页面操作
  */
-import { tabbot, goto, click, query, waitFor, text } from "../recipe/lib/index.js";
+import { tabbot, goto, click, query, waitFor, text } from "../task/lib/index.js";
 await tabbot.run(async ({ page }) => {
   await goto(page, "${PAGE}list");
   await waitFor(page, "article");
@@ -210,10 +210,10 @@ await tabbot.run(async ({ page }) => {
   return { items: await query(page, { css: "article", fields: { title: "h2" } }), text: (await text(page)).text };
 });
 `);
-fs.writeFileSync(path.join(recipes, "boom.js"), `/**\n * @summary 失败\n */\nimport { tabbot, request } from "../recipe/lib/index.js";\nawait tabbot.run(async ({ page }) => { await request(page, { url: "${PAGE}api/x", method: "NOPE", inherit: true }); throw new Error("故意失败"); });\n`);
-fs.writeFileSync(path.join(recipes, "slow.js"), `/**\n * @summary 很慢\n * @timeout 1\n */\nimport { tabbot, sleep } from "../recipe/lib/index.js";\nawait tabbot.run(async () => { await sleep(5000); });\n`);
+fs.writeFileSync(path.join(tasks, "boom.js"), `/**\n * @summary 失败\n */\nimport { tabbot, request } from "../task/lib/index.js";\nawait tabbot.run(async ({ page }) => { await request(page, { url: "${PAGE}api/x", method: "NOPE", inherit: true }); throw new Error("故意失败"); });\n`);
+fs.writeFileSync(path.join(tasks, "slow.js"), `/**\n * @summary 很慢\n * @timeout 1\n */\nimport { tabbot, sleep } from "../task/lib/index.js";\nawait tabbot.run(async () => { await sleep(5000); });\n`);
 const openedBefore = ext.log.opened.length;
-r = await run("serve", "lookup", "--q", "你好");
+r = await run("run", "lookup", "--q", "你好");
 assert.equal(r.code, 0, r.stdout);
 assert.deepEqual(JSON.parse(r.stdout), { mode: "执行", status: "success", result: { n: 1, q: "你好", count: 1 } });
 const lookupCall = ext.log.calls.filter((c) => c.fn === "replay").at(-1);
@@ -221,54 +221,54 @@ assert.equal(lookupCall.args[0].headers.authorization, `Bearer ${SECRET}`, "继�
 assert.equal(new URL(lookupCall.args[0].url).searchParams.get("q"), "你好");
 assert.ok(lookupCall.tab >= 100, "在 run 窗口里发的");
 const openedAfterFirst = ext.log.opened.length;
-r = await run("serve", "lookup", "--q", "再来一次", "--n", "3");
+r = await run("run", "lookup", "--q", "再来一次", "--n", "3");
 assert.equal(JSON.parse(r.stdout).result.count, 3);
 assert.equal(ext.log.opened.length, openedAfterFirst, "第二次运行复用池里的标签页，不再开新的");
 assert.equal(openedAfterFirst - openedBefore <= 1, true);
-r = await run("serve", "lookup");
+r = await run("run", "lookup");
 assert.equal(r.code, 1); assert.match(JSON.parse(r.stdout).error, /缺少必填参数：--q/);
-r = await run("serve", "lookup", "--zzz", "1", "--q", "a");
+r = await run("run", "lookup", "--zzz", "1", "--q", "a");
 assert.match(JSON.parse(r.stdout).error, /没有这些参数/);
-r = await run("serve", "dom");
+r = await run("run", "dom");
 assert.equal(r.code, 0, r.stdout);
 assert.deepEqual(JSON.parse(r.stdout).result.items, [{ title: "第一条" }, { title: "第二条" }]);
 assert.ok(ext.log.calls.some((c) => c.fn === "act" && c.args[0].kind === "click" && c.args[0].loc.role === "button"), "click 带着持久定位交给页面");
-r = await run("serve", "boom");
+r = await run("run", "boom");
 assert.equal(r.code, 1); assert.equal(JSON.parse(r.stdout).status, "failure"); assert.match(JSON.parse(r.stdout).error, /故意失败|NOPE/);
-r = await run("serve", "slow");
+r = await run("run", "slow");
 assert.equal(r.code, 1); assert.match(JSON.parse(r.stdout).error, /超过 1 秒未结束/);
-r = await run("menu", 'const a = await recipe("lookup", { q: "组合" }); return { got: a.q, n: a.n };');
+r = await run("compose", 'const a = await task("lookup", { q: "组合" }); return { got: a.q, n: a.n };');
 assert.equal(r.code, 0, r.stdout); assert.deepEqual(JSON.parse(r.stdout).result, { got: "组合", n: 1 });
-r = await run("serve", "nope");
-assert.match(JSON.parse(r.stdout).error, /recipe 不存在/);
+r = await run("run", "nope");
+assert.match(JSON.parse(r.stdout).error, /task 不存在/);
 assert.ok(fs.readdirSync(path.join(HOME, ".tabbot", "run", "lookup")).length >= 2, "运行历史落盘");
-console.log("recipe runtime ok");
+console.log("task runtime ok");
 
-// 强制机制：menu 只能组合；--dry 不真发；真跑成功自动晋升；@endpoint 覆盖标记；两个 Cook 各自的窗口并行
-const libPath = path.join(HOME, ".tabbot", "recipe", "lib", "index.js");
-r = await run("menu", `const m = await import(${JSON.stringify(libPath)}); await m.goto(null, "${PAGE}"); return 1;`);
-assert.equal(r.code, 1); assert.match(JSON.parse(r.stdout).error, /menu 里只能组合 recipe/);
-fs.writeFileSync(path.join(recipes, "poster.js"), `/**\n * @summary 发一个 POST\n * @status: draft\n * @endpoint POST /api/save\n */\nimport { tabbot, request } from "../recipe/lib/index.js";\nawait tabbot.run(async ({ page }) => { const r = await request(page, { method: "POST", url: "${PAGE}api/save", json: { a: 1 } }); return { status: r.status }; });\n`);
+// 强制机制：compose 只能组合；--dry 不真发；真跑成功自动晋升；@endpoint 覆盖标记；两个 Cook 各自的窗口并行
+const libPath = path.join(HOME, ".tabbot", "task", "lib", "index.js");
+r = await run("compose", `const m = await import(${JSON.stringify(libPath)}); await m.goto(null, "${PAGE}"); return 1;`);
+assert.equal(r.code, 1); assert.match(JSON.parse(r.stdout).error, /compose 里只能组合 task/);
+fs.writeFileSync(path.join(tasks, "poster.js"), `/**\n * @summary 发一个 POST\n * @status: draft\n * @endpoint POST /api/save\n */\nimport { tabbot, request } from "../task/lib/index.js";\nawait tabbot.run(async ({ page }) => { const r = await request(page, { method: "POST", url: "${PAGE}api/save", json: { a: 1 } }); return { status: r.status }; });\n`);
 const replaysBefore = ext.log.calls.filter((c) => c.fn === "replay").length;
-r = await run("serve", "poster", "--dry");
+r = await run("run", "poster", "--dry");
 assert.equal(r.code, 0, r.stdout); const dry = JSON.parse(r.stdout);
 assert.equal(dry.mode, "试运行"); assert.match(dry.dry[0], /^POST http:\/\/|^POST https:\/\/example\.com\/api\/save \{"a":1\}/);
 assert.equal(ext.log.calls.filter((c) => c.fn === "replay").length, replaysBefore, "试运行没有真的发出去");
-assert.match(fs.readFileSync(path.join(recipes, "poster.js"), "utf8"), /@status: draft/, "试运行不晋升");
-r = await run("serve", "poster");
+assert.match(fs.readFileSync(path.join(tasks, "poster.js"), "utf8"), /@status: draft/, "试运行不晋升");
+r = await run("run", "poster");
 assert.equal(r.code, 0, r.stdout);
 assert.equal(ext.log.calls.filter((c) => c.fn === "replay").length, replaysBefore + 1);
-assert.match(fs.readFileSync(path.join(recipes, "poster.js"), "utf8"), /@status: verified/, "真跑成功自动晋升");
+assert.match(fs.readFileSync(path.join(tasks, "poster.js"), "utf8"), /@status: verified/, "真跑成功自动晋升");
 const apiLines = (await run("api", "example.com")).stdout.split("\n");
 const iGet = apiLines.findIndex((l) => /^GET .*\/api\/x/.test(l)), iPost = apiLines.findIndex((l) => /^POST .*\/api\/save/.test(l));
-assert.ok(iGet >= 0 && iPost > iGet, "没有 recipe 覆盖的接口排在前面");
-assert.match(apiLines[iPost], /recipe:poster/);
+assert.ok(iGet >= 0 && iPost > iGet, "没有 task 覆盖的接口排在前面");
+assert.match(apiLines[iPost], /task:poster/);
 const windowsBefore = ext.log.windows;
-const [ca, cb] = await Promise.all([run("cook", "par-a", "--goal", "a", "--site", "example.com"), run("cook", "par-b", "--goal", "b")]);
+const [ca, cb] = await Promise.all([run("learn", "par-a", "--goal", "a", "--site", "example.com"), run("learn", "par-b", "--goal", "b")]);
 const ta = /票据：(t-[0-9a-f]+)/.exec(ca.stdout)[1], tb = /票据：(t-[0-9a-f]+)/.exec(cb.stdout)[1];
-assert.match((await run("cook", "par-c", "--goal", "c", "--site", "example.com")).stdout, /最多 2 个同时/, "同一站点最多 2 个 Cook");
+assert.match((await run("learn", "par-c", "--goal", "c", "--site", "example.com")).stdout, /最多 2 个同时/, "同一站点最多 2 个 Cook");
 await Promise.all([run("debug", "--ticket", ta, "open", PAGE + "a"), run("debug", "--ticket", tb, "open", PAGE + "b")]);
-assert.equal(ext.log.windows - windowsBefore, 2, "两个 Cook 各有自己的 kitchen 窗口");
+assert.equal(ext.log.windows - windowsBefore, 2, "两个 Cook 各有自己的 agent 窗口");
 const winOf = (url) => { const g = ext.log.gotos.find((x) => x.url === url); return g.tabId; };
 assert.notEqual(winOf(PAGE + "a"), winOf(PAGE + "b"));
 console.log("enforcement ok");

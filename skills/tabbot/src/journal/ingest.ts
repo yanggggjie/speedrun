@@ -45,7 +45,7 @@ function bodyText(sanitizer: Sanitizer, raw: string, ct: string | undefined): st
   return raw;
 }
 
-export type IngestOptions = { engine?: () => FiltersEngine | undefined; aliasKey?: string; raw?: RawStore; /** 是不是 tabbot kitchen 窗口里的标签页：那里发生的一切记为 agent 的（不是用户做的）。 */ isAgentTab?: (tab: number) => boolean };
+export type IngestOptions = { engine?: () => FiltersEngine | undefined; aliasKey?: string; raw?: RawStore; /** 是不是 tabbot agent 窗口里的标签页：那里发生的一切记为 agent 的（不是用户做的）。 */ isAgentTab?: (tab: number) => boolean };
 type Ref = { seq: number; seg: number };
 type Base = Pick<NewEvent, "ts" | "tab" | "frame" | "page">;
 

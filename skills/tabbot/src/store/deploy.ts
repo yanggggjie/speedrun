@@ -33,7 +33,7 @@ export function isMirrorPath(root: string, p: string): boolean {
 
 /**
  * 把 skill 的整个目录镜像到 homeAbs（~/.tabbot）：顶层文件直接覆盖，顶层目录（src、scripts）先清空再拷。
- * 只动 payload 里有的名字，不碰 recipe、record、run、session、bin 这些本机数据。
+ * 只动 payload 里有的名字，不碰 task、record、run、session、bin 这些本机数据。
  */
 export function mirrorPayload(payloadAbs: string, homeAbs: string): void {
   fs.mkdirSync(homeAbs, { recursive: true });

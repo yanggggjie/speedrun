@@ -45,14 +45,14 @@ npm run verify:pack
 |---|---|---|
 | `npm run check` | `tsc --noEmit` | 每次改完 |
 | `npm test` | 逐个运行 `*.selfcheck.*`（几秒，不依赖 Chrome） | 每次改完 |
-| `npm run e2e` | 真实扩展 + 真实 holder + 夹具站点（Chrome for Testing，较慢） | 改了扩展、页面脚本、kitchen 窗口、recipe 运行时 |
+| `npm run e2e` | 真实扩展 + 真实 holder + 夹具站点（Chrome for Testing，较慢） | 改了扩展、页面脚本、agent 窗口、task 运行时 |
 | `npm run verify:pack` | 隔离 HOME 下真实的 `skills add`、setup、doctor（真实 `npm install`，慢） | 只在发布前 |
 
 **测试只留最关键的**：一个测试必须守住一个“坏了就会静默出错或泄密”的点，否则不留。多文件改动时，改完全部文件再一次性跑 `check`/`test`，不要逐文件验证。
 
 ### 2.3 真实 Chrome 里的验证
 
-`npm run e2e`（`scripts/dev/e2e.mjs`）起 Chrome for Testing 加临时 profile，加载真实扩展，注册临时 HOME 下的 native host，走一遍用户浏览、Chef 派 Cook、Cook 在 kitchen 窗口里调试并写 recipe、`serve` 出菜、`menu` 组合，并扫描磁盘上没有 token 真值。Chrome 路径不同时用 `CHROME` 环境变量；`HEADFUL=1` 有头；`E2E_DEBUG=1` 打印每条命令的耗时。注意夹具站点跑在测试进程里，调用 CLI 必须异步（`spawnSync` 会卡住它）。
+`npm run e2e`（`scripts/dev/e2e.mjs`）起 Chrome for Testing 加临时 profile，加载真实扩展，注册临时 HOME 下的 native host，走一遍用户浏览、Chef 派 Cook、Cook 在 agent 窗口里调试并写 task、`run` 执行、`compose` 组合，并扫描磁盘上没有 token 真值。Chrome 路径不同时用 `CHROME` 环境变量；`HEADFUL=1` 有头；`E2E_DEBUG=1` 打印每条命令的耗时。注意夹具站点跑在测试进程里，调用 CLI 必须异步（`spawnSync` 会卡住它）。
 
 扩展本身（`background.js`、`manifest.json`、`page/` 下的页面脚本）改了要在 `chrome://extensions` 里刷新；holder、CLI、`src/run/` 改了 `tabbot daemon restart` 即可。`tabbot doctor` 的 `extension-abi` 提示扩展是否太旧。
 

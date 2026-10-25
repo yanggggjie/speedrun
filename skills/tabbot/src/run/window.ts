@@ -1,5 +1,5 @@
 import type { ExtensionLink } from "../browser/extension.ts";
-import { KITCHEN_TAB_IDLE_MS } from "../utils/constants.ts";
+import { AGENT_TAB_IDLE_MS } from "../utils/constants.ts";
 
 type Tab = { tabId: number; windowId: number; url: string; anchor?: boolean };
 type Owned = { origin: string; busy: boolean; idleSince: number; key: string };
@@ -7,13 +7,13 @@ type Owned = { origin: string; busy: boolean; idleSince: number; key: string };
 export const MAIN_KEY = "main";
 
 /**
- * tabbot kitchen 窗口：Cook 干活的地方，和用户的窗口分开，不抢焦点。一个 key（票据，或 Chef 自己的 main）一个窗口，
+ * tabbot agent 窗口：Cook 干活的地方，和用户的窗口分开，不抢焦点。一个 key（票据，或 Chef 自己的 main）一个窗口，
  * 这样几个 Cook 并行时各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。
- * 每个窗口的第一个标签页是扩展的 anchor 页（标题 tabbot kitchen）。窗口里其余标签页按站点（origin）池化：
- * recipe 结束只是还回去，下次同站点的直接复用，空闲太久才关。
+ * 每个窗口的第一个标签页是扩展的 anchor 页（标题 tabbot agent）。窗口里其余标签页按站点（origin）池化：
+ * task 结束只是还回去，下次同站点的直接复用，空闲太久才关。
  * key 到窗口的映射只在内存里；holder 重启后留下的窗口是孤儿：第一个当 main 接管，其余关掉。
  */
-export class KitchenWindows {
+export class AgentWindows {
   private readonly link: Pick<ExtensionLink, "request">;
   private readonly windows = new Map<string, number>();
   private readonly owned = new Map<number, Owned>();
@@ -23,12 +23,12 @@ export class KitchenWindows {
   private adopted = false;
   private readonly idleMs: number;
 
-  constructor(link: Pick<ExtensionLink, "request">, idleMs = KITCHEN_TAB_IDLE_MS) {
+  constructor(link: Pick<ExtensionLink, "request">, idleMs = AGENT_TAB_IDLE_MS) {
     this.link = link;
     this.idleMs = idleMs;
   }
 
-  isKitchenTab(tab: number): boolean { return this.owned.has(tab); }
+  isAgentTab(tab: number): boolean { return this.owned.has(tab); }
 
   private async list(): Promise<Tab[]> { return ((await this.link.request("tabs")) as { tabs: Tab[] }).tabs; }
 

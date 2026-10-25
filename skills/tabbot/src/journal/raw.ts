@@ -31,7 +31,7 @@ export class RawStore {
 
   get(tab: number, rid: string): RawEntry | undefined { return this.map.get(this.key(tab, rid)); }
 
-  /** 最近一次满足条件的原始请求（从新到旧找）：recipe 里 inherit 请求头用。 */
+  /** 最近一次满足条件的原始请求（从新到旧找）：task 里 inherit 请求头用。 */
   newest(match: (e: RawEntry) => boolean): RawEntry | undefined {
     const all = [...this.map.values()];
     for (let i = all.length - 1; i >= 0; i--) if (match(all[i]!)) return all[i];

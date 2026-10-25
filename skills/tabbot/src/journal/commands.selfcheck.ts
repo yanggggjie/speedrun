@@ -1,4 +1,4 @@
-// 命令层：参数解析，以及用假的 holder 能力（假页面、假标签页）端到端跑 log / tabs / open / act / replay / req / recipe。HOME 指向临时目录。
+// 命令层：参数解析，以及用假的 holder 能力（假页面、假标签页）端到端跑 log / tabs / open / act / replay / req / task。HOME 指向临时目录。
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -53,11 +53,11 @@ const page = "https://www.example.com/p";
 const tabs = [
   { tabId: 7, windowId: 1, active: true, url: page, title: "示例", status: "complete" },
   { tabId: 20, windowId: 9, active: true, url: "https://www.example.com/robots.txt", title: "", status: "complete" },
-  { tabId: 21, windowId: 9, active: true, url: "chrome-extension://x/anchor.html", title: "tabbot kitchen", status: "complete", anchor: true },
+  { tabId: 21, windowId: 9, active: true, url: "chrome-extension://x/anchor.html", title: "tabbot agent", status: "complete", anchor: true },
 ];
 const calls: string[] = [];
 let extension = true;
-const recipeDir = path.join(home, "recipes");
+const taskDir = path.join(home, "tasks");
 const { Session } = await import("../run/host.ts");
 const hostOps: string[] = [];
 const host = {
@@ -81,14 +81,14 @@ const { Tickets } = await import("../run/tickets.ts");
 const tickets = new Tickets();
 const runs: string[] = [];
 const runner = {
-  runRecipe: async (name: string, params: Record<string, string>, _n: unknown, opts: { key?: string; dry?: boolean } = {}) => { runs.push(`${name} ${JSON.stringify(params)} key=${opts.key ?? "main"} dry=${opts.dry === true}`); return { status: "success", result: { name, params } }; },
-  runMenu: async (code: string) => ({ status: "success", result: code }),
+  runTask: async (name: string, params: Record<string, string>, _n: unknown, opts: { key?: string; dry?: boolean } = {}) => { runs.push(`${name} ${JSON.stringify(params)} key=${opts.key ?? "main"} dry=${opts.dry === true}`); return { status: "success", result: { name, params } }; },
+  runCompose: async (code: string) => ({ status: "success", result: code }),
 };
 const disposed: string[] = [];
 const ctx = {
   ensureExtension: async () => { if (!extension) throw new NeedExtensionError(); },
   tabs: async () => tabs,
-  host, runner, win: { isKitchenTab: (t: number) => t === 20, dispose: async (k: string) => { disposed.push(k); } }, tickets, sessions: new Map(), ingest, raw, recipeDir,
+  host, runner, win: { isAgentTab: (t: number) => t === 20, dispose: async (k: string) => { disposed.push(k); } }, tickets, sessions: new Map(), ingest, raw, taskDir,
   daemon: () => ({ extension, pid: process.pid }),
 };
 const run = (...argv: string[]) => runCommand(argv, ctx as never);
@@ -122,24 +122,24 @@ assert.match((await run("sql", "SELECT COUNT(*) AS n FROM events")).stdout, /1 �
 assert.match((await run("req", "find", "独一无二的标题")).stdout, /1 处有「独一无二的标题」/);
 const shown = (await run("req", "show", "2")).stdout;
 assert.match(shown, /地址：https:\/\/www\.example\.com\/api\/list/);
-assert.match(shown, /recipe 代码：\n@endpoint GET \/api\/list/); assert.match(shown, /await request\(page, \{ method: "GET"/);
+assert.match(shown, /task 代码：\n@endpoint GET \/api\/list/); assert.match(shown, /await request\(page, \{ method: "GET"/);
 
 // tabs 只列用户自己的页面（run 窗口的和 anchor 页不算）
 assert.match((await run("tabs")).stdout, /^1 个标签页\ntab7 win1 前台 https:\/\/www\.example\.com\/p "示例"$/);
 
-// Chef 没有调试权限：没有票据一律拒绝；cook 发票据并给出 brief
+// Chef 没有调试权限：没有票据一律拒绝；learn 发票据并给出 brief
 let r = await run("debug", "open", "example.com/p");
 assert.equal(r.code, 1); assert.match(r.stdout, /Chef 没有调试权限/);
 assert.equal((await run("snapshot")).code, 1, "旧的探索命令已经移走");
 assert.equal((await run("debug", "--ticket", "t-nope", "open", "example.com")).code, 1);
-r = await run("cook", "demo-new", "--goal", "给回答点赞", "--site", "www.example.com");
+r = await run("learn", "demo-new", "--goal", "给回答点赞", "--site", "www.example.com");
 assert.equal(r.code, 0, r.stdout);
 const ticket = /票据：(t-[0-9a-f]+)/.exec(r.stdout)![1]!;
 assert.match(r.stdout, /你是 Cook/); assert.match(r.stdout, /为什么分 Chef 和 Cook/); assert.match(r.stdout, new RegExp(`tabbot debug --ticket ${ticket} replay`));
 
-// Cook 用票据调试：在自己的 kitchen 窗口里
+// Cook 用票据调试：在自己的 agent 窗口里
 r = await run("debug", "--ticket", ticket, "open", "example.com/p");
-assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /\[调试\] 票据/); assert.match(r.stdout, /已在 kitchen 窗口打开 https:\/\/www\.example\.com\/p "示例"/);
+assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /\[调试\] 票据/); assert.match(r.stdout, /已在 agent 窗口打开 https:\/\/www\.example\.com\/p "示例"/);
 assert.match((await run("debug", "--ticket", ticket, "snapshot")).stdout, /tab20 https:\/\/www\.example\.com\/p "示例"\n.*\n@e1 button "提交"/);
 assert.match((await run("debug", "--ticket", ticket, "text", "--max", "100")).stdout, /你好世界/);
 r = await run("debug", "--ticket", ticket, "act", "click", "@e1");
@@ -147,29 +147,29 @@ assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /✓ click 持久定�
 assert.ok(hostOps.some((o) => o.startsWith('act {"kind":"click","ref":"@e1"}')));
 assert.match((await run("debug", "--ticket", ticket, "act", "click")).stdout, /需要目标/);
 
-// recipe：列出、骨架、serve、menu
-assert.match((await run("recipe")).stdout, /还没有 recipe/);
-fs.mkdirSync(recipeDir, { recursive: true });
-fs.writeFileSync(path.join(recipeDir, "demo.js"), "/**\n * @summary 演示\n * @endpoint GET /api/list\n * @param q 查询词\n */\n");
-assert.deepEqual(JSON.parse((await run("recipe")).stdout)[0], { name: "demo", endpoints: ["GET /api/list"], status: "verified", summary: "演示", params: ["q 查询词"] });
-assert.match((await run("serve", "demo", "--q", "你好")).stdout, /"mode": "执行",\n  "status": "success"/);
+// task：列出、骨架、run、compose
+assert.match((await run("task")).stdout, /还没有 task/);
+fs.mkdirSync(taskDir, { recursive: true });
+fs.writeFileSync(path.join(taskDir, "demo.js"), "/**\n * @summary 演示\n * @endpoint GET /api/list\n * @param q 查询词\n */\n");
+assert.deepEqual(JSON.parse((await run("task")).stdout)[0], { name: "demo", endpoints: ["GET /api/list"], status: "verified", summary: "演示", params: ["q 查询词"] });
+assert.match((await run("run", "demo", "--q", "你好")).stdout, /"mode": "执行",\n  "status": "success"/);
 assert.equal(runs.at(-1), 'demo {"q":"你好"} key=main dry=false');
-assert.match((await run("serve", "demo", "--q", "x", "--dry")).stdout, /"mode": "试运行"/);
-assert.equal((await run("serve", "demo", "q")).code, 1);
-assert.match((await run("menu", "return 1")).stdout, /"result": "return 1"/);
-assert.equal((await run("recipe", "new", "demo-new", "--summary", "探索出来的")).code, 0);
-const skeleton = fs.readFileSync(path.join(recipeDir, "demo-new.js"), "utf8");
-assert.match(skeleton, /@status: draft/); assert.match(skeleton, /@endpoint/); assert.match(skeleton, /\.\.\/recipe\/lib\/index\.js/);
-assert.equal((await run("recipe", "new", "demo-new")).code, 1, "不覆盖已有的");
-// Cook 把自己那份 recipe 真跑通：票据结束，窗口关掉，再调试被拒
-r = await run("serve", "demo-new", "--ticket", ticket);
+assert.match((await run("run", "demo", "--q", "x", "--dry")).stdout, /"mode": "试运行"/);
+assert.equal((await run("run", "demo", "q")).code, 1);
+assert.match((await run("compose", "return 1")).stdout, /"result": "return 1"/);
+assert.equal((await run("task", "new", "demo-new", "--summary", "探索出来的")).code, 0);
+const skeleton = fs.readFileSync(path.join(taskDir, "demo-new.js"), "utf8");
+assert.match(skeleton, /@status: draft/); assert.match(skeleton, /@endpoint/); assert.match(skeleton, /\.\.\/task\/lib\/index\.js/);
+assert.equal((await run("task", "new", "demo-new")).code, 1, "不覆盖已有的");
+// Cook 把自己那份 task 真跑通：票据结束，窗口关掉，再调试被拒
+r = await run("run", "demo-new", "--ticket", ticket);
 assert.equal(runs.at(-1), "demo-new {} key=" + ticket + " dry=false");
 assert.deepEqual(disposed, [ticket]);
 r = await run("debug", "--ticket", ticket, "snapshot");
 assert.equal(r.code, 1); assert.match(r.stdout, /已经交付/);
 
 // 重放（Cook 的调试）：原始内容在内存里；--set 里可以写别名；非 GET 要 --yes
-const tk2 = /票据：(t-[0-9a-f]+)/.exec((await run("cook", "replay-demo", "--goal", "重放")).stdout)![1]!;
+const tk2 = /票据：(t-[0-9a-f]+)/.exec((await run("learn", "replay-demo", "--goal", "重放")).stdout)![1]!;
 const alias = /access_token=(⟨secret_[0-9a-f]{12}:\w+⟩)/.exec(log[2]!)![1]!;
 raw.put(7, "d:2", { method: "POST", url: "https://www.example.com/api/save", headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` }, body: "{\"a\":1}", page, t: T });
 const lastReplay = (): { method: string; url: string; headers: Record<string, string>; body: string | null } => {

@@ -90,7 +90,7 @@
     setTimeout(tick, 120); // 先给动作引发的请求一点时间发出来
   });
 
-  // ---- 定位：@e 引用（探索时用）或持久定位 loc（写进 recipe 的）：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? } ----
+  // ---- 定位：@e 引用（探索时用）或持久定位 loc（写进 task 的）：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? } ----
   const IMPLICIT_ROLE = { a: "link", button: "button", select: "combobox", textarea: "textbox", summary: "button", img: "img", nav: "navigation", main: "main", li: "listitem", article: "article" };
   const roleOf = (el) => {
     const r = el.getAttribute("role");
@@ -161,7 +161,7 @@
     return await fn(...args);
   };
 
-  // 元素的持久定位（写进 recipe 用）：有 role 和名字就用 {role,name}，否则用 CSS 路径
+  // 元素的持久定位（写进 task 用）：有 role 和名字就用 {role,name}，否则用 CSS 路径
   const durable = (el) => { const role = roleOf(el), name = nameOfEl(el).slice(0, 60); return role && name ? { role, name } : { css: T.cssPath(el) }; };
 
   T.exec.act = async (cmd) => {

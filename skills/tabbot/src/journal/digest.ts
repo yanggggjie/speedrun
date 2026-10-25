@@ -118,14 +118,14 @@ export function buildCatalog(rows: EventRow[], site: string, options: { causeOf:
 export const endpointKey = (g: { method: string; name: string }): string => `${g.method} ${g.name}`;
 
 export function formatCatalog(all: ApiGroup[], site: string, limit: number, covered: Map<string, string> = new Map()): string[] {
-  // 还没有 recipe 覆盖的排前面：那是 Chef 要派 Cook 去学的
+  // 还没有 task 覆盖的排前面：那是 Chef 要派 Cook 去学的
   const groups = [...all.filter((g) => !covered.has(endpointKey(g))), ...all.filter((g) => covered.has(endpointKey(g)))];
   if (groups.length === 0) return [`没有 ${site} 的请求记录（只记 HTML 文档、XHR、fetch；先在页面上操作一下，或确认扩展在线：tabbot doctor）`];
-  const lines = [`${site} 的接口：${groups.length} 个（编号用于 tabbot req show <编号>；✓ = 现在就能直接重放，✗ = 要先在页面上再触发一次；recipe:名字 = 已有 recipe 覆盖，没标的是还没学会的）`];
+  const lines = [`${site} 的接口：${groups.length} 个（编号用于 tabbot req show <编号>；✓ = 现在就能直接重放，✗ = 要先在页面上再触发一次；task:名字 = 已有 task 覆盖，没标的是还没学会的）`];
   for (const g of groups.slice(0, limit)) {
     const where = g.host === site || g.host === `www.${site}` ? "" : `${g.host} `;
     const causes = [...g.causes].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([label, n]) => `${label}${n > 1 ? ` ×${n}` : ""}`).join("；");
-    lines.push(`${g.method.padEnd(4)} ${where}${g.name}  ×${g.count}  #${g.last.seq} ${g.last.status ?? "ERR"} ${g.replayable ? "✓" : "✗"}${g.variables.length ? `  变量：${g.variables.join(", ")}` : ""}${causes ? `  ← ${causes}` : ""}${covered.has(endpointKey(g)) ? `  recipe:${covered.get(endpointKey(g))}` : ""}${g.shape ? `\n      响应：${g.shape}` : ""}`);
+    lines.push(`${g.method.padEnd(4)} ${where}${g.name}  ×${g.count}  #${g.last.seq} ${g.last.status ?? "ERR"} ${g.replayable ? "✓" : "✗"}${g.variables.length ? `  变量：${g.variables.join(", ")}` : ""}${causes ? `  ← ${causes}` : ""}${covered.has(endpointKey(g)) ? `  task:${covered.get(endpointKey(g))}` : ""}${g.shape ? `\n      响应：${g.shape}` : ""}`);
   }
   if (groups.length > limit) lines.push(`…还有 ${groups.length - limit} 个（加 -n 调大）`);
   return lines;

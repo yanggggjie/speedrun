@@ -3,16 +3,16 @@ import type { Ingestor } from "../journal/ingest.ts";
 import type { RawStore } from "../journal/raw.ts";
 import { replayHeaders } from "../journal/replay-core.ts";
 import { STEP_TIMEOUT_MS } from "../utils/constants.ts";
-import { MAIN_KEY, type KitchenWindows } from "./window.ts";
+import { MAIN_KEY, type AgentWindows } from "./window.ts";
 
-/** 一次运行（或一次探索）用到的页面：绑定到 tabbot kitchen 窗口里的一个标签页，站点（origin）变了就换一个。 */
+/** 一次运行（或一次探索）用到的页面：绑定到 tabbot agent 窗口里的一个标签页，站点（origin）变了就换一个。 */
 export class Session {
   tab: number | undefined;
   origin: string | undefined;
   lastUsed = Date.now();
-  /** 所在的 kitchen 窗口：票据号，或 Chef 自己的 main。 */
+  /** 所在的 agent 窗口：票据号，或 Chef 自己的 main。 */
   readonly key: string;
-  /** 只许组合 recipe（menu）：任何页面操作都拒绝。 */
+  /** 只许组合 task（compose）：任何页面操作都拒绝。 */
   composeOnly = false;
   /** 试运行：非 GET 的 request 不真发，只记下将发送的内容。 */
   dry = false;
@@ -20,7 +20,7 @@ export class Session {
   constructor(key = MAIN_KEY) { this.key = key; }
 }
 
-export type HostDeps = { link: Pick<ExtensionLink, "request">; win: KitchenWindows; ingest: Ingestor; raw: RawStore };
+export type HostDeps = { link: Pick<ExtensionLink, "request">; win: AgentWindows; ingest: Ingestor; raw: RawStore };
 
 /** 请求头里带身份信息的那些：继承页面自己的请求头时优先挑带这些的请求。 */
 const CREDENTIAL = /auth|csrf|xsrf|token|^x-/i;
@@ -33,8 +33,8 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 }
 
 /**
- * recipe 与探索命令共用的页面操作。每个操作都在 tabbot kitchen 窗口的标签页里执行，并且都记进日志（来源 agent 的 cmd 行）：
- * 做过的事就是知识——Cook 写 recipe 从这些记录生成 recipe。
+ * task 与探索命令共用的页面操作。每个操作都在 tabbot agent 窗口的标签页里执行，并且都记进日志（来源 agent 的 cmd 行）：
+ * 做过的事就是知识——Cook 写 task 从这些记录生成 task。
  */
 export class RunHost {
   private readonly d: HostDeps;
@@ -80,7 +80,7 @@ export class RunHost {
   }
 
   async op(s: Session, name: string, a: any): Promise<unknown> {
-    if (s.composeOnly) throw new Error(`menu 里只能组合 recipe（recipe(名字, 参数)），不能操作页面：缺的做法让 Cook 去学（tabbot cook）`);
+    if (s.composeOnly) throw new Error(`compose 里只能组合 task（task(名字, 参数)），不能操作页面：缺的做法让 Cook 去学（tabbot learn）`);
     switch (name) {
       case "goto": return this.goto(s, a);
       case "request": return this.request(s, a);
