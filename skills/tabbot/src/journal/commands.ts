@@ -61,6 +61,7 @@ export function parseFlags(args: string[], bool: string[] = []): Flags | { error
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
+    if (arg === "-n") { const v = args[++i]; if (v === undefined) return { error: "-n 缺少值" }; values.set("n", v); continue; }
     if (!arg.startsWith("--")) { rest.push(arg); continue; }
     const eq = arg.indexOf("=");
     const name = eq < 0 ? arg.slice(2) : arg.slice(2, eq);
