@@ -61,7 +61,7 @@ try {
     "src/chrome-extension/page/executor.js",
     "AGENTS.md",
     "ARCHITECTURE.md",
-    "scripts/dev/e2e.mjs",
+    "scripts/dev/make-icons.mjs",
     "src/package.json",
     "src/package-lock.json",
   ]) {

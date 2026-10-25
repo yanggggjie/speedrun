@@ -62,6 +62,7 @@ export async function request(_page, options) {
 }
 
 // 定位：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? }。元素没出现会等到 timeout（默认 10 秒）。
+// 操作之后默认不等页面“稳定”（有动静的页面会白等）；要等某个结果就用 waitFor 等具体元素，或传 { settle: true } 等在途请求结束。
 export const click = (_page, loc, options = {}) => call("act", { kind: "click", loc, ...options });
 export const fill = (_page, loc, text, options = {}) => call("act", { kind: "fill", loc, text, ...options });
 export const select = (_page, loc, text, options = {}) => call("act", { kind: "select", loc, text, ...options });

@@ -104,11 +104,9 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 - 版本：`~/.tabbot/src/.version` 写 `{ build }`（只算运行时文件，排除自检）；daemon 启动时记下 `build`，`ping` 返回它。换代码只在 `setup.js` 发现 `build` 不同和用户显式 `tabbot daemon restart` 时发生，没有命令会自动重启 daemon。
 - `tabbot doctor` 只读。
 
-## 9. 测试（只留最关键的）
+## 9. 测试
 
-`npm test`（几秒，不依赖 Chrome）：脱敏与别名、`--set`、日志摄入与过滤、分段队列、扩展 ABI（桩 `chrome.*`）、命令层（假的 holder 能力）、holder 端到端（真实 relay + holder + 假扩展：task 全链路、票据与 `debug` 强制、`compose` 只能组合、`--dry`、自动晋升、覆盖标记、两个 Cook 并行、整个 `~/.tabbot` 里没有 token 真值）。
-
-`npm run e2e`（真实扩展 + 真实 holder + 夹具站点，Chrome for Testing，较慢，不在 `npm test` 里）：改了扩展、页面脚本、agent 窗口、task 运行时才跑。`npm run verify:pack` 只在发布前跑。
+`npm test`（几秒，纯逻辑，不依赖 Chrome）：脱敏与别名、`--set`、日志摄入与过滤、分段队列、扩展链路分帧与握手、命令层（假的 holder 能力：票据与 `debug` 强制、`compose` 只能组合、`--dry`、自动晋升、覆盖标记）。**不模拟扩展**：扩展、页面脚本、agent 窗口、task 运行时的行为用真实 Chrome 加 Claude in Chrome 验证（见 `AGENTS.md` 2.3）。`npm run verify:pack` 只在发布前跑。
 
 ## 10. 排障
 

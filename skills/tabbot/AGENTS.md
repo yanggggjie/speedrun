@@ -37,7 +37,6 @@ Node strip types 不执行类型检查。运行 check 或 test 前，先安装 `
 npm install --prefix skills/tabbot/src --omit=optional
 npm run check
 npm test
-npm run e2e
 npm run verify:pack
 ```
 
@@ -45,16 +44,18 @@ npm run verify:pack
 |---|---|---|
 | `npm run check` | `tsc --noEmit` | 每次改完 |
 | `npm test` | 逐个运行 `*.selfcheck.*`（几秒，不依赖 Chrome） | 每次改完 |
-| `npm run e2e` | 真实扩展 + 真实 holder + 夹具站点（Chrome for Testing，较慢） | 改了扩展、页面脚本、agent 窗口、task 运行时 |
 | `npm run verify:pack` | 隔离 HOME 下真实的 `skills add`、setup、doctor（真实 `npm install`，慢） | 只在发布前 |
 
-**测试只留最关键的**：一个测试必须守住一个“坏了就会静默出错或泄密”的点，否则不留。多文件改动时，改完全部文件再一次性跑 `check`/`test`，不要逐文件验证。
+**自检只留最关键的，不模拟扩展**：一个测试必须守住一个“坏了就会静默出错或泄密”的点，否则不留。多文件改动时，改完全部文件再一次性跑 `check`/`test`，不要逐文件验证。
 
-### 2.3 真实 Chrome 里的验证
+### 2.3 真实 Chrome 里的验证：用 Claude in Chrome
 
-`npm run e2e`（`scripts/dev/e2e.mjs`）起 Chrome for Testing 加临时 profile，加载真实扩展，注册临时 HOME 下的 native host，走一遍用户浏览、Chef 派 Cook、Cook 在 agent 窗口里调试并写 task、`run` 执行、`compose` 组合，并扫描磁盘上没有 token 真值。Chrome 路径不同时用 `CHROME` 环境变量；`HEADFUL=1` 有头；`E2E_DEBUG=1` 打印每条命令的耗时。注意夹具站点跑在测试进程里，调用 CLI 必须异步（`spawnSync` 会卡住它）。
+**不再模拟扩展**：没有假扩展、没有桩 `chrome.*`、没有起 Chrome for Testing 的端到端脚本。改了扩展、页面脚本、agent 窗口、task 运行时之后，用真实的 Chrome 验证：
 
-扩展本身（`background.js`、`manifest.json`、`page/` 下的页面脚本）改了要在 `chrome://extensions` 里刷新；holder、CLI、`src/run/` 改了 `tabbot daemon restart` 即可。`tabbot doctor` 的 `extension-abi` 提示扩展是否太旧。
+1. `node skills/tabbot/setup.js` 重装到 `~/.tabbot`；改了 `background.js`、`manifest.json`、`page/` 下的页面脚本要在 `chrome://extensions` 里刷新 TabBot；只改了 holder、CLI、`src/run/` 的 `tabbot daemon restart` 即可。`tabbot doctor` 的 `extension-abi` 提示扩展是否太旧。
+2. 用 Claude in Chrome 在真实页面里触发行为（导航、点击、滚动、输入），TabBot 的常驻录制同时记录；再用 `tabbot context`、`api`、`log` 检查。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `human`。
+3. 走一遍 Chef 派 Cook：`tabbot learn <task 名> --goal …`，把 brief 交给 subagent，确认它在自己的 agent 窗口里调试、写出 task，`tabbot run` 跑通，`tabbot log --src agent` 对得上。
+4. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露“等页面加载完”这类问题）：量 `tabbot debug … open`、`tabbot run` 的耗时。
 
 日常 Chrome 里测试时日志含登录态内容，在 `~/.tabbot/journal`；测完删除该目录。
 
@@ -73,7 +74,7 @@ npm run verify:pack
 ```text
 skills/tabbot/
 ├── src/                     运行时（holder、journal、run、cli、chrome-extension 含页面脚本）+ 自检 + package.json
-├── scripts/dev/             e2e.mjs（真实 Chrome 验证）、图标生成
+├── scripts/dev/             图标生成
 ├── setup.js  SKILL.md  install.md  LICENSE
 ├── AGENTS.md                ← 仓库根目录的 AGENTS.md 是指向它的软链接
 └── ARCHITECTURE.md          目标、角色、架构、排障

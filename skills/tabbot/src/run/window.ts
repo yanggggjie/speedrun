@@ -1,5 +1,6 @@
 import type { ExtensionLink } from "../browser/extension.ts";
 import { AGENT_TAB_IDLE_MS } from "../utils/constants.ts";
+import { sleep } from "../utils/async.ts";
 
 type Tab = { tabId: number; windowId: number; url: string; anchor?: boolean };
 type Owned = { origin: string; busy: boolean; idleSince: number; key: string };
@@ -32,14 +33,14 @@ export class AgentWindows {
 
   private async list(): Promise<Tab[]> { return ((await this.link.request("tabs")) as { tabs: Tab[] }).tabs; }
 
-  ensureWindow(key = MAIN_KEY): Promise<number> {
+  ensureWindow(key = MAIN_KEY, tabs?: Tab[]): Promise<number> {
     let p = this.opening.get(key);
-    if (!p) { p = this.doEnsure(key).finally(() => this.opening.delete(key)); this.opening.set(key, p); }
+    if (!p) { p = this.doEnsure(key, tabs).finally(() => this.opening.delete(key)); this.opening.set(key, p); }
     return p;
   }
 
-  private async doEnsure(key: string): Promise<number> {
-    const tabs = await this.list();
+  private async doEnsure(key: string, listed?: Tab[]): Promise<number> {
+    const tabs = listed ?? await this.list();
     if (!this.adopted) {
       this.adopted = true;
       const anchors = tabs.filter((t) => t.anchor);
@@ -61,8 +62,14 @@ export class AgentWindows {
 
   /** 拿一个能在 origin 上发请求、操作页面的标签页（暖页面是 origin/robots.txt，很轻）。 */
   async acquire(origin: string, key = MAIN_KEY): Promise<number> {
-    const windowId = await this.ensureWindow(key);
-    const live = new Set((await this.list()).map((t) => t.tabId));
+    // 快速路径：窗口已知、池里有同站点空闲标签页——不查标签页列表（要枚举用户全部标签页）。
+    // 标签页要是已经被关了，由 RunHost.callTab 发现“No tab with id”后重新拿。
+    if (this.adopted && this.windows.has(key)) {
+      for (const [id, entry] of this.owned) if (!entry.busy && entry.origin === origin && entry.key === key) { entry.busy = true; return id; }
+    }
+    const tabs = await this.list(); // 只列一次，ensureWindow 复用
+    const windowId = await this.ensureWindow(key, tabs);
+    const live = new Set(tabs.map((t) => t.tabId));
     for (const [id, entry] of this.owned) {
       if (!live.has(id)) { this.owned.delete(id); continue; }
       if (!entry.busy && entry.origin === origin && entry.key === key) { entry.busy = true; return id; }
@@ -71,8 +78,16 @@ export class AgentWindows {
     this.owned.set(res.tabId, { origin, busy: true, idleSince: Date.now(), key });
     this.activeTab.set(key, res.tabId);
     this.armReaper();
-    await this.link.request("goto", { tabId: res.tabId, url: `${origin}/robots.txt`, wait: true }).catch(() => {});
+    await this.waitScript(res.tabId);
     return res.tabId;
+  }
+
+  /** 暖页面只要页面脚本就位就行（几十毫秒），不等页面加载完。 */
+  private async waitScript(tab: number, ms = 5000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      try { await this.link.request("call", { tabId: tab, fn: "ping", args: [] }); return; } catch { await sleep(60); }
+    }
   }
 
   /** 标签页导航到别的站点之后，池里记的 origin 要跟着改。 */

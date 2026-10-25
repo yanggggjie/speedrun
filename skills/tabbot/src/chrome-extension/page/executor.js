@@ -184,7 +184,8 @@
         case "scroll": out.target = el ? T.desc(el) : "page"; scrollTarget(el, cmd.dx, cmd.dy, cmd.to); break;
         default: throw new Error(`未知动作 ${cmd.kind}`);
       }
-      out.settle = await settle();
+      // 默认不等：等整页“静默”在永远有动静的页面上会白等满上限。需要时由调用方显式要求（settle: true），或用 waitFor 等具体条件
+      if (cmd.settle === true) out.settle = await settle(cmd.settleTimeout ?? 2000);
       out.url = location.href;
       out.title = document.title;
       if (el) out.loc = durable(el);
@@ -193,6 +194,8 @@
       return { ok: false, error: String((e && e.message) || e), url: location.href };
     }
   };
+
+  T.exec.ping = () => true; // 页面脚本就位的探针
 
   T.exec.snapshot = (full) => T.snap("live", !!full);
 
@@ -204,7 +207,8 @@
   // ---- 重放：在页面里原样发一个请求（带这个页面的登录态）。用保存下来的原始 fetch，所以不会被录制端当成页面自己发的请求 ----
   T.exec.replay = async (req) => {
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 20000);
+    const limit = Number(req.timeout) > 0 ? Number(req.timeout) : 20000;
+    const timer = setTimeout(() => ctl.abort(), limit);
     const t0 = performance.now();
     try {
       const init = { method: req.method, headers: req.headers || {}, credentials: "include", redirect: "follow", signal: ctl.signal };
@@ -218,7 +222,7 @@
         text: textual ? new TextDecoder().decode(buf.slice(0, 1000000)) : "", truncated: textual && buf.byteLength > 1000000,
       };
     } catch (e) {
-      return { ok: false, error: e && e.name === "AbortError" ? "请求超时（20 秒）" : String((e && e.message) || e) };
+      return { ok: false, error: e && e.name === "AbortError" ? `请求超时（${Math.round(limit / 1000)} 秒）` : String((e && e.message) || e) };
     } finally {
       clearTimeout(timer);
     }

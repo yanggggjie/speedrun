@@ -310,12 +310,12 @@ async function actCommand(args: string[], ctx: Ctx, out: Output, sess: Session):
   if ("error" in parsed) return out.fail(parsed.error);
   await ctx.ensureExtension();
   requireExplore(sess);
-  const res = (await ctx.host.op(sess, "act", parsed.cmd)) as { navigated?: boolean; url?: string; title?: string; loc?: unknown; settle?: { settled: boolean; waitedMs: number } };
+  const res = (await ctx.host.op(sess, "act", { ...parsed.cmd, settle: true })) as { navigated?: boolean; url?: string; title?: string; loc?: unknown; settle?: { settled: boolean; waitedMs: number } };
   const lines = [`✓ ${parsed.cmd.kind}${res.loc ? ` 持久定位 ${JSON.stringify(res.loc)}` : ""}${res.settle ? (res.settle.settled ? `（页面已稳定，等了 ${(res.settle.waitedMs / 1000).toFixed(1)}s）` : "（等了很久页面还在变化，没有稳定）") : ""}`];
   if (res.navigated) lines.push(`页面已跳转：${res.url ?? ""} "${res.title ?? ""}"`);
   else if (res.url) lines.push(`页面：${res.url} "${res.title ?? ""}"`);
   // 这一步引发的请求：有请求就改用请求
-  await new Promise((r) => setTimeout(r, 400));
+  await new Promise((r) => setTimeout(r, 100));
   ctx.ingest.flush();
   const caused = (await readEvents({ since: Math.max(0, (await lastSeq()) - 30), tab: sess.tab, limit: 30 })).filter((r) => r.kind === "net" && !r.noise && r.src === "agent" && r.method && r.method !== "GET");
   if (caused.length) lines.push(`这一步引发了请求：${caused.slice(-3).map((r) => `#${r.seq} ${r.method} ${r.url?.split("?")[0]}`).join("；")} —— 有请求就改用请求（tabbot req show <编号> 给出 request 代码）`);
@@ -380,10 +380,17 @@ async function runTaskCommand(args: string[], ctx: Ctx, out: Output): Promise<vo
 
 /** tabbot compose '<代码>'：只组合 task（task(名字, 参数)），不碰页面。 */
 async function composeCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
-  const code = args.join(" ").trim();
-  if (!code) return out.fail("用法：tabbot compose 'const a = await task(\"名字\", { 参数: 值 }); return a;'（compose 里只能组合 task）");
+  let timeoutSec = 115;
+  let rest = args;
+  if (args[0] === "--timeout") {
+    timeoutSec = Number(args[1]);
+    if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) return out.fail("--timeout 需要正数（秒）");
+    rest = args.slice(2);
+  }
+  const code = rest.join(" ").trim();
+  if (!code) return out.fail("用法：tabbot compose [--timeout 秒，默认 115] 'const a = await task(\"名字\", { 参数: 值 }); return a;'（compose 里只能组合 task）");
   await ctx.ensureExtension();
-  const outcome = await ctx.runner.runCompose(code);
+  const outcome = await ctx.runner.runCompose(code, undefined, timeoutSec * 1000);
   if (outcome.status !== "success") out.code = 1;
   out.line(JSON.stringify({ mode: "执行", ...outcome }, null, 2));
 }

@@ -4,7 +4,7 @@
 // holder → 扩展：{ id, name, args }，应答 { id, result | error }
 //   call { tabId, fn, args }          在页面（MAIN world）里调用 window.__tcr.exec[fn](...args)，等它的结果（可以是 Promise）
 //   tabs {}                            http/https 标签页，加上 anchor 页（标题 tabbot agent，extension 页，anchor: true）
-//   goto { tabId, url, wait }          在这个标签页里打开网址；wait 为真时等加载完成（最多 20 秒）
+//   goto { tabId, url, wait }          在这个标签页里打开网址；wait 为真时等文档可用（readyState 不再是 loading，不等子资源；最多 15 秒）
 //   openWindow { url, anchor }         新开窗口（不抢焦点）；anchor 为真时打开 anchor 页
 //   openTab { windowId, url, active }  在窗口里新开标签页
 //   activateTab { tabId }              把标签页切到所在窗口的前台（后台标签页浏览器不渲染）
@@ -15,7 +15,7 @@ const ABI = 2;
 const HOST = "com.tabbot.connect";
 const RETRY_MAX_MS = 30_000;
 const KEEPALIVE_MINUTES = 0.5;
-const LOAD_WAIT_MS = 20_000;
+const LOAD_WAIT_MS = 15_000;
 const PAGE_FILES = ["page/common.js", "page/recorder.js", "page/executor.js"];
 const ANCHOR_URL = chrome.runtime.getURL("anchor.html");
 
@@ -77,14 +77,29 @@ async function handleHostMessage(msg) {
   }
 }
 
-function waitComplete(tabId, ms) {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (loaded) => { if (done) return; done = true; clearTimeout(timer); chrome.tabs.onUpdated.removeListener(listener); resolve(loaded); };
-    const listener = (id, info) => { if (id === tabId && info.status === "complete") finish(true); };
-    const timer = setTimeout(() => finish(false), ms);
-    chrome.tabs.onUpdated.addListener(listener);
-  });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 等页面“可用”而不是“加载完”：导航提交后文档不再是 loading（interactive 即可）。
+// 不等 status:complete——它要等所有子资源，页面带被墙的统计脚本就一直不来。上限 ms 只是兜底。
+async function waitReady(tabId, target, ms) {
+  let loading = false;
+  const onUpdated = (id, info) => { if (id === tabId && info.status === "loading") loading = true; };
+  chrome.tabs.onUpdated.addListener(onUpdated); // 必须在导航发起之前注册
+  const t0 = Date.now();
+  try {
+    while (Date.now() - t0 < ms) {
+      await sleep(60);
+      let tab;
+      try { tab = await chrome.tabs.get(tabId); } catch { return false; }
+      const committed = loading || tab.url === target || Date.now() - t0 > 800;
+      if (!committed) continue;
+      try {
+        const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: () => document.readyState });
+        if (r && (r.result === "interactive" || r.result === "complete")) return true;
+      } catch { /* 正在导航，页面还不能执行脚本 */ }
+    }
+    return false;
+  } finally { chrome.tabs.onUpdated.removeListener(onUpdated); }
 }
 
 const view = (tab) => ({ tabId: tab.id, windowId: tab.windowId, active: tab.active, url: tab.url || tab.pendingUrl || "", title: tab.title || "", status: tab.status || "" });
@@ -116,7 +131,7 @@ async function runOp(name, args) {
       return { tabs: out };
     }
     case "goto": {
-      const wait = args.wait ? waitComplete(args.tabId, LOAD_WAIT_MS) : null;
+      const wait = args.wait ? waitReady(args.tabId, args.url, LOAD_WAIT_MS) : null;
       await chrome.tabs.update(args.tabId, { url: args.url });
       const loaded = wait ? await wait : undefined;
       const tab = await chrome.tabs.get(args.tabId);

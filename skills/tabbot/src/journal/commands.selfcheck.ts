@@ -144,7 +144,7 @@ assert.match((await run("debug", "--ticket", ticket, "snapshot")).stdout, /tab20
 assert.match((await run("debug", "--ticket", ticket, "text", "--max", "100")).stdout, /你好世界/);
 r = await run("debug", "--ticket", ticket, "act", "click", "@e1");
 assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /✓ click 持久定位 \{"role":"button","name":"提交"\}/);
-assert.ok(hostOps.some((o) => o.startsWith('act {"kind":"click","ref":"@e1"}')));
+assert.ok(hostOps.some((o) => o.startsWith('act {"kind":"click","ref":"@e1","settle":true}')));
 assert.match((await run("debug", "--ticket", ticket, "act", "click")).stdout, /需要目标/);
 
 // task：列出、骨架、run、compose

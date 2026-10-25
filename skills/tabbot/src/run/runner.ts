@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
 import { RUN_BUSY_WAIT_MS, RUN_DIR, RUN_HISTORY_KEEP, TASK_DIR } from "../utils/constants.ts";
-import { sleep } from "../utils/async.ts";
 import { RunHost, Session } from "./host.ts";
 import { checkParams, taskFile, taskSummary, taskTimeoutMs, promoteTask, writeRunHistory } from "./tasks.ts";
 import { MAIN_KEY } from "./window.ts";
@@ -21,18 +20,28 @@ export class TaskRunner {
   private readonly host: RunHost;
   private readonly paths: RunnerPaths;
   private readonly busy = new Set<string>();
+  private readonly waiters = new Map<string, Array<() => void>>();
   /** 单个 task 的超时（自检里调小）；默认按 task 文件头的 @timeout 或 TASK_TIMEOUT_MS。 */
   timeoutOverrideMs: number | undefined;
 
   constructor(host: RunHost, paths: RunnerPaths = DEFAULT_PATHS) { this.host = host; this.paths = paths; }
 
   private async lock(key: string): Promise<void> {
-    const deadline = Date.now() + RUN_BUSY_WAIT_MS;
-    while (this.busy.has(key)) {
-      if (Date.now() >= deadline) throw new Error("同一个窗口里另一个 task 正在运行（等了 30 秒）：稍后重试同一条命令");
-      await sleep(200);
-    }
-    this.busy.add(key);
+    if (!this.busy.has(key)) { this.busy.add(key); return; }
+    // 排队等前一个结束时被唤醒（不轮询），最多等 RUN_BUSY_WAIT_MS
+    await new Promise<void>((resolve, reject) => {
+      const queue = this.waiters.get(key) ?? [];
+      this.waiters.set(key, queue);
+      const entry = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => { const i = queue.indexOf(entry); if (i >= 0) queue.splice(i, 1); reject(new Error("同一个窗口里另一个 task 正在运行（等了 30 秒）：稍后重试同一条命令")); }, RUN_BUSY_WAIT_MS);
+      queue.push(entry);
+    });
+  }
+
+  private unlock(key: string): void {
+    const next = this.waiters.get(key)?.shift();
+    if (next) next(); // 锁直接交给下一个，busy 保持
+    else this.unlock(key);
   }
 
   /** 运行一个 task（run 命令或 compose 调用）。session 传进来表示嵌套调用，共用页面、不再抢锁。 */
@@ -59,12 +68,12 @@ export class TaskRunner {
       writeRunHistory(this.paths.runDir, name, { params, output: out }, RUN_HISTORY_KEEP);
       return out;
     } finally {
-      if (own) { await this.host.end(session); this.busy.delete(key); }
+      if (own) { await this.host.end(session); this.unlock(key); }
     }
   }
 
   /** compose：代码只能 task(名字, 参数) 组合 task，任何页面操作都被 host 拒绝。 */
-  async runCompose(code: string, key = MAIN_KEY): Promise<Outcome> {
+  async runCompose(code: string, key = MAIN_KEY, timeoutMs = 115_000): Promise<Outcome> {
     await this.lock(key);
     const session = new Session(key);
     session.composeOnly = true;
@@ -80,13 +89,13 @@ export class TaskRunner {
       "",
     ].join("\n"), "utf8");
     try {
-      const out = await this.work(file, {}, 115_000, session);
+      const out = await this.work(file, {}, timeoutMs, session);
       writeRunHistory(this.paths.runDir, "compose", { code, output: out }, RUN_HISTORY_KEEP);
       return out;
     } finally {
       fs.rmSync(file, { force: true });
       await this.host.end(session);
-      this.busy.delete(key);
+      this.unlock(key);
     }
   }
 

@@ -38,18 +38,18 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
  */
 export class RunHost {
   private readonly d: HostDeps;
+  private readonly byTab = new Map<number, Session>();
   constructor(deps: HostDeps) { this.d = deps; }
 
   /** 把 session 绑到 origin 的标签页：已经是就复用，否则还回去再拿一个（池里有同站点空闲的就直接用）。 */
   async bind(s: Session, origin: string): Promise<number> {
     s.lastUsed = Date.now();
-    if (s.tab !== undefined && s.origin === origin) {
-      const tabs = ((await this.d.link.request("tabs")) as { tabs: { tabId: number }[] }).tabs;
-      if (tabs.some((t) => t.tabId === s.tab)) return s.tab;
-    }
+    // 不再每次列标签页确认还在：标签页被关了，callTab 会发现并重新拿
+    if (s.tab !== undefined && s.origin === origin) return s.tab;
     if (s.tab !== undefined) this.d.win.release(s.tab);
     s.tab = await this.d.win.acquire(origin, s.key);
     s.origin = origin;
+    this.byTab.set(s.tab, s);
     return s.tab;
   }
 
@@ -66,9 +66,20 @@ export class RunHost {
   }
 
   async callTab(tab: number, fn: string, args: unknown[]): Promise<any> {
-    await this.d.win.activate(tab);
-    const res = (await this.d.link.request("call", { tabId: tab, fn, args })) as { v: unknown };
-    return res.v;
+    try {
+      await this.d.win.activate(tab);
+      const res = (await this.d.link.request("call", { tabId: tab, fn, args })) as { v: unknown };
+      return res.v;
+    } catch (e) {
+      // 标签页被关了（用户关了窗口、被回收）：在同一个站点重新拿一个再试一次
+      const s = this.byTab.get(tab);
+      if (!/No tab with id/.test(e instanceof Error ? e.message : String(e)) || !s || !s.origin || s.tab !== tab) throw e;
+      s.tab = undefined;
+      const fresh = await this.bind(s, s.origin);
+      await this.d.win.activate(fresh);
+      const res = (await this.d.link.request("call", { tabId: fresh, fn, args })) as { v: unknown };
+      return res.v;
+    }
   }
 
   private log<T>(tab: number, verb: string, target: string, detail: Record<string, unknown>, run: () => Promise<T>, after?: (r: T) => Record<string, unknown>): Promise<T> {
@@ -135,7 +146,7 @@ export class RunHost {
       return this.log(tab, "request", `${method} ${shown}`, { ...detail, dry: true }, async () => ({ ok: true, status: 200, ct: "", size: 0, ms: 0, text: "", finalUrl: target.href, dry: true }));
     }
     return this.log(tab, "request", `${method} ${shown}`, detail, async () => {
-      const res = await withTimeout(this.callTab(tab, "replay", [{ method, url: target.href, headers, body }]), a.timeout ?? STEP_TIMEOUT_MS, "请求");
+      const res = await withTimeout(this.callTab(tab, "replay", [{ method, url: target.href, headers, body, timeout: a.timeout ?? STEP_TIMEOUT_MS }]), (a.timeout ?? STEP_TIMEOUT_MS) + 3000, "请求");
       if (res.ok === false) throw new Error(`请求失败：${res.error}`);
       return res;
     }, (r: any) => ({ status: r.status, size: r.size, ms: r.ms }));
@@ -148,7 +159,7 @@ export class RunHost {
     const base = { kind: a.kind, ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(a.ref ? { ref: a.ref } : {}), ...(a.key ? { key: a.key } : {}), ...(a.dy !== undefined ? { dy: a.dy } : {}), ...(a.to ? { to: a.to } : {}), ...(a.checked !== undefined ? { checked: a.checked } : {}) };
     return this.log(tab, a.kind, target, base, async () => {
       let res: any;
-      try { res = await withTimeout(this.callTab(tab, "act", [cmd]), (a.timeout ?? 10_000) + 30_000, "页面操作"); }
+      try { res = await withTimeout(this.callTab(tab, "act", [cmd]), (a.timeout ?? 10_000) + 5_000, "页面操作"); }
       catch (e) {
         if (!NAVIGATED.test(e instanceof Error ? e.message : String(e))) throw e;
         res = { ok: true, navigated: true };
