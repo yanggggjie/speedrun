@@ -41,7 +41,7 @@ export class TaskRunner {
   private unlock(key: string): void {
     const next = this.waiters.get(key)?.shift();
     if (next) next(); // 锁直接交给下一个，busy 保持
-    else this.unlock(key);
+    else this.busy.delete(key);
   }
 
   /** 运行一个 task（run 命令或 compose 调用）。session 传进来表示嵌套调用，共用页面、不再抢锁。 */
