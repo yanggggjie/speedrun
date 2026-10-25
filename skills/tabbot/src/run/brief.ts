@@ -29,7 +29,7 @@ ${t.goal}
 
 # 写 task 的规则
 - SDK：\`import { tabbot, goto, request, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../task/lib/index.js"\`，入口 \`await tabbot.run(async ({ page }) => { ... })\`，返回值就是结果。
-- \`request(page, {url, method?, headers?, json?})\` 默认继承页面自己最近发出的请求头（token 真值只在 holder 内存里）；没有可继承的头时先 \`goto\` 站点页面。
+- \`request(page, {url, method?, headers?, json?})\` 默认继承页面自己最近发出的请求头（token 真值只在 holder 内存里）；内存里没有可继承的头时会自动打开站点首页让页面自己发请求。
 - 参数用 \`tabbot.params.名字\`（字符串）；变化的值（id、关键词、页码）都做成参数。
 - 成功判断：检查 HTTP 状态码和业务码；结果必须对应本次参数；有副作用的先读状态，已满足返回 already；返回被操作对象的稳定 id。
 - 定位用 \`{role,name}\` 或 CSS；\`query(page, {css, fields})\` 取数；\`evaluate\` 是兜底（严格 CSP 的页面会被拒）。

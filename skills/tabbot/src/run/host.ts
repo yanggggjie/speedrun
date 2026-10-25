@@ -17,6 +17,8 @@ export class Session {
   /** 试运行：非 GET 的 request 不真发，只记下将发送的内容。 */
   dry = false;
   readonly dryLog: string[] = [];
+  /** 已经为取请求头自动打开过首页的站点（每个站点只打开一次）。 */
+  readonly warmed = new Set<string>();
   constructor(key = MAIN_KEY) { this.key = key; }
 }
 
@@ -129,10 +131,19 @@ export class RunHost {
     if (a.inherit !== false) {
       const sameOrigin = (e: { url: string }): boolean => { try { return originOf(e.url) === target.origin; } catch { return false; } };
       // 优先取带身份信息的（authorization、csrf、x-* 之类）最近一次，没有再取任何带头的
-      const seen = this.d.raw.newest((e) => sameOrigin(e) && Object.keys(replayHeaders(e.headers)).some((k) => CREDENTIAL.test(k)))
+      const find = () => this.d.raw.newest((e) => sameOrigin(e) && Object.keys(replayHeaders(e.headers)).some((k) => CREDENTIAL.test(k)))
         ?? this.d.raw.newest((e) => sameOrigin(e) && Object.keys(replayHeaders(e.headers)).length > 0);
+      let seen = find();
+      // 内存里没有（holder 重启过，或页面还没发过请求）：打开该站点的首页，让页面自己发请求，每个站点只试一次
+      if (!seen && !s.warmed.has(target.origin)) {
+        s.warmed.add(target.origin);
+        await this.goto(s, { url: `${target.origin}/` }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 300)); // 页面消息经扩展到 holder 要一小会儿
+        this.d.ingest.flush();
+        seen = find();
+      }
       if (seen) Object.assign(headers, replayHeaders(seen.headers));
-      else if (a.inherit === true) throw new Error(`没有可继承的请求头：先让 ${target.origin} 的页面自己发过一次请求（goto 它的页面，或用户在 Chrome 里浏览过）`);
+      else if (a.inherit === true) throw new Error(`没有可继承的请求头：已经打开过 ${target.origin} 的首页，页面也没有发出带身份头的请求；这个站点的接口可能不需要，去掉 inherit，或手写 headers`);
     }
     for (const [k, v] of Object.entries(a.headers ?? {})) headers[k.toLowerCase()] = v;
     let body: string | null = null;

@@ -86,7 +86,7 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 ## 7. agent 窗口与 task
 
 - **agent 窗口**（`run/window.ts`）：一个 key（subagent 的票据号，或 主 agent 自己的 `main`）一个窗口，所以几个 subagent 并行时各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。窗口的第一个标签页是扩展的 anchor 页（标题 `tabbot agent`）。其余标签页按站点（origin）池化：`acquire(origin, key)` 复用同站点空闲标签页，没有就开 `origin/robots.txt`（很轻，页面脚本就位）；用完还回去，空闲 5 分钟关闭；票据结束时整个窗口关掉。key 到窗口的映射只在内存里：holder 重启后留下的窗口是孤儿，第一个当 `main` 接管，其余关掉。用户关了窗口会自动重开。
-- **RunHost**（`run/host.ts`）：goto、request、act、waitFor、text、snapshot、query、eval，每个都写一行 `cmd` 记录。`request` 默认继承 holder 内存里同站点最近一个带身份头（authorization、csrf、x-*）的原始请求的请求头。
+- **RunHost**（`run/host.ts`）：goto、request、act、waitFor、text、snapshot、query、eval，每个都写一行 `cmd` 记录。`request` 默认继承 holder 内存里同站点最近一个带身份头（authorization、csrf、x-*）的原始请求的请求头；内存里没有（holder 重启过、页面还没发过请求）时，自动打开该站点首页让页面自己发请求，每个站点只试一次，仍没有再按需报错。
 - **TaskRunner**（`run/runner.ts`）：task 脚本在 worker 线程里运行（`task-lib/index.js` 同步到 `~/.tabbot/task/lib`），SDK 的每个函数是向 holder 发一个操作；同一个 key 一次只跑一个，不同 key 可以同时跑；整体超时 115 秒（`@timeout` 可改）；`tabbot.task()` 嵌套调用共用页面状态；运行历史在 `~/.tabbot/run/<task>/`。
 - task 是 `~/.tabbot/task/<名字>.js`：文件头 `@summary`、`@status: draft|verified`、`@endpoint`、`@param 名字? 说明`、`@timeout`。参数一律具名 `--名字 值`，缺必填或传了没声明的参数直接报错。
 
@@ -122,7 +122,7 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 | `need-chrome` | 启动 Google Chrome |
 | 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |
 | 升级后旧 daemon 还在跑 | `tabbot daemon restart` |
-| `run` 报“没有可继承的请求头” | 这个站点的页面还没自己发过请求：让 subagent 先 `debug open` 站点页面，或让用户在 Chrome 里浏览一下 |
+| `run` 报“没有可继承的请求头” | 已经自动打开过该站点首页仍没有带身份头的请求：这个站点的接口可能不需要（去掉 `inherit`），或要让用户在 Chrome 里做一次触发该接口的操作 |
 | `run` 在 agent 窗口里一直不动 | 窗口被用户关了会自动重开；同一 key 里另一个 task 在跑会等 30 秒再失败 |
 | `debug` 报“主 agent 没有调试权限” | 这是设计：用 `tabbot delegate` 派 subagent；票据失效（holder 重启）也由 主 agent 重新派 |
 | `debug snapshot`、`act` 报“页面里没有 TabBot 的脚本” | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
