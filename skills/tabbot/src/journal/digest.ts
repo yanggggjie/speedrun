@@ -118,7 +118,7 @@ export function buildCatalog(rows: EventRow[], site: string, options: { causeOf:
 export const endpointKey = (g: { method: string; name: string }): string => `${g.method} ${g.name}`;
 
 export function formatCatalog(all: ApiGroup[], site: string, limit: number, covered: Map<string, string> = new Map()): string[] {
-  // 还没有 task 覆盖的排前面：那是 Chef 要派 Cook 去学的
+  // 还没有 task 覆盖的排前面：那是主 agent 要派 subagent 去学的
   const groups = [...all.filter((g) => !covered.has(endpointKey(g))), ...all.filter((g) => covered.has(endpointKey(g)))];
   if (groups.length === 0) return [`没有 ${site} 的请求记录（只记 HTML 文档、XHR、fetch；先在页面上操作一下，或确认扩展在线：tabbot doctor）`];
   const lines = [`${site} 的接口：${groups.length} 个（编号用于 tabbot req show <编号>；✓ = 现在就能直接重放，✗ = 要先在页面上再触发一次；task:名字 = 已有 task 覆盖，没标的是还没学会的）`];

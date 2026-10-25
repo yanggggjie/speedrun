@@ -10,7 +10,7 @@ export class Session {
   tab: number | undefined;
   origin: string | undefined;
   lastUsed = Date.now();
-  /** 所在的 agent 窗口：票据号，或 Chef 自己的 main。 */
+  /** 所在的 agent 窗口：票据号，或 主 agent 自己的 main。 */
   readonly key: string;
   /** 只许组合 task（compose）：任何页面操作都拒绝。 */
   composeOnly = false;
@@ -34,7 +34,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 
 /**
  * task 与探索命令共用的页面操作。每个操作都在 tabbot agent 窗口的标签页里执行，并且都记进日志（来源 agent 的 cmd 行）：
- * 做过的事就是知识——Cook 写 task 从这些记录生成 task。
+ * 做过的事就是知识——subagent 写 task 从这些记录生成 task。
  */
 export class RunHost {
   private readonly d: HostDeps;
@@ -91,7 +91,7 @@ export class RunHost {
   }
 
   async op(s: Session, name: string, a: any): Promise<unknown> {
-    if (s.composeOnly) throw new Error(`compose 里只能组合 task（task(名字, 参数)），不能操作页面：缺的做法让 Cook 去学（tabbot learn）`);
+    if (s.composeOnly) throw new Error(`compose 里只能组合 task（task(名字, 参数)），不能操作页面：缺的做法让 subagent 去学（tabbot delegate）`);
     switch (name) {
       case "goto": return this.goto(s, a);
       case "request": return this.request(s, a);

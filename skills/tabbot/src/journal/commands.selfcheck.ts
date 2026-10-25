@@ -127,17 +127,17 @@ assert.match(shown, /task 代码：\n@endpoint GET \/api\/list/); assert.match(s
 // tabs 只列用户自己的页面（run 窗口的和 anchor 页不算）
 assert.match((await run("tabs")).stdout, /^1 个标签页\ntab7 win1 前台 https:\/\/www\.example\.com\/p "示例"$/);
 
-// Chef 没有调试权限：没有票据一律拒绝；learn 发票据并给出 brief
+// 主 agent 没有调试权限：没有票据一律拒绝；delegate 发票据并给出 brief
 let r = await run("debug", "open", "example.com/p");
-assert.equal(r.code, 1); assert.match(r.stdout, /Chef 没有调试权限/);
+assert.equal(r.code, 1); assert.match(r.stdout, /主 agent 没有调试权限/);
 assert.equal((await run("snapshot")).code, 1, "旧的探索命令已经移走");
 assert.equal((await run("debug", "--ticket", "t-nope", "open", "example.com")).code, 1);
-r = await run("learn", "demo-new", "--goal", "给回答点赞", "--site", "www.example.com");
+r = await run("delegate", "demo-new", "--goal", "给回答点赞", "--site", "www.example.com");
 assert.equal(r.code, 0, r.stdout);
 const ticket = /票据：(t-[0-9a-f]+)/.exec(r.stdout)![1]!;
-assert.match(r.stdout, /你是 Cook/); assert.match(r.stdout, /为什么分 Chef 和 Cook/); assert.match(r.stdout, new RegExp(`tabbot debug --ticket ${ticket} replay`));
+assert.match(r.stdout, /你是 subagent/); assert.match(r.stdout, /为什么分主 agent 和 subagent/); assert.match(r.stdout, new RegExp(`tabbot debug --ticket ${ticket} replay`));
 
-// Cook 用票据调试：在自己的 agent 窗口里
+// subagent 用票据调试：在自己的 agent 窗口里
 r = await run("debug", "--ticket", ticket, "open", "example.com/p");
 assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /\[调试\] 票据/); assert.match(r.stdout, /已在 agent 窗口打开 https:\/\/www\.example\.com\/p "示例"/);
 assert.match((await run("debug", "--ticket", ticket, "snapshot")).stdout, /tab20 https:\/\/www\.example\.com\/p "示例"\n.*\n@e1 button "提交"/);
@@ -161,15 +161,15 @@ assert.equal((await run("task", "new", "demo-new", "--summary", "探索出来的
 const skeleton = fs.readFileSync(path.join(taskDir, "demo-new.js"), "utf8");
 assert.match(skeleton, /@status: draft/); assert.match(skeleton, /@endpoint/); assert.match(skeleton, /\.\.\/task\/lib\/index\.js/);
 assert.equal((await run("task", "new", "demo-new")).code, 1, "不覆盖已有的");
-// Cook 把自己那份 task 真跑通：票据结束，窗口关掉，再调试被拒
+// subagent 把自己那份 task 真跑通：票据结束，窗口关掉，再调试被拒
 r = await run("run", "demo-new", "--ticket", ticket);
 assert.equal(runs.at(-1), "demo-new {} key=" + ticket + " dry=false");
 assert.deepEqual(disposed, [ticket]);
 r = await run("debug", "--ticket", ticket, "snapshot");
 assert.equal(r.code, 1); assert.match(r.stdout, /已经交付/);
 
-// 重放（Cook 的调试）：原始内容在内存里；--set 里可以写别名；非 GET 要 --yes
-const tk2 = /票据：(t-[0-9a-f]+)/.exec((await run("learn", "replay-demo", "--goal", "重放")).stdout)![1]!;
+// 重放（subagent 的调试）：原始内容在内存里；--set 里可以写别名；非 GET 要 --yes
+const tk2 = /票据：(t-[0-9a-f]+)/.exec((await run("delegate", "replay-demo", "--goal", "重放")).stdout)![1]!;
 const alias = /access_token=(⟨secret_[0-9a-f]{12}:\w+⟩)/.exec(log[2]!)![1]!;
 raw.put(7, "d:2", { method: "POST", url: "https://www.example.com/api/save", headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` }, body: "{\"a\":1}", page, t: T });
 const lastReplay = (): { method: string; url: string; headers: Record<string, string>; body: string | null } => {

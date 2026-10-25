@@ -34,7 +34,7 @@ export interface Ctx {
   runner: TaskRunner;
   win: AgentWindows;
   tickets: Tickets;
-  /** 调试用的页面，按票据号各一个（每个 Cook 有自己的 agent 窗口）。 */
+  /** 调试用的页面，按票据号各一个（每个 subagent 有自己的 agent 窗口）。 */
   sessions: Map<string, Session>;
   ingest: Ingestor;
   raw: RawStore;
@@ -99,7 +99,7 @@ export async function runCommand(argv: string[], ctx: Ctx): Promise<{ stdout: st
       case "task": await taskCommand(args, ctx, out); break;
       case "run": await runTaskCommand(args, ctx, out); break;
       case "compose": await composeCommand(args, ctx, out); break;
-      case "learn": await learnCommand(args, ctx, out); break;
+      case "delegate": await delegateCommand(args, ctx, out); break;
       case "debug": await debugCommand(args, ctx, out); break;
       default: out.fail(USAGE);
     }
@@ -191,9 +191,9 @@ async function sqlCommand(args: string[], out: Output): Promise<void> {
   for (const row of res.rows) out.line(row.map((v) => (v === null ? "" : String(v))).join("\t"));
 }
 
-// ---- 调试（Cook 的）：在自己的 agent 窗口里打开页面、看、操作。每一步都进日志 ----
+// ---- 调试（subagent 的）：在自己的 agent 窗口里打开页面、看、操作。每一步都进日志 ----
 
-/** debug 子命令的入口：必须带 --ticket（Chef 没有调试权限）。 */
+/** debug 子命令的入口：必须带 --ticket（主 agent 没有调试权限）。 */
 async function debugCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
   let ticketId: string | undefined;
   const rest: string[] = [];
@@ -330,7 +330,7 @@ async function taskCommand(args: string[], ctx: Ctx, out: Output): Promise<void>
   const [name, ...rest] = args;
   if (!name || name === "list") {
     const tasks = listTasks(dir);
-    if (tasks.length === 0) return out.line("还没有 task。tabbot api <站点> 看有哪些接口，缺的用 tabbot learn <task 名> --goal \"…\" 派 Cook 去学。");
+    if (tasks.length === 0) return out.line("还没有 task。tabbot api <站点> 看有哪些接口，缺的用 tabbot delegate <task 名> --goal \"…\" 派 subagent 去学。");
     return out.line(JSON.stringify(tasks, null, 2));
   }
   if (name !== "new") return out.fail("用法：tabbot task list | tabbot task new <名字> [--summary 一句话]；运行用 tabbot run <task 名>");
@@ -369,7 +369,7 @@ async function runTaskCommand(args: string[], ctx: Ctx, out: Output): Promise<vo
   await ctx.ensureExtension();
   const outcome = await ctx.runner.runTask(name, parsed.params, undefined, { key: ticket?.id, dry });
   if (outcome.status !== "success") out.code = 1;
-  // Cook 把自己那份 task 真跑通了：票据结束，窗口关掉
+  // subagent 把自己那份 task 真跑通了：票据结束，窗口关掉
   if (ticket && outcome.status === "success" && !dry && name === ticket.task) {
     ctx.tickets.finish(ticket.id);
     ctx.sessions.delete(ticket.id);
@@ -395,21 +395,21 @@ async function composeCommand(args: string[], ctx: Ctx, out: Output): Promise<vo
   out.line(JSON.stringify({ mode: "执行", ...outcome }, null, 2));
 }
 
-/** tabbot learn <task 名> --goal "…" [--site 站点] [--fix]：派一个 Cook，输出要交给 subagent 的 brief。 */
-async function learnCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+/** tabbot delegate <task 名> --goal "…" [--site 站点] [--fix]：派一个 subagent，输出要交给 subagent 的 brief。 */
+async function delegateCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
   const flags = parseFlags(args, ["fix"]);
   if ("error" in flags) return out.fail(flags.error);
   const name = flags.rest[0];
   const goal = flags.values.get("goal");
-  if (!name || !goal || !/^[a-z0-9][a-z0-9-]*$/.test(name)) return out.fail('用法：tabbot learn <task 名，小写字母数字和 -> --goal "一句话目标" [--site 站点] [--fix]');
+  if (!name || !goal || !/^[a-z0-9][a-z0-9-]*$/.test(name)) return out.fail('用法：tabbot delegate <task 名，小写字母数字和 -> --goal "一句话目标" [--site 站点] [--fix]');
   const dir = ctx.taskDir ?? TASK_DIR;
   const exists = fs.existsSync(taskFile(dir, name));
-  if (exists && !flags.bools.has("fix")) return out.fail(`task ${name} 已存在：直接 tabbot run，或坏了用 --fix 派 Cook 修`);
+  if (exists && !flags.bools.has("fix")) return out.fail(`task ${name} 已存在：直接 tabbot run，或坏了用 --fix 派 subagent 修`);
   if (!exists && flags.bools.has("fix")) return out.fail(`task ${name} 不存在，不能 --fix`);
   const site = flags.values.get("site") ? normalizeSite(flags.values.get("site")!) : "";
   const t = ctx.tickets.issue({ task: name, goal, site, fix: flags.bools.has("fix") });
   if ("error" in t) return out.fail(t.error);
-  out.line(`把下面整段交给一个 subagent（Agent 工具，后台运行）；它回报后你再 tabbot run ${name}。独立的 task 可以同时派几个 Cook。\n\n${makeBrief(t, dir)}`);
+  out.line(`把下面整段交给一个 subagent（Agent 工具，后台运行）；它回报后你再 tabbot run ${name}。独立的 task 可以同时派几个 subagent。\n\n${makeBrief(t, dir)}`);
 }
 
 async function statusCommand(ctx: Ctx, out: Output): Promise<void> {
@@ -491,7 +491,7 @@ type ReplayResult = { ok?: boolean; error?: string; method?: string; status?: nu
 
 /**
  * 重放日志里的一个请求：原始内容（含 token 真值）在 holder 的内存里，这里应用 --set（值里可以写别名），
- * 在 Cook 自己的 agent 窗口里和原来同一个 origin 的页面里原样发出（带登录态），响应脱敏后记进日志。非 GET 要 --yes。
+ * 在 subagent 自己的 agent 窗口里和原来同一个 origin 的页面里原样发出（带登录态），响应脱敏后记进日志。非 GET 要 --yes。
  */
 export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[]; yes: boolean }, key = "main"): Promise<ReplayResult> {
   const replaySession = new Session(key);

@@ -9,27 +9,27 @@ TabBot 的目标、角色分工和运行时架构。agent 怎么用见 `SKILL.md
 - **绝对原则：以接口请求为粒度，每个接口都沉淀成 task，不重复探索。** 有请求就用请求；没有请求才用 DOM，也写成 task。一份 task 只覆盖一个请求。批量的事（点 10 个赞、取 30 条回答）用 task 循环，本来就是这一次最快的做法。
 - agent 干活在单独的 `tabbot agent` 窗口里，不打扰用户的窗口和标签页。
 
-## 2. 角色：Chef 和 Cook
+## 2. 角色：主 agent 和 subagent
 
-「调试」「执行」是产品的两个词：**调试**是 Cook 在 agent 窗口里试做，摸清接口和定位；**执行**只有 `tabbot run`——用户拿到的结果必须来自 task 的返回值。
+「调试」「执行」是产品的两个词：**调试**是 subagent 在自己的 agent 窗口里摸清接口和定位；**执行**只有 `tabbot run`——用户拿到的结果必须来自 task 的返回值。
 
-- **Chef（主 agent）**：唯一目标是完成用户任务。**没有调试权限**。能用：`task`（列出）、`run`、`compose`（只组合 task）、`learn`、`api`、`context`、`log`、`sql`、`req`（读日志）、`status`、`tabs`、`doctor`。缺哪个能力，就为它派一个 Cook；独立的并行派。Cook 回报后，Chef 综合回报和 task 的执行结果，向用户汇报，汇报前对照 `tabbot log --src agent` 核对 Cook 说的和做的。
-- **Cook（subagent）**：每个只有一个目标——「调试，然后写出 `<task 名>`」。有完整权力：`tabbot debug --ticket <票据> open|snapshot|text|act|close|replay`，**包括真正发起有副作用的操作**（学习需要真的发一次才知道成败；只做学习必需的最少次数，批量留给 Chef）。产出是一份 task 加一份回报：task 名、参数、`@endpoint`、验证结果、**副作用清单**（做过什么、对象 id、日志编号）、遗留问题。
+- **主 agent**：唯一目标是完成用户任务。**没有调试权限**。能用：`task`（列出）、`run`、`compose`（只组合 task）、`delegate`、`api`、`context`、`log`、`sql`、`req`（读日志）、`status`、`tabs`、`doctor`。缺哪个能力，就为它派一个 subagent；独立的并行派。subagent 回报后，主 agent 综合回报和 task 的执行结果，向用户汇报，汇报前对照 `tabbot log --src agent` 核对 subagent 说的和做的。
+- **subagent**：每个只有一个目标——「调试，然后写出 `<task 名>`」。有完整权力：`tabbot debug --ticket <票据> open|snapshot|text|act|close|replay`，**包括真正发起有副作用的操作**（学习需要真的发一次才知道成败；只做学习必需的最少次数，批量留给主 agent）。产出是一份 task 加一份回报：task 名、参数、`@endpoint`、验证结果、**副作用清单**（做过什么、对象 id、日志编号）、遗留问题。
 
-**为什么这样区分**（写在 `tabbot learn` 生成的 brief 和 `SKILL.md` 里，让 agent 明白原因，才不会想绕）：
-1. 速度：试做慢，按 task 执行只要毫秒。混在一起，agent 会一直试做，永远用不上 task。
-2. 目标不同：Chef 要把菜送到客人面前，Cook 要把 task 写对。同一个 agent 背两个目标，会倾向于“先把眼前的做出来”，task 就被省掉。
-3. 上下文干净：试错、失败的尝试、响应原文只留在 Cook 那里。
-4. 可并行：独立的 task 同时让几个 Cook 试做。
-5. 边界在工具里：Chef 没有调试权限，不是约定而是做不到；想学新东西只能派 Cook，所以探索必然产出 task。
-6. 事后可核对：Cook 的每个动作都在日志里。
+**为什么这样区分**（写在 `tabbot delegate` 生成的 brief 和 `SKILL.md` 里，让 agent 明白原因，才不会想绕）：
+1. 速度：调试慢，按 task 执行只要毫秒。混在一起，agent 会一直调试，永远用不上 task。
+2. 目标不同：主 agent 要把结果交给用户，subagent 要把 task 写对。同一个 agent 背两个目标，会倾向于“先把眼前的做出来”，task 就被省掉。
+3. 上下文干净：试错、失败的尝试、响应原文只留在 subagent 那里。
+4. 可并行：独立的 task 同时让几个 subagent 调试。
+5. 边界在工具里：主 agent 没有调试权限，不是约定而是做不到；想学新东西只能派 subagent，所以探索必然产出 task。
+6. 事后可核对：subagent 的每个动作都在日志里。
 
 **强制机制（全在 TabBot 内，不依赖 harness）**
-1. `tabbot learn <task 名> --goal "…" [--site 站点] [--fix]` 是派 Cook 的唯一入口：发一张**票据**（ticket，绑定 task 名和一个 agent 窗口，只在 holder 内存里），输出自包含的 brief（目标、票据、SDK 用法、写 task 的规则、副作用边界、回报格式）。
+1. `tabbot delegate <task 名> --goal "…" [--site 站点] [--fix]` 是派 subagent 的唯一入口：发一张**票据**（ticket，绑定 task 名和一个 agent 窗口，只在 holder 内存里），输出自包含的 brief（目标、票据、SDK 用法、写 task 的规则、副作用边界、回报格式）。
 2. `tabbot debug` 必须带 `--ticket`：没有、不存在、已交付、用完 80 次操作，一律拒绝并说明。同一站点最多 2 张未交付的票据。
 3. `compose` 只能 `task(名字, 参数)` 组合 task：compose 自己的会话被标为 compose-only，任何页面操作（包括 `import` SDK 后调用）都被 host 拒绝。
-4. `run` 真跑成功一次，task 头里的 `@status: draft` 自动变 `verified`；`--dry` 让非 GET 的 `request` 不真发，只打印将发送的内容（Cook 迭代用）。Cook 带票据 `run` 自己那份 task 成功，票据结束，窗口关掉。
-5. task 头写 `@endpoint 方法 接口名`（和 `tabbot api` 输出的一致）：`api <站点>` 把已有 task 覆盖的接口标 `task:<名字>` 并排后面，**没有 task 的排前面**——Chef 靠它决定派哪些 Cook。`req show` 输出可粘贴的 `request(...)` 代码和 `@endpoint` 行。`debug act` 成功后输出持久定位和它引发的非 GET 请求，提示“有请求就改用请求”。
+4. `run` 真跑成功一次，task 头里的 `@status: draft` 自动变 `verified`；`--dry` 让非 GET 的 `request` 不真发，只打印将发送的内容（subagent 迭代用）。subagent 带票据 `run` 自己那份 task 成功，票据结束，窗口关掉。
+5. task 头写 `@endpoint 方法 接口名`（和 `tabbot api` 输出的一致）：`api <站点>` 把已有 task 覆盖的接口标 `task:<名字>` 并排后面，**没有 task 的排前面**——主 agent 靠它决定派哪些 subagent。`req show` 输出可粘贴的 `request(...)` 代码和 `@endpoint` 行。`debug act` 成功后输出持久定位和它引发的非 GET 请求，提示“有请求就改用请求”。
 
 ## 3. 进程与分层
 
@@ -85,7 +85,7 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 
 ## 7. agent 窗口与 task
 
-- **agent 窗口**（`run/window.ts`）：一个 key（Cook 的票据号，或 Chef 自己的 `main`）一个窗口，所以几个 Cook 并行时各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。窗口的第一个标签页是扩展的 anchor 页（标题 `tabbot agent`）。其余标签页按站点（origin）池化：`acquire(origin, key)` 复用同站点空闲标签页，没有就开 `origin/robots.txt`（很轻，页面脚本就位）；用完还回去，空闲 5 分钟关闭；票据结束时整个窗口关掉。key 到窗口的映射只在内存里：holder 重启后留下的窗口是孤儿，第一个当 `main` 接管，其余关掉。用户关了窗口会自动重开。
+- **agent 窗口**（`run/window.ts`）：一个 key（subagent 的票据号，或 主 agent 自己的 `main`）一个窗口，所以几个 subagent 并行时各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。窗口的第一个标签页是扩展的 anchor 页（标题 `tabbot agent`）。其余标签页按站点（origin）池化：`acquire(origin, key)` 复用同站点空闲标签页，没有就开 `origin/robots.txt`（很轻，页面脚本就位）；用完还回去，空闲 5 分钟关闭；票据结束时整个窗口关掉。key 到窗口的映射只在内存里：holder 重启后留下的窗口是孤儿，第一个当 `main` 接管，其余关掉。用户关了窗口会自动重开。
 - **RunHost**（`run/host.ts`）：goto、request、act、waitFor、text、snapshot、query、eval，每个都写一行 `cmd` 记录。`request` 默认继承 holder 内存里同站点最近一个带身份头（authorization、csrf、x-*）的原始请求的请求头。
 - **TaskRunner**（`run/runner.ts`）：task 脚本在 worker 线程里运行（`task-lib/index.js` 同步到 `~/.tabbot/task/lib`），SDK 的每个函数是向 holder 发一个操作；同一个 key 一次只跑一个，不同 key 可以同时跑；整体超时 115 秒（`@timeout` 可改）；`tabbot.task()` 嵌套调用共用页面状态；运行历史在 `~/.tabbot/run/<task>/`。
 - task 是 `~/.tabbot/task/<名字>.js`：文件头 `@summary`、`@status: draft|verified`、`@endpoint`、`@param 名字? 说明`、`@timeout`。参数一律具名 `--名字 值`，缺必填或传了没声明的参数直接报错。
@@ -93,7 +93,7 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 ### 重放（req / replay）
 
 - **原始请求只在 holder 内存里**（`journal/raw.ts`）：页面里发的每个同站请求的方法、地址、请求头、请求体，上限 50MB、单条 64KB，先丢最旧的；**绝不落盘**。
-- `tabbot debug replay <编号> [--set ...] [--yes]`：取原始内容 → 把 `--set` 里的别名换回真值 → `applySets`（`journal/replay-core.ts`）→ 在 Cook 的 agent 窗口里和原请求同 origin 的标签页用原始 `fetch` 发出（带登录态，不会被录制端当成页面自己发的）→ 响应脱敏后记一行 `agent replay`。
+- `tabbot debug replay <编号> [--set ...] [--yes]`：取原始内容 → 把 `--set` 里的别名换回真值 → `applySets`（`journal/replay-core.ts`）→ 在 subagent 的 agent 窗口里和原请求同 origin 的标签页用原始 `fetch` 发出（带登录态，不会被录制端当成页面自己发的）→ 响应脱敏后记一行 `agent replay`。
 - **`--set`**：`名字=值` 改查询参数；`名字.路径=值` 改查询参数里 JSON 的字段（GraphQL 的 GET 请求 `variables.cursor=xxx`，翻页用）；`header.名字=值` 改请求头；`body.路径=值` 改 JSON 或表单请求体；`body=内容` 整个换掉。非 GET 要 `--yes`；浏览器自己管的请求头去掉。
 - `req find` 在保留的响应体和 HTML 里找页面上看到的值；`req show` 把日志里的一行还原成请求，给出风险提示（签名类参数、非 GET）和可粘贴的 task 代码。
 
@@ -122,9 +122,9 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 | `need-chrome` | 启动 Google Chrome |
 | 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |
 | 升级后旧 daemon 还在跑 | `tabbot daemon restart` |
-| `run` 报“没有可继承的请求头” | 这个站点的页面还没自己发过请求：让 Cook 先 `debug open` 站点页面，或让用户在 Chrome 里浏览一下 |
+| `run` 报“没有可继承的请求头” | 这个站点的页面还没自己发过请求：让 subagent 先 `debug open` 站点页面，或让用户在 Chrome 里浏览一下 |
 | `run` 在 agent 窗口里一直不动 | 窗口被用户关了会自动重开；同一 key 里另一个 task 在跑会等 30 秒再失败 |
-| `debug` 报“Chef 没有调试权限” | 这是设计：用 `tabbot learn` 派 Cook；票据失效（holder 重启）也由 Chef 重新派 |
+| `debug` 报“主 agent 没有调试权限” | 这是设计：用 `tabbot delegate` 派 subagent；票据失效（holder 重启）也由 主 agent 重新派 |
 | `debug snapshot`、`act` 报“页面里没有 TabBot 的脚本” | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
 | `replay` 报“原始内容已经不在 holder 的内存里”或“别名已失效” | holder 重启过或太旧被清掉；在页面上再触发一次这个操作，然后重试 |
 | 日志里没有某个站点的事件 | 后台标签页只记导航和请求数；先看 `tabbot doctor` 里 `extension` 项 |

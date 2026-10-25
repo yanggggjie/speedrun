@@ -1,6 +1,6 @@
 # AGENTS
 
-agent（Chef）使用 TabBot 的流程见 `skills/tabbot/SKILL.md`。本文只规定仓库边界、开发验证、分发发布和运行时实现。
+agent（主 agent）使用 TabBot 的流程见 `skills/tabbot/SKILL.md`。本文只规定仓库边界、开发验证、分发发布和运行时实现。
 
 TabBot 完全以原始源码分发：`skills/tabbot/` 整个目录（源码、`scripts/dev`、文档）安装后原样镜像到 `~/.tabbot`，本文在 `~/.tabbot/AGENTS.md`。文中以仓库为基准的路径，在本机去掉 `skills/tabbot/` 前缀即可，如 `skills/tabbot/src` → `~/.tabbot/src`、`skills/tabbot/scripts/dev` → `~/.tabbot/scripts/dev`。目标、角色分工、运行时架构和故障排查都在 `ARCHITECTURE.md`。遇到问题可以直接读源码并修改；下次升级会覆盖 `~/.tabbot/src` 与 `~/.tabbot/scripts`。
 
@@ -54,7 +54,7 @@ npm run verify:pack
 
 1. `node skills/tabbot/setup.js` 重装到 `~/.tabbot`；改了 `background.js`、`manifest.json`、`page/` 下的页面脚本要在 `chrome://extensions` 里刷新 TabBot；只改了 holder、CLI、`src/run/` 的 `tabbot daemon restart` 即可。`tabbot doctor` 的 `extension-abi` 提示扩展是否太旧。
 2. 用 Claude in Chrome 在真实页面里触发行为（导航、点击、滚动、输入），TabBot 的常驻录制同时记录；再用 `tabbot context`、`api`、`log` 检查。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `human`。
-3. 走一遍 Chef 派 Cook：`tabbot learn <task 名> --goal …`，把 brief 交给 subagent，确认它在自己的 agent 窗口里调试、写出 task，`tabbot run` 跑通，`tabbot log --src agent` 对得上。
+3. 走一遍 主 agent 派 subagent：`tabbot delegate <task 名> --goal …`，把 brief 交给 subagent，确认它在自己的 agent 窗口里调试、写出 task，`tabbot run` 跑通，`tabbot log --src agent` 对得上。
 4. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露“等页面加载完”这类问题）：量 `tabbot debug … open`、`tabbot run` 的耗时。
 
 日常 Chrome 里测试时日志含登录态内容，在 `~/.tabbot/journal`；测完删除该目录。
