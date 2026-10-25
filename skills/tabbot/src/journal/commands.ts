@@ -5,13 +5,15 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { USAGE, handshakeStatusFromError, formatErrorStdout, formatHandshakeStdout } from "../protocol.ts";
-import { JOURNAL_CAP_BYTES, JOURNAL_DIR, TASK_DIR } from "../utils/constants.ts";
-import type { RunHost, Session } from "../run/host.ts";
-import { generateTask } from "../run/generate.ts";
-import type { TaskRunner } from "../run/runner.ts";
-import { listTasks, parseCliParams, taskFile } from "../run/tasks.ts";
-import type { RunWindow } from "../run/window.ts";
-import { buildCatalog, buildContext, formatCatalog, normalizeSite } from "./digest.ts";
+import { JOURNAL_CAP_BYTES, JOURNAL_DIR, RECIPE_DIR } from "../utils/constants.ts";
+import { TICKET_MAX_OPS } from "../run/tickets.ts";
+import { Session, type RunHost } from "../run/host.ts";
+import { makeBrief } from "../run/brief.ts";
+import type { Tickets } from "../run/tickets.ts";
+import type { RecipeRunner } from "../run/runner.ts";
+import { coveredEndpoints, listRecipes, parseCliParams, recipeFile } from "../run/recipes.ts";
+import type { KitchenWindows } from "../run/window.ts";
+import { buildCatalog, buildContext, endpointOf, formatCatalog, normalizeSite } from "./digest.ts";
 import { formatEvent } from "./format.ts";
 import type { Ingestor } from "./ingest.ts";
 import { findInBodies, formatRows, lastSeq, readEvents, readEventBySeq, runSql, status as journalStatus } from "./query.ts";
@@ -29,15 +31,14 @@ export interface Ctx {
   ensureExtension(): Promise<void>;
   tabs(): Promise<TabInfo[]>;
   host: RunHost;
-  runner: TaskRunner;
-  win: RunWindow;
-  /** 探索用的页面（tabbot open / snapshot / act 共用），在 tabbot run 窗口里。 */
-  explore: Session;
-  /** 重放请求临时用的页面，用完还回去。 */
-  replaySession: Session;
+  runner: RecipeRunner;
+  win: KitchenWindows;
+  tickets: Tickets;
+  /** 调试用的页面，按票据号各一个（每个 Cook 有自己的 kitchen 窗口）。 */
+  sessions: Map<string, Session>;
   ingest: Ingestor;
   raw: RawStore;
-  taskDir?: string;
+  recipeDir?: string;
   daemon(): { extension: boolean; pid: number };
 }
 
@@ -93,15 +94,12 @@ export async function runCommand(argv: string[], ctx: Ctx): Promise<{ stdout: st
       case "log": await logCommand(args, out); break;
       case "sql": await sqlCommand(args, out); break;
       case "status": await statusCommand(ctx, out); break;
-      case "open": await openCommand(args, ctx, out); break;
-      case "snapshot": await snapshotCommand(args, ctx, out); break;
-      case "text": await textCommand(args, ctx, out); break;
-      case "act": await actCommand(args, ctx, out); break;
-      case "close": await closeCommand(ctx, out); break;
       case "req": await reqCommand(args, out); break;
-      case "replay": await replayCommand(args, ctx, out); break;
-      case "task": await taskCommand(args, ctx, out); break;
-      case "eval": await evalCommand(args, ctx, out); break;
+      case "recipe": await recipeCommand(args, ctx, out); break;
+      case "serve": await serveCommand(args, ctx, out); break;
+      case "menu": await menuCommand(args, ctx, out); break;
+      case "cook": await cookCommand(args, ctx, out); break;
+      case "debug": await debugCommand(args, ctx, out); break;
       default: out.fail(USAGE);
     }
   } catch (error) {
@@ -149,13 +147,13 @@ async function apiCommand(args: string[], ctx: Ctx, out: Output): Promise<void> 
   const canReplay = (row: EventRow): boolean => {
     try { const rid = (JSON.parse(row.detail ?? "{}") as { rid?: string }).rid; return !!rid && !!ctx.raw.get(row.tab, rid); } catch { return false; }
   };
-  for (const line of formatCatalog(buildCatalog(rows, site, { causeOf: await causeResolver(rows), canReplay }), site, (n as number | undefined) || 30)) out.line(line);
+  for (const line of formatCatalog(buildCatalog(rows, site, { causeOf: await causeResolver(rows), canReplay }), site, (n as number | undefined) || 30, coveredEndpoints(ctx.recipeDir ?? RECIPE_DIR))) out.line(line);
 }
 
-/** 你自己（用户）的标签页；tabbot run 窗口里 agent 的页面不在这里。 */
+/** 你自己（用户）的标签页；tabbot kitchen 窗口里 agent 的页面不在这里。 */
 async function tabsCommand(ctx: Ctx, out: Output): Promise<void> {
   await ctx.ensureExtension();
-  const tabs = (await ctx.tabs()).filter((t) => !t.anchor && !ctx.win.isRunTab(t.tabId));
+  const tabs = (await ctx.tabs()).filter((t) => !t.anchor && !ctx.win.isKitchenTab(t.tabId));
   if (tabs.length === 0) return out.line("没有打开的 http/https 标签页。");
   out.line(`${tabs.length} 个标签页`);
   for (const t of tabs) out.line(`tab${t.tabId} win${t.windowId} ${t.active ? "前台" : "后台"} ${t.url} "${t.title}"`);
@@ -192,43 +190,70 @@ async function sqlCommand(args: string[], out: Output): Promise<void> {
   for (const row of res.rows) out.line(row.map((v) => (v === null ? "" : String(v))).join("\t"));
 }
 
-// ---- 探索：在 tabbot run 窗口里打开页面、看、操作。每一步都进日志，之后可以 tabbot task new 变成 task ----
+// ---- 调试（Cook 的）：在自己的 kitchen 窗口里打开页面、看、操作。每一步都进日志 ----
 
-async function openCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+/** debug 子命令的入口：必须带 --ticket（Chef 没有调试权限）。 */
+async function debugCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+  let ticketId: string | undefined;
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--ticket") ticketId = args[++i];
+    else if (a.startsWith("--ticket=")) ticketId = a.slice(9);
+    else rest.push(a);
+  }
+  const t = ctx.tickets.use(ticketId);
+  if ("error" in t) return out.fail(t.error);
+  const [sub, ...subArgs] = rest;
+  let sess = ctx.sessions.get(t.id);
+  if (!sess) { sess = new Session(t.id); ctx.sessions.set(t.id, sess); }
+  out.line(`[调试] 票据 ${t.id}（${t.ops}/${TICKET_MAX_OPS}），目标 recipe：${t.recipe}`);
+  switch (sub) {
+    case "open": return openCommand(subArgs, ctx, out, sess);
+    case "snapshot": return snapshotCommand(subArgs, ctx, out, sess);
+    case "text": return textCommand(subArgs, ctx, out, sess);
+    case "act": return actCommand(subArgs, ctx, out, sess);
+    case "close": return closeCommand(ctx, out, sess);
+    case "replay": return replayCommand(subArgs, ctx, out, t.id);
+    default: return out.fail("用法：tabbot debug --ticket <票据> open|snapshot|text|act|close|replay ...");
+  }
+}
+
+async function openCommand(args: string[], ctx: Ctx, out: Output, sess: Session): Promise<void> {
   const url = args[0];
-  if (!url) return out.fail("用法：tabbot open <网址>（在 tabbot run 窗口里打开，不打扰你的窗口）");
+  if (!url) return out.fail("用法：tabbot debug open <网址>（在你自己的 kitchen 窗口里打开，不打扰用户）");
   await ctx.ensureExtension();
-  const res = (await ctx.host.op(ctx.explore, "goto", { url })) as { url: string; title: string };
-  out.line(`✓ 已在 tabbot run 窗口打开 ${res.url} "${res.title}"（tabbot snapshot 看元素，tabbot text 读文字）`);
+  const res = (await ctx.host.op(sess, "goto", { url })) as { url: string; title: string };
+  out.line(`✓ 已在 kitchen 窗口打开 ${res.url} "${res.title}"（debug snapshot 看元素，debug text 读文字）`);
 }
 
-async function closeCommand(ctx: Ctx, out: Output): Promise<void> {
-  await ctx.host.end(ctx.explore);
-  out.line("✓ 已还回探索用的页面（窗口里的标签页留着给下次复用，空闲 5 分钟自动关）");
+async function closeCommand(ctx: Ctx, out: Output, sess: Session): Promise<void> {
+  await ctx.host.end(sess);
+  out.line("✓ 已还回调试用的页面");
 }
 
-function requireExplore(ctx: Ctx): void {
-  if (ctx.explore.tab === undefined) throw new Error("tabbot run 窗口里还没有打开页面：先 tabbot open <网址>");
+function requireExplore(sess: Session): void {
+  if (sess.tab === undefined) throw new Error("kitchen 窗口里还没有打开页面：先 tabbot debug open <网址>");
 }
 
-async function snapshotCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+async function snapshotCommand(args: string[], ctx: Ctx, out: Output, sess: Session): Promise<void> {
   const flags = parseFlags(args, ["full"]);
   if ("error" in flags) return out.fail(flags.error);
   await ctx.ensureExtension();
-  requireExplore(ctx);
-  const snap = (await ctx.host.op(ctx.explore, "snapshot", { full: flags.bools.has("full") })) as Snapshot;
-  out.line(renderSnapshot(snap, ctx.explore.tab!));
+  requireExplore(sess);
+  const snap = (await ctx.host.op(sess, "snapshot", { full: flags.bools.has("full") })) as Snapshot;
+  out.line(renderSnapshot(snap, sess.tab!));
 }
 
 /** 当前页面的可见文字（正文、评论），给“读内容”用；要点击或填写仍用 snapshot 取元素引用。 */
-async function textCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+async function textCommand(args: string[], ctx: Ctx, out: Output, sess: Session): Promise<void> {
   const flags = parseFlags(args);
   if ("error" in flags) return out.fail(flags.error);
   const max = intFlag(flags, "max"); if (isError(max)) return out.fail(max.error);
   await ctx.ensureExtension();
-  requireExplore(ctx);
+  requireExplore(sess);
   const limit = Math.max(1, Math.min((max as number | undefined) || 20_000, 200_000));
-  const res = (await ctx.host.op(ctx.explore, "text", { max: limit })) as { url: string; title: string; total: number; text: string };
+  const res = (await ctx.host.op(sess, "text", { max: limit })) as { url: string; title: string; total: number; text: string };
   const cut = res.total > res.text.length;
   out.line(`${res.url} "${res.title}"${cut ? `\n（只给前 ${res.text.length} 字，全文 ${res.total} 字；用 --max N 取更多）` : ""}\n\n${res.text}`);
 }
@@ -279,66 +304,104 @@ export function parseAct(args: string[]): { cmd: ActCmd } | { error: string } {
   }
 }
 
-async function actCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+async function actCommand(args: string[], ctx: Ctx, out: Output, sess: Session): Promise<void> {
   const parsed = parseAct(args);
   if ("error" in parsed) return out.fail(parsed.error);
   await ctx.ensureExtension();
-  requireExplore(ctx);
-  const res = (await ctx.host.op(ctx.explore, "act", parsed.cmd)) as { navigated?: boolean; url?: string; title?: string; loc?: unknown; settle?: { settled: boolean; waitedMs: number } };
-  const lines = [`✓ ${parsed.cmd.kind}${res.loc ? ` ${JSON.stringify(res.loc)}` : ""}${res.settle ? (res.settle.settled ? `（页面已稳定，等了 ${(res.settle.waitedMs / 1000).toFixed(1)}s）` : "（等了很久页面还在变化，没有稳定）") : ""}`];
+  requireExplore(sess);
+  const res = (await ctx.host.op(sess, "act", parsed.cmd)) as { navigated?: boolean; url?: string; title?: string; loc?: unknown; settle?: { settled: boolean; waitedMs: number } };
+  const lines = [`✓ ${parsed.cmd.kind}${res.loc ? ` 持久定位 ${JSON.stringify(res.loc)}` : ""}${res.settle ? (res.settle.settled ? `（页面已稳定，等了 ${(res.settle.waitedMs / 1000).toFixed(1)}s）` : "（等了很久页面还在变化，没有稳定）") : ""}`];
   if (res.navigated) lines.push(`页面已跳转：${res.url ?? ""} "${res.title ?? ""}"`);
   else if (res.url) lines.push(`页面：${res.url} "${res.title ?? ""}"`);
+  // 这一步引发的请求：有请求就改用请求
+  await new Promise((r) => setTimeout(r, 400));
+  ctx.ingest.flush();
+  const caused = (await readEvents({ since: Math.max(0, (await lastSeq()) - 30), tab: sess.tab, limit: 30 })).filter((r) => r.kind === "net" && !r.noise && r.src === "agent" && r.method && r.method !== "GET");
+  if (caused.length) lines.push(`这一步引发了请求：${caused.slice(-3).map((r) => `#${r.seq} ${r.method} ${r.url?.split("?")[0]}`).join("；")} —— 有请求就改用请求（tabbot req show <编号> 给出 request 代码）`);
   out.line(lines.join("\n"));
 }
 
-// ---- task：做过的事变成知识 ----
+// ---- recipe：学会的做法 ----
 
-/** tabbot task 列出；tabbot task <名字> [--参数 值] 运行；tabbot task new <名字> [--since 编号] 从探索记录生成草稿。 */
-async function taskCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
-  const dir = ctx.taskDir ?? TASK_DIR;
+/** tabbot recipe 列出；tabbot recipe new <名字> 生成带头注释的骨架。 */
+async function recipeCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+  const dir = ctx.recipeDir ?? RECIPE_DIR;
   const [name, ...rest] = args;
   if (!name) {
-    const tasks = listTasks(dir);
-    if (tasks.length === 0) return out.line("还没有 task。先用 tabbot context / api 看用户做过什么，没有就 tabbot open 探索，再 tabbot task new 把做过的事变成 task。");
-    return out.line(JSON.stringify(tasks, null, 2));
+    const recipes = listRecipes(dir);
+    if (recipes.length === 0) return out.line("还没有 recipe。tabbot api <站点> 看有哪些接口，缺的用 tabbot cook <recipe 名> --goal \"…\" 派 Cook 去学。");
+    return out.line(JSON.stringify(recipes, null, 2));
   }
-  if (name === "new") return taskNew(rest, ctx, dir, out);
+  if (name !== "new") return out.fail("用法：tabbot recipe（列出）| tabbot recipe new <名字> [--summary 一句话]；运行用 tabbot serve <名字>");
+  const flags = parseFlags(rest);
+  if ("error" in flags) return out.fail(flags.error);
+  const recipe = flags.rest[0];
+  if (!recipe || !/^[a-z0-9][a-z0-9-]*$/.test(recipe)) return out.fail("recipe 名用小写字母、数字和 -，如 zhihu-like-answer");
+  const file = recipeFile(dir, recipe);
+  if (fs.existsSync(file)) return out.fail(`recipe 已存在：${file}`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, [
+    "/**", ` * @summary ${flags.values.get("summary") ?? "（一句话：做什么）"}`, " * @status: draft", " * @endpoint 方法 接口名（和 tabbot api 输出的一致；一份 recipe 一个请求）", " * @param example? （参数；没有就删掉这行）", " */",
+    'import { tabbot, goto, request, click, fill, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../recipe/lib/index.js";', "",
+    "await tabbot.run(async ({ page }) => {", "  // 有请求就用请求：const res = await request(page, { method, url, json });", "  // 检查 res.status 和业务码；返回用户要的内容", "  return null;", "});", "",
+  ].join("\n"), "utf8");
+  out.line(`✓ 已生成骨架 ${file}`);
+}
+
+/** tabbot serve <recipe> [--参数 值] [--dry] [--ticket 票据]：执行。用户拿到的结果必须来自这里。 */
+async function serveCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+  const [name, ...rest0] = args;
+  if (!name) return out.fail("用法：tabbot serve <recipe 名> [--参数 值 ...] [--dry]（tabbot recipe 列出已有的）");
+  let dry = false, ticketId: string | undefined;
+  const rest: string[] = [];
+  for (let i = 0; i < rest0.length; i++) {
+    const a = rest0[i]!;
+    if (a === "--dry") dry = true;
+    else if (a === "--ticket") ticketId = rest0[++i];
+    else if (a.startsWith("--ticket=")) ticketId = a.slice(9);
+    else rest.push(a);
+  }
   const parsed = parseCliParams(rest);
   if ("error" in parsed) return out.fail(parsed.error);
+  const ticket = ticketId ? ctx.tickets.get(ticketId) : undefined;
+  if (ticketId && !ticket) return out.fail(`票据 ${ticketId} 不存在或已失效`);
   await ctx.ensureExtension();
-  const outcome = await ctx.runner.runTask(name, parsed.params);
+  const outcome = await ctx.runner.runRecipe(name, parsed.params, undefined, { key: ticket?.id, dry });
   if (outcome.status !== "success") out.code = 1;
-  out.line(JSON.stringify(outcome, null, 2));
+  // Cook 把自己那份 recipe 真跑通了：票据结束，窗口关掉
+  if (ticket && outcome.status === "success" && !dry && name === ticket.recipe) {
+    ctx.tickets.finish(ticket.id);
+    ctx.sessions.delete(ticket.id);
+    await ctx.win.dispose(ticket.id);
+  }
+  out.line(JSON.stringify({ mode: dry ? "试运行" : "执行", ...outcome }, null, 2));
 }
 
-async function taskNew(args: string[], ctx: Ctx, dir: string, out: Output): Promise<void> {
-  const flags = parseFlags(args);
+/** tabbot menu '<代码>'：只组合 recipe（recipe(名字, 参数)），不碰页面。 */
+async function menuCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+  const code = args.join(" ").trim();
+  if (!code) return out.fail("用法：tabbot menu 'const a = await recipe(\"名字\", { 参数: 值 }); return a;'（menu 里只能组合 recipe）");
+  await ctx.ensureExtension();
+  const outcome = await ctx.runner.runMenu(code);
+  if (outcome.status !== "success") out.code = 1;
+  out.line(JSON.stringify({ mode: "执行", ...outcome }, null, 2));
+}
+
+/** tabbot cook <recipe 名> --goal "…" [--site 站点] [--fix]：派一个 Cook，输出要交给 subagent 的 brief。 */
+async function cookCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+  const flags = parseFlags(args, ["fix"]);
   if ("error" in flags) return out.fail(flags.error);
   const name = flags.rest[0];
-  if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name)) return out.fail("用法：tabbot task new <名字，小写字母数字和 -> [--since 日志编号] [--summary 一句话]（编号来自 tabbot log --src agent）");
-  const since = intFlag(flags, "since"); if (isError(since)) return out.fail(since.error);
-  ctx.ingest.flush();
-  const start = (since as number | undefined) ?? Math.max(0, (await lastSeq()) - 400);
-  const rows = (await readEvents({ since: start, src: "agent", all: true, limit: 2000 })).filter((r) => r.kind === "cmd" || (r.kind === "net" && r.verb === "replay"));
-  const gen = generateTask(name, rows, flags.values.get("summary") ?? "");
-  if (gen.steps === 0) return out.fail("这个范围里没有 agent 做过的步骤（tabbot log --src agent 看看；--since 指定起点）");
-  const file = taskFile(dir, name);
-  if (fs.existsSync(file)) return out.fail(`task 已存在：${file}（换个名字，或先删掉）`);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, gen.code, "utf8");
-  out.line(`✓ 已生成草稿 ${file}（${gen.steps} 步，@status: draft）`);
-  out.line(`还要补：${["@summary 与 @param", "把变化的值换成 tabbot.params.xxx", "返回用户要的结果并检查成功条件", ...gen.todo].join("；")}`);
-  out.line(`补完后 tabbot task ${name} --参数 值 跑一遍，成功再把 @status 改成 verified。`);
-}
-
-/** tabbot eval '<代码>'：顺序组合 task，也可以直接用 SDK；return 的值是 result。 */
-async function evalCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
-  const code = args.join(" ").trim();
-  if (!code) return out.fail("用法：tabbot eval 'const r = await task(\"名字\", { 参数: 值 }); return r;'");
-  await ctx.ensureExtension();
-  const outcome = await ctx.runner.runEval(code);
-  if (outcome.status !== "success") out.code = 1;
-  out.line(JSON.stringify(outcome, null, 2));
+  const goal = flags.values.get("goal");
+  if (!name || !goal || !/^[a-z0-9][a-z0-9-]*$/.test(name)) return out.fail('用法：tabbot cook <recipe 名，小写字母数字和 -> --goal "一句话目标" [--site 站点] [--fix]');
+  const dir = ctx.recipeDir ?? RECIPE_DIR;
+  const exists = fs.existsSync(recipeFile(dir, name));
+  if (exists && !flags.bools.has("fix")) return out.fail(`recipe ${name} 已存在：直接 tabbot serve，或坏了用 --fix 派 Cook 修`);
+  if (!exists && flags.bools.has("fix")) return out.fail(`recipe ${name} 不存在，不能 --fix`);
+  const site = flags.values.get("site") ? normalizeSite(flags.values.get("site")!) : "";
+  const t = ctx.tickets.issue({ recipe: name, goal, site, fix: flags.bools.has("fix") });
+  if ("error" in t) return out.fail(t.error);
+  out.line(`把下面整段交给一个 subagent（Agent 工具，后台运行）；它回报后你再 tabbot serve ${name}。独立的 recipe 可以同时派几个 Cook。\n\n${makeBrief(t, dir)}`);
 }
 
 async function statusCommand(ctx: Ctx, out: Output): Promise<void> {
@@ -385,6 +448,13 @@ async function reqCommand(args: string[], out: Output): Promise<void> {
       return [k];
     });
     lines.push(`重放：tabbot replay ${seq}${isSafeMethod(row.method!) ? "" : " --yes"} [--set 名字=值 ...]；可以改的查询参数：${params.length ? params.join(", ") : "（无）"}${t.template.body !== undefined ? "；请求体字段用 body.字段名=值" : ""}；请求头 header.名字=值`);
+    {
+      const bare = row.url!.split("?")[0]!;
+      const q = [...u.searchParams.keys()];
+      const urlCode = q.length ? `serializeUrl({ bareUrl: ${JSON.stringify(bare)}, query: { ${q.map((k) => `${JSON.stringify(k)}: tabbot.params.${k.replace(/\W/g, "_")}`).join(", ")} } })` : JSON.stringify(bare);
+      const body = t.template.body !== undefined && t.template.body.length < 800 ? `, json: ${t.template.body}` : "";
+      lines.push(`recipe 代码：\n@endpoint ${row.method} ${endpointOf(row.url!.replace(/⟨[^⟩]*⟩/g, "x")).name}\nconst res = await request(page, { method: ${JSON.stringify(row.method)}, url: ${urlCode}${body} });\nif (!res.ok) throw new Error("状态码 " + res.status);`);
+    }
     lines.push("token 等秘密在日志里是别名或 [redacted]；--set 里可以直接写别名（holder 内存里有对照表，holder 重启后失效），你拿不到真值。");
     for (const w of t.warnings) lines.push(`⚠ ${w}`);
     return out.line(lines.join("\n"));
@@ -413,9 +483,10 @@ type ReplayResult = { ok?: boolean; error?: string; method?: string; status?: nu
 
 /**
  * 重放日志里的一个请求：原始内容（含 token 真值）在 holder 的内存里，这里应用 --set（值里可以写别名），
- * 在 tabbot run 窗口里和原来同一个 origin 的页面里原样发出（带登录态），响应脱敏后记进日志。非 GET 要 --yes。
+ * 在 Cook 自己的 kitchen 窗口里和原来同一个 origin 的页面里原样发出（带登录态），响应脱敏后记进日志。非 GET 要 --yes。
  */
-export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[]; yes: boolean }): Promise<ReplayResult> {
+export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[]; yes: boolean }, key = "main"): Promise<ReplayResult> {
+  const replaySession = new Session(key);
   const fail = (error: string): ReplayResult => ({ ok: false, error });
   const row = await readEventBySeq(params.seq);
   if (!row) return fail(`找不到事件 #${params.seq}（用 tabbot req find 找请求）`);
@@ -432,7 +503,7 @@ export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[];
   const applied = applySets({ method: raw.method, url: raw.url, headers: replayHeaders(raw.headers), body: raw.body }, sets);
   if ("error" in applied) return fail(applied.error);
   const req = { ...applied.template, method: applied.template.method.toUpperCase() };
-  const tab = await ctx.host.bind(ctx.replaySession, new URL(raw.page).origin);
+  const tab = await ctx.host.bind(replaySession, new URL(raw.page).origin);
   const ts = Date.now();
   try {
     const res = (await ctx.host.callTab(tab, "replay", [{ method: req.method, url: req.url, headers: req.headers, body: req.body ?? null }])) as { ok?: boolean; error?: string; status?: number; ct?: string; size?: number; text?: string; truncated?: boolean; ms?: number };
@@ -447,15 +518,15 @@ export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[];
       method: req.method, summary: summarizeBody(rec.preview, res.ct ?? ""), preview: rec.preview.slice(0, 1500), warnings: base.warnings,
     };
   } finally {
-    await ctx.host.end(ctx.replaySession);
+    await ctx.host.end(replaySession);
   }
 }
 
-async function replayCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+async function replayCommand(args: string[], ctx: Ctx, out: Output, key = "main"): Promise<void> {
   const p = parseReplayArgs(args);
   if ("error" in p) return out.fail(p.error);
   await ctx.ensureExtension();
-  const res = await runReplay(ctx, p);
+  const res = await runReplay(ctx, p, key);
   if (res.ok === false) { out.code = 1; return out.line(`✗ 重放 #${p.seq}：${res.error ?? "失败"}`); }
   const bad = (res.status ?? 0) >= 400;
   if (bad) out.code = 1;

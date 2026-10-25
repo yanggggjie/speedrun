@@ -7,12 +7,6 @@
   T.executor = 1;
   const TEXTY = /json|text|xml|javascript|html|x-www-form|graphql/i;
 
-  // ---- 真人输入：isTrusted 为真的设备事件。agent 的动作全是 DOM 事件，isTrusted 一定是 false ----
-  let lastHuman = 0;
-  for (const type of ["pointerdown", "keydown", "wheel"]) {
-    addEventListener(type, (e) => { if (e.isTrusted) lastHuman = Date.now(); }, { capture: true, passive: true });
-  }
-
   // ---- 在途请求数：等页面稳定要用（自己数，不依赖录制端）----
   let inflight = 0;
   const done = () => { inflight--; };
@@ -85,11 +79,10 @@
     else if (to === "bottom") t.scrollTo({ top: t === window ? document.documentElement.scrollHeight : t.scrollHeight, behavior: "instant" });
     else t.scrollBy({ left: dx || 0, top: dy || 0, behavior: "instant" });
   };
-  // 等页面稳定：没有在途的 fetch / XHR，并且 DOM 静默一小段时间；等的时候真人动了手就停
-  const settle = (since, timeoutMs = 4000, quietMs = 400) => new Promise((resolve) => {
+  // 等页面稳定：没有在途的 fetch / XHR，并且 DOM 静默一小段时间；
+  const settle = (timeoutMs = 4000, quietMs = 400) => new Promise((resolve) => {
     const t0 = Date.now();
     const tick = () => {
-      if (lastHuman >= since) return resolve({ settled: false, aborted: true, waitedMs: Date.now() - t0, inflight });
       const quiet = inflight === 0 && Date.now() - T.lastMut >= quietMs;
       if (quiet || Date.now() - t0 >= timeoutMs) return resolve({ settled: quiet, waitedMs: Date.now() - t0, inflight });
       setTimeout(tick, 50);
@@ -97,7 +90,7 @@
     setTimeout(tick, 120); // 先给动作引发的请求一点时间发出来
   });
 
-  // ---- 定位：@e 引用（探索时用）或持久定位 loc（写进 task 的）：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? } ----
+  // ---- 定位：@e 引用（探索时用）或持久定位 loc（写进 recipe 的）：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? } ----
   const IMPLICIT_ROLE = { a: "link", button: "button", select: "combobox", textarea: "textbox", summary: "button", img: "img", nav: "navigation", main: "main", li: "listitem", article: "article" };
   const roleOf = (el) => {
     const r = el.getAttribute("role");
@@ -168,11 +161,10 @@
     return await fn(...args);
   };
 
-  // 元素的持久定位（写进 task 用）：有 role 和名字就用 {role,name}，否则用 CSS 路径
+  // 元素的持久定位（写进 recipe 用）：有 role 和名字就用 {role,name}，否则用 CSS 路径
   const durable = (el) => { const role = roleOf(el), name = nameOfEl(el).slice(0, 60); return role && name ? { role, name } : { css: T.cssPath(el) }; };
 
   T.exec.act = async (cmd) => {
-    const since = Date.now();
     try {
       const out = { ok: true };
       const el = cmd.loc !== undefined ? await resolveLoc(cmd.loc, cmd.timeout ?? 10000) : cmd.ref ? T.resolveRef(cmd.ref) : null;
@@ -192,8 +184,7 @@
         case "scroll": out.target = el ? T.desc(el) : "page"; scrollTarget(el, cmd.dx, cmd.dy, cmd.to); break;
         default: throw new Error(`未知动作 ${cmd.kind}`);
       }
-      out.settle = await settle(since);
-      if (out.settle.aborted) out.revokedDuring = true;
+      out.settle = await settle();
       out.url = location.href;
       out.title = document.title;
       if (el) out.loc = durable(el);

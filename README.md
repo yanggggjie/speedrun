@@ -1,7 +1,5 @@
 # TabBot
 
-> TabBot —— 人和 agent 在同一个浏览器里协作，人一碰就安全停下。
+> TabBot —— 人和 agent 共用你已登录的 Chrome：你做一半，agent 接着做完，并且做过的事都沉淀成 recipe，下次毫秒级完成。
 
-人和 agent 共用同一个浏览器。人可以做，agent 也可以做；agent 做事时人可随时插手，agent 能感知"现在是人在帮我"。
-
-常驻录制你浏览的 http/https 页面，agent 读日志了解现场；请求优先——能直接重放的接口就不去点页面；需要动手时在你正在用的原页面上操作，你一碰就停。命令见 `skills/tabbot/SKILL.md`：观察 `tabs / log / sql / snapshot / text / wait / status`，请求优先 `req / replay`，操作 `takeover / release / act`。部分代码最初来自 yodo（Apache-2.0）。产品设计见 [docs/DESIGN.md](docs/DESIGN.md)，运行时架构见 [skills/tabbot/ARCHITECTURE.md](skills/tabbot/ARCHITECTURE.md)，隐私见 [PRIVACY.md](PRIVACY.md)。
+常驻录制你浏览的 http/https 页面，拿到接口信息和上下文；agent 干活在单独的 `tabbot kitchen` 窗口里，不打扰你的窗口。主 agent（Chef）组织任务，没有调试权限；缺什么能力就派 subagent（Cook）去学，Cook 写出 recipe（一份一个请求，有请求就用请求），Chef 用 `tabbot serve` 出菜。命令见 `skills/tabbot/SKILL.md`，目标、角色分工、运行时架构和排障见 [skills/tabbot/ARCHITECTURE.md](skills/tabbot/ARCHITECTURE.md)，隐私见 [PRIVACY.md](PRIVACY.md)。部分代码最初来自 yodo（Apache-2.0）。

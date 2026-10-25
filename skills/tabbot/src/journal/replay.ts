@@ -1,4 +1,3 @@
-import { isSameSite, parseUrl } from "../utils/url.ts";
 import { BROWSER_HEADERS, isSafeMethod, UNREPLAYABLE_BODY } from "./replay-core.ts";
 import type { EventRow } from "./types.ts";
 
@@ -27,19 +26,6 @@ export function templateFromRow(row: EventRow): { template: ReplayTemplate; warn
   if (volatile.length) warnings.push(`带有签名或时间戳类的参数（${[...new Set(volatile)].join(", ")}），重放可能被服务器拒绝；被拒就改用 act`);
   if (!isSafeMethod(row.method)) warnings.push(`${row.method} 请求可能有副作用（下单、提交、删除），重放要加 --yes，并先问过用户`);
   return { template: { method: row.method, url: row.url, headers, ...(body !== undefined ? { body } : {}) }, warnings };
-}
-
-export function sameOrigin(a: string, b: string): boolean {
-  try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
-}
-
-/**
- * 在候选标签页里挑一个能重放的：请求与标签页同站，且标签页的 origin 等于这个请求原来发出时的页面 origin
- * （`www.xxx.com` 的页面调用 `api.xxx.com` 的请求，换个同样 origin 的标签页发，CORS 和登录态都和原来一样）。前台的优先。
- */
-export function pickReplayTab(tabs: { tabId: number; active: boolean; url: string }[], requestUrl: string, originalPage: string): number | undefined {
-  const ok = tabs.filter((t) => sameOrigin(t.url, originalPage) && isSameSite(parseUrl(requestUrl), parseUrl(t.url)));
-  return (ok.find((t) => t.active) ?? ok[0])?.tabId;
 }
 
 /** 响应的一行摘要：JSON 给顶层结构，其它给长度。 */

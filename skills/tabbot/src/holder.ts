@@ -6,9 +6,10 @@ import { NeedExtensionError, handshakeError, missingStatus } from "./browser/con
 import { loadAdblockEngine } from "./journal/filter.ts";
 import { runCommand, type Ctx, type TabInfo } from "./journal/commands.ts";
 import { RunHost, Session } from "./run/host.ts";
-import { TaskRunner } from "./run/runner.ts";
-import { syncTaskLib } from "./run/tasks.ts";
-import { RunWindow } from "./run/window.ts";
+import { Tickets } from "./run/tickets.ts";
+import { RecipeRunner } from "./run/runner.ts";
+import { syncRecipeLib } from "./run/recipes.ts";
+import { KitchenWindows } from "./run/window.ts";
 import { Ingestor, type PageMsg } from "./journal/ingest.ts";
 import { RawStore } from "./journal/raw.ts";
 import { JournalStore } from "./journal/store.ts";
@@ -19,7 +20,7 @@ import { HOLDER_IDLE_EXIT_MS, HOLDER_READY_MS, JOURNAL_ALIAS_SALT_FILE, JOURNAL_
 import { createLogger, setLogFile } from "./utils/logger.ts";
 
 /**
- * holder：本机常驻 daemon，唯一的大脑。收扩展推来的页面消息写日志，执行命令行发来的命令（租约、动作、重放、查询都在这里）。
+ * holder：本机常驻 daemon，唯一的大脑。收扩展推来的页面消息写日志，执行命令行发来的命令（kitchen 窗口、recipe 运行、重放、查询都在这里）。
  * 扩展只是管道，CLI 只是把参数发过来、把文本打印出去。
  */
 const logger = createLogger("holder");
@@ -34,14 +35,14 @@ let lastActivity = Date.now();
 const startupBuild = readVersion()?.build ?? "";
 
 const link = new ExtensionLink();
-const win = new RunWindow(link);
+const win = new KitchenWindows(link);
 const raw = new RawStore();
 let ingest: Ingestor | undefined;
 let adblock: FiltersEngine | undefined;
 let host: RunHost | undefined;
-let runner: TaskRunner | undefined;
-const explore = new Session();
-const replaySession = new Session();
+let runner: RecipeRunner | undefined;
+const tickets = new Tickets();
+const sessions = new Map<string, Session>();
 
 function aliasSalt(): string {
   try { return fs.readFileSync(JOURNAL_ALIAS_SALT_FILE, "utf8").trim(); } catch { /* 第一次 */ }
@@ -52,7 +53,7 @@ function aliasSalt(): string {
 }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
 
-/** 页面消息：写日志。tabbot run 窗口里的标签页记为 agent 的（Ingestor 按 win.isRunTab 判断）。 */
+/** 页面消息：写日志。tabbot kitchen 窗口里的标签页记为 agent 的（Ingestor 按 win.isKitchenTab 判断）。 */
 link.on("page", (m) => {
   const inner = (m.msg ?? {}) as Record<string, unknown>;
   const msg = { ...inner, k: String(inner.k ?? ""), t: typeof inner.t === "number" ? inner.t : Date.now(), tab: Number(m.tab), frame: Number(m.frame ?? 0), top: m.top === true, page: typeof m.page === "string" ? m.page : undefined } as PageMsg;
@@ -86,8 +87,8 @@ const ctx: Ctx = {
   get host() { return host!; },
   get runner() { return runner!; },
   win,
-  explore,
-  replaySession,
+  tickets,
+  sessions,
   get ingest() { return ingest!; },
   get raw() { return raw; },
   daemon: () => ({ extension: extSocket !== null, pid: process.pid }),
@@ -226,10 +227,10 @@ export async function runHolder(): Promise<void> {
   const store = new JournalStore();
   await store.open();
   store.enforceCap();
-  ingest = new Ingestor(store, { engine: () => adblock, aliasKey: aliasSalt(), raw, isAgentTab: (tab) => win.isRunTab(tab) });
+  ingest = new Ingestor(store, { engine: () => adblock, aliasKey: aliasSalt(), raw, isAgentTab: (tab) => win.isKitchenTab(tab) });
   host = new RunHost({ link, win, ingest, raw });
-  runner = new TaskRunner(host);
-  try { syncTaskLib(); } catch (error) { warnCatch("sync task lib")(error); }
+  runner = new RecipeRunner(host);
+  try { syncRecipeLib(); } catch (error) { warnCatch("sync recipe lib")(error); }
   loadAdblockEngine().then((engine) => { adblock = engine; }).catch(warnCatch("adblock engine"));
   // 没有扩展连接、也没有命令请求超过 HOLDER_IDLE_EXIT_MS 就退出；下次需要时由 relay 或 CLI 重新拉起
   setInterval(() => { if (!extSocket && Date.now() - lastActivity > HOLDER_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();

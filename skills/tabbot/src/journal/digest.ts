@@ -114,13 +114,18 @@ export function buildCatalog(rows: EventRow[], site: string, options: { causeOf:
     Number(b.method !== "GET") - Number(a.method !== "GET") || b.causes.size - a.causes.size || b.count - a.count);
 }
 
-export function formatCatalog(groups: ApiGroup[], site: string, limit: number): string[] {
+/** `@endpoint` 的写法就是这里的“方法 接口名”（和 tabbot api 输出的一致）。 */
+export const endpointKey = (g: { method: string; name: string }): string => `${g.method} ${g.name}`;
+
+export function formatCatalog(all: ApiGroup[], site: string, limit: number, covered: Map<string, string> = new Map()): string[] {
+  // 还没有 recipe 覆盖的排前面：那是 Chef 要派 Cook 去学的
+  const groups = [...all.filter((g) => !covered.has(endpointKey(g))), ...all.filter((g) => covered.has(endpointKey(g)))];
   if (groups.length === 0) return [`没有 ${site} 的请求记录（只记 HTML 文档、XHR、fetch；先在页面上操作一下，或确认扩展在线：tabbot doctor）`];
-  const lines = [`${site} 的接口：${groups.length} 个（编号用于 tabbot req show <编号> / tabbot replay <编号>；✓ = 现在就能直接重放，✗ = 要先在页面上再触发一次）`];
+  const lines = [`${site} 的接口：${groups.length} 个（编号用于 tabbot req show <编号>；✓ = 现在就能直接重放，✗ = 要先在页面上再触发一次；recipe:名字 = 已有 recipe 覆盖，没标的是还没学会的）`];
   for (const g of groups.slice(0, limit)) {
     const where = g.host === site || g.host === `www.${site}` ? "" : `${g.host} `;
     const causes = [...g.causes].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([label, n]) => `${label}${n > 1 ? ` ×${n}` : ""}`).join("；");
-    lines.push(`${g.method.padEnd(4)} ${where}${g.name}  ×${g.count}  #${g.last.seq} ${g.last.status ?? "ERR"} ${g.replayable ? "✓" : "✗"}${g.variables.length ? `  变量：${g.variables.join(", ")}` : ""}${causes ? `  ← ${causes}` : ""}${g.shape ? `\n      响应：${g.shape}` : ""}`);
+    lines.push(`${g.method.padEnd(4)} ${where}${g.name}  ×${g.count}  #${g.last.seq} ${g.last.status ?? "ERR"} ${g.replayable ? "✓" : "✗"}${g.variables.length ? `  变量：${g.variables.join(", ")}` : ""}${causes ? `  ← ${causes}` : ""}${covered.has(endpointKey(g)) ? `  recipe:${covered.get(endpointKey(g))}` : ""}${g.shape ? `\n      响应：${g.shape}` : ""}`);
   }
   if (groups.length > limit) lines.push(`…还有 ${groups.length - limit} 个（加 -n 调大）`);
   return lines;
@@ -132,7 +137,7 @@ type Section = { site: string; first: number; last: number; events: number; tabs
 
 /** 用户最近在各个站点上做了什么。rows 是时间窗口内的行（从旧到新）。 */
 export function buildContext(rows: EventRow[], options: { causeOf: (seq: number) => EventRow | undefined; minutes: number; site?: string }): string[] {
-  // 先看每个标签页最近在哪个站点，没有地址的行（命令、租约）按标签页归属
+  // 先看每个标签页最近在哪个站点，没有地址的行（命令）按标签页归属
   const tabSite = new Map<number, string>();
   for (const row of rows) { const s = siteOf(row.page || row.url); if (s) tabSite.set(row.tab, s); }
   const sections = new Map<string, Section>();

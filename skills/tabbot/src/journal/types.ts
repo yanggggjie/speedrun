@@ -1,10 +1,10 @@
 /**
  * 事件来源：human 是真人输入（isTrusted 为真），page 是页面里的脚本触发的（isTrusted 为假，包括 agent 的 DOM 事件，观察端分不出也不去分）和所有请求、导航，
- * agent 只用于命令记录（TabBot 自己发出的动作和重放）和租约。
+ * agent 只用于命令记录（TabBot 自己发出的动作和重放）。
  */
 export type Src = "human" | "agent" | "page";
 /** input 是页面里的输入事件，cmd 是 agent 的命令记录，doc 是主文档渲染后的 HTML，snap 是页面快照。 */
-export type Kind = "input" | "cmd" | "nav" | "net" | "doc" | "snap" | "tab" | "bg" | "lease";
+export type Kind = "input" | "cmd" | "nav" | "net" | "doc" | "snap" | "tab" | "bg";
 
 /** 写进 events 表的一行（不含 seq）。 */
 export type NewEvent = {

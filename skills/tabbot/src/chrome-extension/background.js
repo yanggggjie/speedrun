@@ -3,7 +3,7 @@
 //
 // holder → 扩展：{ id, name, args }，应答 { id, result | error }
 //   call { tabId, fn, args }          在页面（MAIN world）里调用 window.__tcr.exec[fn](...args)，等它的结果（可以是 Promise）
-//   tabs {}                            http/https 标签页，加上 anchor 页（标题 tabbot run，extension 页，anchor: true）
+//   tabs {}                            http/https 标签页，加上 anchor 页（标题 tabbot kitchen，extension 页，anchor: true）
 //   goto { tabId, url, wait }          在这个标签页里打开网址；wait 为真时等加载完成（最多 20 秒）
 //   openWindow { url, anchor }         新开窗口（不抢焦点）；anchor 为真时打开 anchor 页
 //   openTab { windowId, url, active }  在窗口里新开标签页

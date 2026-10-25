@@ -12,7 +12,7 @@ const ANCHOR = "chrome-extension://fake-id/anchor.html";
 const tabs = new Map([
   [1, { id: 1, windowId: 1, active: true, url: "https://a.com/x", title: "A", status: "complete" }],
   [2, { id: 2, windowId: 1, active: false, url: "chrome://extensions", title: "E", status: "complete" }],
-  [3, { id: 3, windowId: 9, active: true, url: ANCHOR, title: "tabbot run", status: "complete" }],
+  [3, { id: 3, windowId: 9, active: true, url: ANCHOR, title: "tabbot kitchen", status: "complete" }],
 ]);
 let nextTab = 10;
 const navigated = new Map();

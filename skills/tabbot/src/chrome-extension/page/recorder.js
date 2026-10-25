@@ -145,15 +145,6 @@
   }
   window.addEventListener("popstate", () => { post({ k: "nav", via: "popstate", url: location.href }); later("popstate", 600); });
 
-  // ---- 在场信号：只给 holder 用（撤销租约），不进日志。真人的任意按键、滚轮，每 250ms 最多一条 ----
-  const lastPresence = {};
-  const presence = (e, kind) => {
-    if (!e.isTrusted || !T.foreground()) return;
-    const now = Date.now();
-    if (now - (lastPresence[kind] || 0) < 250) return;
-    lastPresence[kind] = now;
-    post({ k: "presence", kind });
-  };
   // ---- 用户输入：点击、输入、特殊键、滚动。输入只记长度，不记内容 ----
   let inputPending = null, inputTimer = 0, scrollDy = 0, scrollTrusted = false, scrollTimer = 0;
   const flushInput = () => { clearTimeout(inputTimer); if (inputPending) { post({ k: "ev", type: "input", trusted: inputPending.trusted, target: inputPending.target, n: inputPending.n }); inputPending = null; } };
@@ -171,7 +162,6 @@
   addEventListener("change", (e) => { if (!T.foreground()) return; flushInput(); post({ k: "ev", type: "change", trusted: e.isTrusted, target: T.desc(e.target) }); later("after-change", 700); }, true);
   addEventListener("submit", (e) => { if (!T.foreground()) return; flushInput(); post({ k: "ev", type: "submit", trusted: e.isTrusted, target: T.desc(e.target) }); later("after-submit", 700); }, true);
   addEventListener("keydown", (e) => {
-    presence(e, "key");
     if (!T.foreground()) return;
     const special = e.key === "Enter" || e.key === "Escape" || e.key === "Tab";
     const combo = (e.ctrlKey || e.metaKey) && e.key.length === 1;
@@ -180,7 +170,6 @@
     post({ k: "ev", type: "key", trusted: e.isTrusted, key: (combo ? (e.metaKey ? "Cmd+" : "Ctrl+") : "") + e.key, target: T.desc(e.target) });
   }, true);
   addEventListener("wheel", (e) => {
-    presence(e, "wheel");
     if (!T.foreground()) return;
     scrollDy += e.deltaY; scrollTrusted = e.isTrusted;
     clearTimeout(scrollTimer); scrollTimer = setTimeout(flushScroll, 500);

@@ -1,5 +1,5 @@
 // 真实扩展的端到端：Chrome for Testing + 临时 profile + 真实扩展 + 真实 relay/holder + 夹具站点，走一遍
-// 「用户在自己的窗口浏览 → agent 在 tabbot run 窗口里 open / act / replay / task」。不碰真实的 ~/.tabbot 和用户的 Chrome。
+// 「用户在自己的窗口浏览 → Chef 派 Cook → Cook 在 tabbot kitchen 窗口里 debug 并写 recipe → serve / menu」。不碰真实的 ~/.tabbot 和用户的 Chrome。
 // 用法：node scripts/dev/e2e.mjs（Chrome for Testing 路径不同时用 CHROME 环境变量；有头模式 HEADFUL=1）。不是自检，不在 npm test 里。
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -98,30 +98,33 @@ try {
   assert.match(userTabs, /^1 个标签页/);
   console.log("recording ok");
 
-  // 3. agent 在 run 窗口里探索：open → snapshot → act，不碰用户的页面
-  if (process.env.PAUSE_BEFORE_OPEN) { console.log(`PAUSED HOME=${HOME} ORIGIN=${ORIGIN}`); await sleep(300000); }
-  let r = await cli("open", ORIGIN + "/");
+  // 3. Chef 派 Cook（票据），Cook 在自己的 kitchen 窗口里调试，不碰用户的页面
+  let r = await cli("debug", "open", ORIGIN + "/");
+  assert.equal(r.code, 1); assert.match(r.out, /Chef 没有调试权限/);
+  r = await cli("cook", "api-search", "--goal", "按关键词搜索", "--site", "127.0.0.1");
   assert.equal(r.code, 0, r.out + r.err);
-  assert.match((await cli("tabs")).out, /^1 个标签页/, "run 窗口的页面不算用户的标签页");
-  if (process.env.PAUSE) { console.log(`PAUSED HOME=${HOME}`); await sleep(300000); }
-  r = await cli("snapshot"); assert.match(r.out, /搜索/, r.out + r.err);
-  r = await cli("act", "fill", "#q", "hello"); assert.equal(r.code, 0, r.out);
-  r = await cli("act", "click", "#go"); assert.equal(r.code, 0, r.out);
+  const tk = /票据：(t-[0-9a-f]+)/.exec(r.out)[1];
+  r = await cli("debug", "--ticket", tk, "open", ORIGIN + "/");
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match((await cli("tabs")).out, /^1 个标签页/, "kitchen 窗口的页面不算用户的标签页");
+  r = await cli("debug", "--ticket", tk, "snapshot"); assert.match(r.out, /搜索/, r.out + r.err);
+  r = await cli("debug", "--ticket", tk, "act", "fill", "#q", "hello"); assert.equal(r.code, 0, r.out);
+  r = await cli("debug", "--ticket", tk, "act", "click", "#go"); assert.equal(r.code, 0, r.out);
   await sleep(800);
-  assert.match((await cli("text")).out, /"q":"hello"/, "页面真的发了请求并渲染");
+  assert.match((await cli("debug", "--ticket", tk, "text")).out, /"q":"hello"/, "页面真的发了请求并渲染");
   assert.match((await cli("log", "--src", "agent")).out, /agent cmd (fill|click)/);
-  console.log("explore ok");
+  console.log("cook/debug ok");
 
-  // 4. 做过的事变成 task，然后用请求跑
-  r = await cli("task", "new", "search-demo", "--summary", "夹具搜索");
+  // 4. Cook 把它写成 recipe（有请求就用请求），Chef 用 serve / menu 出菜
+  r = await cli("recipe", "new", "api-search", "--summary", "直接用接口搜索");
   assert.equal(r.code, 0, r.out + r.err);
-  const taskFile = path.join(HOME, ".tabbot", "task", "search-demo.js");
-  assert.match(fs.readFileSync(taskFile, "utf8"), /await fill\(page, "#q", "hello"\)|await fill\(page, \{/);
-  fs.writeFileSync(path.join(HOME, ".tabbot", "task", "api-search.js"), `/**
+  fs.writeFileSync(path.join(HOME, ".tabbot", "recipe", "api-search.js"), `/**
  * @summary 直接用接口搜索
+ * @status: draft
+ * @endpoint GET /api/search
  * @param q 查询词
  */
-import { tabbot, request } from "../task/lib/index.js";
+import { tabbot, request } from "../recipe/lib/index.js";
 await tabbot.run(async ({ page }) => {
   const res = await request(page, { url: "${ORIGIN}/api/search?q=" + encodeURIComponent(tabbot.params.q) });
   if (!res.ok) throw new Error("状态码 " + res.status);
@@ -129,14 +132,16 @@ await tabbot.run(async ({ page }) => {
 });
 `);
   const t0 = Date.now();
-  r = await cli("task", "api-search", "--q", "快");
+  r = await cli("serve", "api-search", "--q", "快", "--ticket", tk);
   assert.equal(r.code, 0, r.out + r.err);
   const res = JSON.parse(r.out);
   assert.equal(res.result.q, "快"); assert.equal(res.result.authed, true, "继承了页面自己的 authorization（真值只在 holder 内存里）");
-  console.log(`task via request ok (${Date.now() - t0}ms)`);
-  r = await cli("task", "api-search", "--q", "再来");
-  assert.equal(r.code, 0); console.log("task reuse ok");
-  r = await cli("eval", 'const a = await task("api-search", { q: "组合" }); return a.hits.length;');
+  console.log(`serve via request ok (${Date.now() - t0}ms)`);
+  assert.match(fs.readFileSync(path.join(HOME, ".tabbot", "recipe", "api-search.js"), "utf8"), /@status: verified/, "真跑成功自动晋升");
+  assert.match((await cli("debug", "--ticket", tk, "snapshot")).out, /已经交付/, "交付后票据失效");
+  r = await cli("serve", "api-search", "--q", "再来");
+  assert.equal(r.code, 0); console.log("serve reuse ok");
+  r = await cli("menu", 'const a = await recipe("api-search", { q: "组合" }); return a.hits.length;');
   assert.deepEqual(JSON.parse(r.out).result, 3);
 
   // 5. 磁盘上没有 token 真值

@@ -133,26 +133,3 @@ export async function status(dir = JOURNAL_DIR): Promise<JournalStatus> {
   return { dir, segments: segs.length, events, bytes: dirSize(dir) };
 }
 
-/**
- * 阻塞到有新的人的事件、且静默 idleMs 之后返回新增事件；或超时返回空。
- */
-export async function waitForHuman(opts: { since: number; tab?: number; idleMs?: number; timeoutMs?: number; pollMs?: number; dir?: string; now?: () => number }): Promise<{ rows: EventRow[]; timedOut: boolean; humanActive: boolean }> {
-  const now = opts.now ?? Date.now;
-  const idleMs = opts.idleMs ?? 3_000;
-  const deadline = now() + (opts.timeoutMs ?? 30_000);
-  const poll = opts.pollMs ?? 300;
-  let cursor = opts.since;
-  const collected: EventRow[] = [];
-  let lastHuman = 0;
-  while (now() < deadline) {
-    const fresh = await readEvents({ since: cursor, tab: opts.tab, limit: 500, all: true, dir: opts.dir });
-    if (fresh.length) {
-      cursor = fresh[fresh.length - 1]!.seq;
-      collected.push(...fresh);
-      for (const row of fresh) if (row.src === "human") lastHuman = Math.max(lastHuman, row.ts_last ?? row.ts);
-    }
-    if (lastHuman && now() - lastHuman >= idleMs) return { rows: collected.filter((r) => !r.noise), timedOut: false, humanActive: false };
-    await new Promise((r) => setTimeout(r, poll));
-  }
-  return { rows: collected.filter((r) => !r.noise), timedOut: true, humanActive: lastHuman > 0 };
-}

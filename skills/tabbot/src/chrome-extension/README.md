@@ -1,10 +1,10 @@
 # TabBot Chrome 扩展
 
-一个固定 ABI 的管道，没有业务逻辑，也不放任何页面脚本——页面脚本在 `src/page/`，由 holder 在扩展连接时下发。
+一个固定 ABI 的管道，没有业务逻辑，也不放任何页面脚本——页面脚本是扩展包里的静态内容脚本（`page/`）。
 
 ## 文件
 
-- `manifest.json`：固定 `key`，扩展 ID 为 `dkjmgdhelenchaippejoppbcfbjfgppl`（与 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）。权限：`tabs`、`nativeMessaging`、`alarms`、`userScripts`，以及 `host_permissions: <all_urls>`；`minimum_chrome_version` 135。
+- `manifest.json`：固定 `key`，扩展 ID 为 `dkjmgdhelenchaippejoppbcfbjfgppl`（与 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）。权限：`tabs`、`nativeMessaging`、`alarms`、`scripting`，以及 `host_permissions: <all_urls>`；`minimum_chrome_version` 135。
 - `background.js`：连接 holder；ABI 里的 4 个操作 `register`、`exec`、`tabs`、`goto`；把页面脚本经 bridge 发来的消息和标签页的地址变化、关闭转给 holder。
 - `background.selfcheck.mjs`：用桩对象模拟 `chrome.*` 的冒烟测试（`npm test` 运行）。
 

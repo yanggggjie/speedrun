@@ -1,73 +1,76 @@
 import type { ExtensionLink } from "../browser/extension.ts";
-import { RUN_TAB_IDLE_MS } from "../utils/constants.ts";
+import { KITCHEN_TAB_IDLE_MS } from "../utils/constants.ts";
 
 type Tab = { tabId: number; windowId: number; url: string; anchor?: boolean };
-type Owned = { origin: string; busy: boolean; idleSince: number };
+type Owned = { origin: string; busy: boolean; idleSince: number; key: string };
+
+export const MAIN_KEY = "main";
 
 /**
- * tabbot run 窗口：agent 自己干活的地方，和用户的窗口分开，不抢焦点。
- * 窗口里第一个标签页是扩展的 anchor 页（标题 tabbot run），用它认出这个窗口，holder 重启后也能接上。
- * 其余标签页按站点（origin）池化：task 结束只是还回去，下次同站点的 task 直接复用，省掉开页面的时间；空闲太久才关。
+ * tabbot kitchen 窗口：Cook 干活的地方，和用户的窗口分开，不抢焦点。一个 key（票据，或 Chef 自己的 main）一个窗口，
+ * 这样几个 Cook 并行时各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。
+ * 每个窗口的第一个标签页是扩展的 anchor 页（标题 tabbot kitchen）。窗口里其余标签页按站点（origin）池化：
+ * recipe 结束只是还回去，下次同站点的直接复用，空闲太久才关。
+ * key 到窗口的映射只在内存里；holder 重启后留下的窗口是孤儿：第一个当 main 接管，其余关掉。
  */
-export class RunWindow {
+export class KitchenWindows {
   private readonly link: Pick<ExtensionLink, "request">;
-  private windowId: number | undefined;
+  private readonly windows = new Map<string, number>();
   private readonly owned = new Map<number, Owned>();
-  private activeTab: number | undefined;
+  private readonly activeTab = new Map<string, number>();
+  private readonly opening = new Map<string, Promise<number>>();
   private reaper: ReturnType<typeof setInterval> | undefined;
-  private opening: Promise<number> | undefined;
+  private adopted = false;
   private readonly idleMs: number;
 
-  constructor(link: Pick<ExtensionLink, "request">, idleMs = RUN_TAB_IDLE_MS) {
+  constructor(link: Pick<ExtensionLink, "request">, idleMs = KITCHEN_TAB_IDLE_MS) {
     this.link = link;
     this.idleMs = idleMs;
   }
 
-  isRunTab(tab: number): boolean { return this.owned.has(tab); }
+  isKitchenTab(tab: number): boolean { return this.owned.has(tab); }
 
   private async list(): Promise<Tab[]> { return ((await this.link.request("tabs")) as { tabs: Tab[] }).tabs; }
 
-  /** 窗口还在就返回它；不在（用户关了，或第一次）就新开一个。 */
-  ensureWindow(): Promise<number> {
-    this.opening ??= this.doEnsure().finally(() => { this.opening = undefined; });
-    return this.opening;
+  ensureWindow(key = MAIN_KEY): Promise<number> {
+    let p = this.opening.get(key);
+    if (!p) { p = this.doEnsure(key).finally(() => this.opening.delete(key)); this.opening.set(key, p); }
+    return p;
   }
 
-  private async doEnsure(): Promise<number> {
+  private async doEnsure(key: string): Promise<number> {
     const tabs = await this.list();
-    const anchor = tabs.find((t) => t.anchor);
-    if (anchor) {
-      if (this.windowId !== anchor.windowId) this.windowId = anchor.windowId;
-      // 接管上一个 holder 留下的标签页：当作空闲的池子
-      for (const t of tabs) {
-        if (t.anchor || t.windowId !== anchor.windowId || this.owned.has(t.tabId)) continue;
-        this.owned.set(t.tabId, { origin: originOf(t.url), busy: false, idleSince: Date.now() });
+    if (!this.adopted) {
+      this.adopted = true;
+      const anchors = tabs.filter((t) => t.anchor);
+      const [first, ...orphans] = anchors;
+      if (first) {
+        this.windows.set(MAIN_KEY, first.windowId);
+        for (const t of tabs) if (!t.anchor && t.windowId === first.windowId) this.owned.set(t.tabId, { origin: originOf(t.url), busy: false, idleSince: Date.now(), key: MAIN_KEY });
       }
-    } else {
-      const res = (await this.link.request("openWindow", { anchor: true })) as { windowId: number };
-      this.windowId = res.windowId;
-      this.owned.clear();
-      this.activeTab = undefined;
+      for (const o of orphans) await this.link.request("closeWindow", { windowId: o.windowId }).catch(() => {});
     }
-    // 用户手动关掉的标签页不再记着
-    const alive = new Set(tabs.map((t) => t.tabId));
-    for (const id of this.owned.keys()) if (!alive.has(id) && anchor) this.owned.delete(id);
-    return this.windowId!;
+    const known = this.windows.get(key);
+    if (known !== undefined && tabs.some((t) => t.anchor && t.windowId === known)) return known;
+    const res = (await this.link.request("openWindow", { anchor: true })) as { windowId: number };
+    this.windows.set(key, res.windowId);
+    for (const [id, e] of this.owned) if (e.key === key) this.owned.delete(id);
+    this.activeTab.delete(key);
+    return res.windowId;
   }
 
   /** 拿一个能在 origin 上发请求、操作页面的标签页（暖页面是 origin/robots.txt，很轻）。 */
-  async acquire(origin: string): Promise<number> {
-    const windowId = await this.ensureWindow();
+  async acquire(origin: string, key = MAIN_KEY): Promise<number> {
+    const windowId = await this.ensureWindow(key);
     const live = new Set((await this.list()).map((t) => t.tabId));
     for (const [id, entry] of this.owned) {
       if (!live.has(id)) { this.owned.delete(id); continue; }
-      if (!entry.busy && entry.origin === origin) { entry.busy = true; return id; }
+      if (!entry.busy && entry.origin === origin && entry.key === key) { entry.busy = true; return id; }
     }
     const res = (await this.link.request("openTab", { windowId, url: `${origin}/robots.txt`, active: true })) as { tabId: number };
-    this.owned.set(res.tabId, { origin, busy: true, idleSince: Date.now() });
-    this.activeTab = res.tabId;
+    this.owned.set(res.tabId, { origin, busy: true, idleSince: Date.now(), key });
+    this.activeTab.set(key, res.tabId);
     this.armReaper();
-    // 等暖页面加载完，页面脚本才就位
     await this.link.request("goto", { tabId: res.tabId, url: `${origin}/robots.txt`, wait: true }).catch(() => {});
     return res.tabId;
   }
@@ -80,17 +83,30 @@ export class RunWindow {
     if (e) { e.busy = false; e.idleSince = Date.now(); this.armReaper(); }
   }
 
-  /** 后台标签页浏览器不渲染（滚动加载、懒加载都不动）：要操作页面前先切到前台。 */
+  /** 后台标签页浏览器不渲染（滚动加载、懒加载都不动）：要操作页面前先切到所在窗口的前台。 */
   async activate(tab: number): Promise<void> {
-    if (this.activeTab === tab) return;
+    const e = this.owned.get(tab);
+    const key = e?.key ?? MAIN_KEY;
+    if (this.activeTab.get(key) === tab) return;
     await this.link.request("activateTab", { tabId: tab });
-    this.activeTab = tab;
+    this.activeTab.set(key, tab);
   }
 
   async close(tab: number): Promise<void> {
+    const e = this.owned.get(tab);
     this.owned.delete(tab);
-    if (this.activeTab === tab) this.activeTab = undefined;
+    if (e && this.activeTab.get(e.key) === tab) this.activeTab.delete(e.key);
     await this.link.request("closeTab", { tabId: tab }).catch(() => {});
+  }
+
+  /** 一个 key 用完了（票据结束）：关掉它的整个窗口。main 不关。 */
+  async dispose(key: string): Promise<void> {
+    if (key === MAIN_KEY) return;
+    const windowId = this.windows.get(key);
+    this.windows.delete(key);
+    this.activeTab.delete(key);
+    for (const [id, e] of this.owned) if (e.key === key) this.owned.delete(id);
+    if (windowId !== undefined) await this.link.request("closeWindow", { windowId }).catch(() => {});
   }
 
   /** 关掉空闲太久的标签页。 */
@@ -108,7 +124,7 @@ export class RunWindow {
   }
 
   /** 链路断开或 holder 退出时调用。 */
-  forget(): void { this.owned.clear(); this.windowId = undefined; this.activeTab = undefined; }
+  forget(): void { this.owned.clear(); this.windows.clear(); this.activeTab.clear(); this.adopted = false; }
 }
 
 function originOf(url: string): string { try { return new URL(url).origin; } catch { return ""; } }

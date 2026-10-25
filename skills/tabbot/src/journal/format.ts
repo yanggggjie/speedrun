@@ -50,7 +50,6 @@ function bodyOf(row: EventRow): string {
       return `${row.kind === "cmd" ? "cmd " : ""}${row.verb} ${row.target ?? ""}${extra}${failure(row)}`.trim();
     }
     case "doc": return `doc ${shortUrl(row.url, row.page)} ${size(row.size)}${row.body ? ` body:${row.body}` : ""}`.trim();
-    case "lease": return `lease ${row.verb}${row.target ? ` (${row.target})` : ""}`;
     case "nav": return `nav ${row.target ?? ""} ${shortUrl(row.url, undefined)}`.trim();
     case "snap": return `snap ${row.target ?? ""} file:${row.body ?? ""}`.trim();
     case "bg": return `bg ×${row.size ?? 0} 个请求（后台）`;

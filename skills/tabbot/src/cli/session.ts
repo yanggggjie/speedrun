@@ -11,15 +11,13 @@ import { sessionRpc } from "./rpc.ts";
 const HOLDER_ENTRY = fileURLToPath(new URL("../holder.ts", import.meta.url));
 const SPAWN_WAIT_MS = 8_000;
 
-/** extension：扩展链路是否接着。abi / userScripts / installError 来自扩展握手和页面脚本的安装结果。 */
+/** extension：扩展链路是否接着。abi 来自扩展握手。 */
 export type PingResult = {
   pid: number;
   extension: boolean;
   /** daemon 启动时部署目录的 build。 */
   build?: string;
   abi?: number;
-  userScripts?: boolean;
-  installError?: string;
 };
 
 /** 发一次 ping。连不上就返回 null——判据是 socket 本身，pid 文件丢了不影响。 */

@@ -1,9 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { TASK_DIR, TASK_TIMEOUT_MS } from "../utils/constants.ts";
+import { RECIPE_DIR, RECIPE_TIMEOUT_MS } from "../utils/constants.ts";
 
-export interface TaskSummary {
+export interface RecipeSummary {
   name: string;
+  /** 文件头 `@endpoint 方法 路径`：这份 recipe 覆盖的接口（一份 recipe 一个请求）。 */
+  endpoints: string[];
   status: string;
   summary: string;
   params: string[];
@@ -26,13 +28,14 @@ export function headerTags(text: string): Array<[string, string]> {
   return tags;
 }
 
-/** 从 task 文件头读取 @summary、@status、@timeout 与 @param，不执行脚本。 */
-export function taskSummary(file: string): TaskSummary {
+/** 从 recipe 文件头读取 @summary、@status、@timeout 与 @param，不执行脚本。 */
+export function recipeSummary(file: string): RecipeSummary {
   const tags = headerTags(fs.readFileSync(file, "utf8"));
   const first = (tag: string): string => tags.find(([key]) => key === tag)?.[1] ?? "";
   const timeout = Number(first("timeout"));
   return {
     name: path.basename(file, ".js"),
+    endpoints: tags.filter(([key]) => key === "endpoint").map(([, value]) => value.trim().replace(/\s+/g, " ")),
     status: first("status") || "verified",
     summary: first("summary"),
     params: tags.filter(([key]) => key === "param").map(([, value]) => value),
@@ -44,7 +47,7 @@ export interface ParamSpec { name: string; optional: boolean; description: strin
 
 /** 解析文件头的 `@param 名字 说明` 与 `@param 名字? 说明`（带 ? 表示可选）。 */
 export function paramSpecs(file: string): ParamSpec[] {
-  return taskSummary(file).params.map((value) => {
+  return recipeSummary(file).params.map((value) => {
     const match = /^([A-Za-z_][A-Za-z0-9_]*)(\?)?\s*(.*)$/s.exec(value);
     return match ? { name: match[1]!, optional: Boolean(match[2]), description: match[3]! } : { name: value, optional: false, description: "" };
   });
@@ -78,19 +81,19 @@ export function checkParams(file: string, params: Record<string, string>): strin
   return undefined;
 }
 
-/** 这个 task 的最长运行时间：文件头声明的 @timeout，否则 TASK_TIMEOUT_MS。 */
-export function taskTimeoutMs(file: string): number {
-  const declared = taskSummary(file).timeout;
-  return declared ? declared * 1000 : TASK_TIMEOUT_MS;
+/** 这个 recipe 的最长运行时间：文件头声明的 @timeout，否则 RECIPE_TIMEOUT_MS。 */
+export function recipeTimeoutMs(file: string): number {
+  const declared = recipeSummary(file).timeout;
+  return declared ? declared * 1000 : RECIPE_TIMEOUT_MS;
 }
 
-export function taskFile(taskDir: string, name: string): string {
-  return path.join(taskDir, `${name}.js`);
+export function recipeFile(recipeDir: string, name: string): string {
+  return path.join(recipeDir, `${name}.js`);
 }
 
-export function listTasks(taskDir: string): TaskSummary[] {
-  if (!fs.existsSync(taskDir)) return [];
-  return fs.readdirSync(taskDir).filter((f) => f.endsWith(".js")).sort().map((f) => taskSummary(path.join(taskDir, f)));
+export function listRecipes(recipeDir: string): RecipeSummary[] {
+  if (!fs.existsSync(recipeDir)) return [];
+  return fs.readdirSync(recipeDir).filter((f) => f.endsWith(".js")).sort().map((f) => recipeSummary(path.join(recipeDir, f)));
 }
 
 /** 把一次运行的输入与输出写到 <runDir>/<name>/<时间戳>.json，并删除超出份数的旧记录。 */
@@ -105,10 +108,26 @@ export function writeRunHistory(runDir: string, name: string, entry: unknown, ke
   for (const old of files.slice(0, Math.max(0, files.length - keep))) fs.rmSync(path.join(dir, old), { force: true });
 }
 
-/** 把 src/task-lib 同步到 ~/.tabbot/task/lib：task 脚本从 ../task/lib/index.js 引用 SDK，holder 每次启动都覆盖，保证和代码一致。 */
-export function syncTaskLib(taskDir = TASK_DIR, from = path.join(import.meta.dirname, "..", "task-lib")): void {
-  const to = path.join(taskDir, "lib");
-  fs.mkdirSync(taskDir, { recursive: true });
+/** 把 src/recipe-lib 同步到 ~/.tabbot/recipe/lib：recipe 脚本从 ../recipe/lib/index.js 引用 SDK，holder 每次启动都覆盖，保证和代码一致。 */
+export function syncRecipeLib(recipeDir = RECIPE_DIR, from = path.join(import.meta.dirname, "..", "recipe-lib")): void {
+  const to = path.join(recipeDir, "lib");
+  fs.mkdirSync(recipeDir, { recursive: true });
   fs.rmSync(to, { recursive: true, force: true });
   fs.cpSync(from, to, { recursive: true });
+}
+
+/** 真跑成功一次就把文件头的 `@status: draft` 改成 verified；已经是 verified 或没有 @status 的不动。 */
+export function promoteRecipe(file: string): boolean {
+  const text = fs.readFileSync(file, "utf8");
+  const next = text.replace(/^(\s*\*?\s*@status:?\s*)draft\b/m, "$1verified");
+  if (next === text) return false;
+  fs.writeFileSync(file, next, "utf8");
+  return true;
+}
+
+/** 所有 recipe 覆盖的接口：键是 `方法 路径`（路径写法和 tabbot api 输出的一致），值是 recipe 名。 */
+export function coveredEndpoints(recipeDir: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const r of listRecipes(recipeDir)) for (const e of r.endpoints) out.set(e, r.name);
+  return out;
 }

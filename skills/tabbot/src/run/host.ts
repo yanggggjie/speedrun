@@ -3,16 +3,24 @@ import type { Ingestor } from "../journal/ingest.ts";
 import type { RawStore } from "../journal/raw.ts";
 import { replayHeaders } from "../journal/replay-core.ts";
 import { STEP_TIMEOUT_MS } from "../utils/constants.ts";
-import type { RunWindow } from "./window.ts";
+import { MAIN_KEY, type KitchenWindows } from "./window.ts";
 
-/** 一次运行（或一次探索）用到的页面：绑定到 tabbot run 窗口里的一个标签页，站点（origin）变了就换一个。 */
+/** 一次运行（或一次探索）用到的页面：绑定到 tabbot kitchen 窗口里的一个标签页，站点（origin）变了就换一个。 */
 export class Session {
   tab: number | undefined;
   origin: string | undefined;
   lastUsed = Date.now();
+  /** 所在的 kitchen 窗口：票据号，或 Chef 自己的 main。 */
+  readonly key: string;
+  /** 只许组合 recipe（menu）：任何页面操作都拒绝。 */
+  composeOnly = false;
+  /** 试运行：非 GET 的 request 不真发，只记下将发送的内容。 */
+  dry = false;
+  readonly dryLog: string[] = [];
+  constructor(key = MAIN_KEY) { this.key = key; }
 }
 
-export type HostDeps = { link: Pick<ExtensionLink, "request">; win: RunWindow; ingest: Ingestor; raw: RawStore };
+export type HostDeps = { link: Pick<ExtensionLink, "request">; win: KitchenWindows; ingest: Ingestor; raw: RawStore };
 
 /** 请求头里带身份信息的那些：继承页面自己的请求头时优先挑带这些的请求。 */
 const CREDENTIAL = /auth|csrf|xsrf|token|^x-/i;
@@ -25,8 +33,8 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 }
 
 /**
- * task 与探索命令共用的页面操作。每个操作都在 tabbot run 窗口的标签页里执行，并且都记进日志（来源 agent 的 cmd 行）：
- * 做过的事就是知识——`tabbot task new` 从这些记录生成 task。
+ * recipe 与探索命令共用的页面操作。每个操作都在 tabbot kitchen 窗口的标签页里执行，并且都记进日志（来源 agent 的 cmd 行）：
+ * 做过的事就是知识——Cook 写 recipe 从这些记录生成 recipe。
  */
 export class RunHost {
   private readonly d: HostDeps;
@@ -40,7 +48,7 @@ export class RunHost {
       if (tabs.some((t) => t.tabId === s.tab)) return s.tab;
     }
     if (s.tab !== undefined) this.d.win.release(s.tab);
-    s.tab = await this.d.win.acquire(origin);
+    s.tab = await this.d.win.acquire(origin, s.key);
     s.origin = origin;
     return s.tab;
   }
@@ -72,6 +80,7 @@ export class RunHost {
   }
 
   async op(s: Session, name: string, a: any): Promise<unknown> {
+    if (s.composeOnly) throw new Error(`menu 里只能组合 recipe（recipe(名字, 参数)），不能操作页面：缺的做法让 Cook 去学（tabbot cook）`);
     switch (name) {
       case "goto": return this.goto(s, a);
       case "request": return this.request(s, a);
@@ -121,6 +130,10 @@ export class RunHost {
     const safe = this.d.ingest.sanitizer.url(target.href);
     const shown = safe.bareUrl;
     const detail = { method, bareUrl: safe.bareUrl, query: safe.query, ...(a.json !== undefined ? { reqBody: JSON.stringify(this.d.ingest.sanitizer.body(a.json)).slice(0, 4000) } : {}), inherit: a.inherit !== false };
+    if (s.dry && method !== "GET" && method !== "HEAD") {
+      s.dryLog.push(`${method} ${target.href}${body ? ` ${body.slice(0, 500)}` : ""}`);
+      return this.log(tab, "request", `${method} ${shown}`, { ...detail, dry: true }, async () => ({ ok: true, status: 200, ct: "", size: 0, ms: 0, text: "", finalUrl: target.href, dry: true }));
+    }
     return this.log(tab, "request", `${method} ${shown}`, detail, async () => {
       const res = await withTimeout(this.callTab(tab, "replay", [{ method, url: target.href, headers, body }]), a.timeout ?? STEP_TIMEOUT_MS, "请求");
       if (res.ok === false) throw new Error(`请求失败：${res.error}`);

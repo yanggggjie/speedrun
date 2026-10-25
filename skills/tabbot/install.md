@@ -95,6 +95,6 @@ Linux（`linux`）：
 
 以下是给 agent 的背景，不要讲给用户：
 
-- TabBot 完全以源码分发，没有编译产物。遇到问题先到 `~/.tabbot` 里找答案：`TROUBLESHOOTING.md` 是故障表，`ARCHITECTURE.md` 说明各部分怎么工作，`AGENTS.md` 是开发约定，`src/` 是全部源码，开发脚本在 `scripts/dev`。安装、升级、迁移中遇到任何问题，都可以直接读源码定位并修复，不必等用户指点。
+- TabBot 完全以源码分发，没有编译产物。遇到问题先到 `~/.tabbot` 里找答案：`ARCHITECTURE.md` 说明各部分怎么工作（第 10 节是故障表），`AGENTS.md` 是开发约定，`src/` 是全部源码，开发脚本在 `scripts/dev`。安装、升级、迁移中遇到任何问题，都可以直接读源码定位并修复，不必等用户指点。
 - 在线安装失败时，可以 clone 仓库，按本地安装处理（安装目录就是仓库里的 `skills/tabbot`）。
 - 直接改 `~/.tabbot/src` 只是临时修复，下次升级会被覆盖；修复有普遍价值时告诉用户可以提 issue 或 PR。

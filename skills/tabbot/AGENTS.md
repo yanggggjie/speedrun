@@ -1,8 +1,8 @@
 # AGENTS
 
-agent 使用 TabBot 的流程见 `skills/tabbot/SKILL.md`。本文只规定仓库边界、开发验证、分发发布和运行时实现。
+agent（Chef）使用 TabBot 的流程见 `skills/tabbot/SKILL.md`。本文只规定仓库边界、开发验证、分发发布和运行时实现。
 
-TabBot 完全以原始源码分发：`skills/tabbot/` 整个目录（源码、`scripts/dev`、文档）安装后原样镜像到 `~/.tabbot`，本文在 `~/.tabbot/AGENTS.md`。文中以仓库为基准的路径，在本机去掉 `skills/tabbot/` 前缀即可，如 `skills/tabbot/src` → `~/.tabbot/src`、`skills/tabbot/scripts/dev` → `~/.tabbot/scripts/dev`。运行时架构见 `ARCHITECTURE.md`，故障排查见 `TROUBLESHOOTING.md`。遇到问题可以直接读源码并修改；下次升级会覆盖 `~/.tabbot/src` 与 `~/.tabbot/scripts`。
+TabBot 完全以原始源码分发：`skills/tabbot/` 整个目录（源码、`scripts/dev`、文档）安装后原样镜像到 `~/.tabbot`，本文在 `~/.tabbot/AGENTS.md`。文中以仓库为基准的路径，在本机去掉 `skills/tabbot/` 前缀即可，如 `skills/tabbot/src` → `~/.tabbot/src`、`skills/tabbot/scripts/dev` → `~/.tabbot/scripts/dev`。目标、角色分工、运行时架构和故障排查都在 `ARCHITECTURE.md`。遇到问题可以直接读源码并修改；下次升级会覆盖 `~/.tabbot/src` 与 `~/.tabbot/scripts`。
 
 ## 1. 职责边界
 
@@ -27,7 +27,7 @@ TabBot 完全以原始源码分发：`skills/tabbot/` 整个目录（源码、`s
 
 ### 2.1.1 调试触发：用 Claude in Chrome
 
-在真实 Chrome 里调试时，用 Claude in Chrome 触发页面操作（导航、点击、滚动、输入），TabBot 的常驻录制同时记录，再用 `tabbot log`、`tabbot snapshot` 等命令检查结果。流程：本地安装 → 在 `chrome://extensions` 加载或刷新 `~/.tabbot/src/chrome-extension` → 用 Claude in Chrome 在测试 tab 里操作 → 读日志。注意：Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `human`，并撤销租约，所以它只用来触发和制造页面行为，不用来验证租约；验证租约和 `act` 用 `tabbot takeover` / `act` 本身。它在后台标签页里加载的页面按设计不会被完整记录（后台只计数）。
+在真实 Chrome 里调试时，用 Claude in Chrome 触发页面操作（导航、点击、滚动、输入），TabBot 的常驻录制同时记录，再用 `tabbot log`、`tabbot api`、`tabbot context` 检查结果。流程：本地安装 → 在 `chrome://extensions` 加载或刷新 `~/.tabbot/src/chrome-extension` → 用 Claude in Chrome 在测试 tab 里操作 → 读日志。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `human`；它在后台标签页里加载的页面按设计不会被完整记录（后台只计数）。
 
 ### 2.2 检查与测试
 
@@ -37,26 +37,24 @@ Node strip types 不执行类型检查。运行 check 或 test 前，先安装 `
 npm install --prefix skills/tabbot/src --omit=optional
 npm run check
 npm test
+npm run e2e
 npm run verify:pack
 ```
 
-| 命令 | 作用 |
-|---|---|
-| `npm run check` | 运行 `tsc --noEmit` |
-| `npm test` | 按文件名顺序逐个运行 `*.selfcheck.ts` |
-| `npm run verify:pack` | 使用隔离 HOME 执行真实的 `skills add`、setup 和 doctor |
+| 命令 | 作用 | 何时跑 |
+|---|---|---|
+| `npm run check` | `tsc --noEmit` | 每次改完 |
+| `npm test` | 逐个运行 `*.selfcheck.*`（几秒，不依赖 Chrome） | 每次改完 |
+| `npm run e2e` | 真实扩展 + 真实 holder + 夹具站点（Chrome for Testing，较慢） | 改了扩展、页面脚本、kitchen 窗口、recipe 运行时 |
+| `npm run verify:pack` | 隔离 HOME 下真实的 `skills add`、setup、doctor（真实 `npm install`，慢） | 只在发布前 |
 
-多文件改动时，改完全部文件再一次性跑 `check`/`test`，不要逐文件验证。这几个命令都不是瞬间返回：`check` 要过一遍 `npx` 解析，`test` 里有真实的 `sleep`/超时等待，`verify:pack` 是真实的 `npm install`；跑一次和跑五次的差距是实打实的时间。
+**测试只留最关键的**：一个测试必须守住一个“坏了就会静默出错或泄密”的点，否则不留。多文件改动时，改完全部文件再一次性跑 `check`/`test`，不要逐文件验证。
 
 ### 2.3 真实 Chrome 里的验证
 
-页面脚本（`skills/tabbot/src/page/`）在真实页面里的行为，用 `scripts/dev/hook-e2e.mjs` 在无头 Chrome 里验证：录制的请求和主文档、执行的点击 / 填写 / 选择 / 勾选 / 按键 / 滚动、等页面稳定、真人动手时中止、重放（需要本机 Chrome，不在 `npm test` 里）。改了页面脚本之后跑一次：
+`npm run e2e`（`scripts/dev/e2e.mjs`）起 Chrome for Testing 加临时 profile，加载真实扩展，注册临时 HOME 下的 native host，走一遍用户浏览、Chef 派 Cook、Cook 在 kitchen 窗口里调试并写 recipe、`serve` 出菜、`menu` 组合，并扫描磁盘上没有 token 真值。Chrome 路径不同时用 `CHROME` 环境变量；`HEADFUL=1` 有头；`E2E_DEBUG=1` 打印每条命令的耗时。注意夹具站点跑在测试进程里，调用 CLI 必须异步（`spawnSync` 会卡住它）。
 
-```bash
-node skills/tabbot/scripts/dev/hook-e2e.mjs
-```
-
-扩展本身（`background.js`、`manifest.json`）只在 ABI 或权限变化时才需要在 `chrome://extensions` 里刷新；页面脚本由 holder 下发，改完 `tabbot daemon restart` 即可（holder 在扩展下次连接时重新注册）。`tabbot doctor` 的 `extension-abi`、`user-scripts` 会提示状态。
+扩展本身（`background.js`、`manifest.json`、`page/` 下的页面脚本）改了要在 `chrome://extensions` 里刷新；holder、CLI、`src/run/` 改了 `tabbot daemon restart` 即可。`tabbot doctor` 的 `extension-abi` 提示扩展是否太旧。
 
 日常 Chrome 里测试时日志含登录态内容，在 `~/.tabbot/journal`；测完删除该目录。
 
@@ -74,12 +72,11 @@ node skills/tabbot/scripts/dev/hook-e2e.mjs
 
 ```text
 skills/tabbot/
-├── src/                     运行时（holder、journal、cli、page 页面脚本、chrome-extension）+ 自检 + package.json
-├── scripts/dev/             hook-e2e.mjs（真实 Chrome 验证）、图标生成
+├── src/                     运行时（holder、journal、run、cli、chrome-extension 含页面脚本）+ 自检 + package.json
+├── scripts/dev/             e2e.mjs（真实 Chrome 验证）、图标生成
 ├── setup.js  SKILL.md  install.md  LICENSE
 ├── AGENTS.md                ← 仓库根目录的 AGENTS.md 是指向它的软链接
-├── ARCHITECTURE.md
-└── TROUBLESHOOTING.md
+└── ARCHITECTURE.md          目标、角色、架构、排障
 ```
 
 `setup.js` 把整个目录镜像到 `~/.tabbot`（只排除 `node_modules`、`.DS_Store`），然后在 `~/.tabbot/src` 里 `npm install`。规则：`skills/tabbot/` 里的都分发，仓库根目录的都只在仓库里：`tools/`（`verify-pack`、`export-payload`，依赖 git 和仓库根）、根 `package.json`（只放命令入口，没有版本号）、`README.md`、`CHANGELOG.md`、`PRIVACY.md`。文档只在 `skills/tabbot/` 里维护一份，不要在别处复制。`verify:pack` 先用 `git ls-files` 导出文件再安装，保证在线安装的内容完整。

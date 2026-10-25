@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Ingestor, type PageMsg } from "./ingest.ts";
 import { findInBodies, readEvents, readEventBySeq } from "./query.ts";
-import { pickReplayTab, sameOrigin, summarizeBody, templateFromRow } from "./replay.ts";
+import { summarizeBody, templateFromRow } from "./replay.ts";
 import { JournalStore } from "./store.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-replay-"));
@@ -65,15 +65,6 @@ assert.equal(await readEventBySeq(999999, dir), undefined);
 const found = await findInBodies("独一无二的标题", { dir });
 assert.equal(found.length, 1); assert.equal(found[0]!.row.seq, post.seq); assert.match(found[0]!.snippet, /独一无二的标题/);
 assert.deepEqual(await findInBodies("根本不存在的文字", { dir }), []);
-
-// 挑能发的标签页：请求与标签页同站，且标签页的 origin 等于请求原来的页面 origin；前台的优先
-const tabs = [{ tabId: 1, active: false, url: "https://www.example.com/a" }, { tabId: 2, active: true, url: "https://www.example.com/b" }, { tabId: 3, active: true, url: "https://api.example.com/" }, { tabId: 4, active: true, url: "http://www.example.com/" }];
-assert.equal(pickReplayTab(tabs, "https://www.example.com/api/x", "https://www.example.com/p"), 2);
-assert.equal(pickReplayTab(tabs.filter((t) => t.tabId !== 2), "https://www.example.com/api/x", "https://www.example.com/p"), 1);
-assert.equal(pickReplayTab(tabs, "https://api.example.com/v1/x", "https://www.example.com/p"), 2, "www 页面调 api 子域的请求，换个同 origin 的 www 标签页发（CORS 和登录态和原来一样）");
-assert.equal(pickReplayTab(tabs, "https://other.com/x", "https://www.example.com/p"), undefined, "请求不是同站的，不发");
-assert.equal(pickReplayTab(tabs, "https://www.example.com/api/x", "https://shop.example.com/p"), undefined, "没有和原来页面同 origin 的标签页");
-assert.ok(sameOrigin("https://a.com/x", "https://a.com/y") && !sameOrigin("https://a.com", "https://a.com:8443") && !sameOrigin("https://a.com", "http://a.com"));
 
 // 响应摘要
 assert.match(summarizeBody("{\"a\":1,\"b\":2}", "application/json"), /JSON 对象，字段：a, b/);
