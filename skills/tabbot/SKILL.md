@@ -17,9 +17,23 @@ description: >-
 3. `tabbot api <站点>`：这个站点出现过的接口，✓ 表示原始请求还在 holder 内存里、能直接重放。
 4. 有接口：`tabbot req show <编号>` → `tabbot replay <编号> --set 名字=值`（非 GET 要 `--yes`，并先问用户）。token 在日志里是别名 `⟨secret_…⟩`，`--set` 可以直接写别名，真值只在 holder 内存里。
 5. 没有接口或被拒：`tabbot open <网址>` 在 run 窗口打开，`snapshot` / `text` 看，`act` 操作。目标可以是 `@e12`（snapshot 里的引用）、CSS、或 `{"role":"button","name":"提交"}`。
-6. 做通之后立刻 `tabbot task new <名字> [--since 日志编号]`：把 agent 做过的步骤（`tabbot log --src agent` 能看到）生成 task 草稿，补参数和成功判断，跑通后把 `@status` 改成 `verified`。**做过的事都要变成 task，同一件事不做第二遍探索。**
+6. 任务**确认成功之后**（用户要的结果已经交出），如果这条流程以后大概率还会用（涉及接口、翻页、要摸索才做通的），在**后台派一个 subagent 把它写成 task**，主 agent 继续手上的事，不等它（见 1.1）。一次性的简单查询不用派。**做过的事都要变成 task，同一件事不做第二遍探索。**
 
 能用请求就不点页面；DOM 操作只探索一次，之后写进 task。
+
+## 1.1 派 subagent 写 task
+
+brief 要自包含，包含：
+- 目标：这条流程做什么，一句话。
+- 参数：哪些值是变的（如问题 id、条数），哪些固定。
+- 起点：`tabbot log --src agent` 里这次流程开始的日志编号，用 `tabbot task new <名字> --since <编号>` 生成草稿；探索时用过的 `replay` 编号和 `tabbot req show` 的结论。
+- 站点和已知的坑（翻页要用响应里的 `paging.next`、需要继承请求头等）。
+
+subagent 的规则：
+- 只写 `~/.tabbot/task/<名字>.js`，补 `@summary`、`@param`、成功判断；先读 `~/.tabbot/task/lib/index.js` 看 SDK。
+- 只读的 task 可以跑一遍验证，通过后 `@status` 改 `verified`；**有副作用的（点赞、发帖、删除等）不重跑**，保持 `draft`，回报里写明未验证。
+- 一次只能跑一个 task：主 agent 正在用 run 窗口时验证会等待或失败，失败就稍后重试一次，不要反复。
+- 回报只写：task 名、参数、验证结果（是否运行过、返回几条）、遗留问题。不要带回响应原文。
 
 ## 2. 命令
 
