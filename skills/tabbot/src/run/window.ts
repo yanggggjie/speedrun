@@ -5,14 +5,17 @@ import { sleep } from "../utils/async.ts";
 type Tab = { tabId: number; windowId: number; url: string; anchor?: boolean };
 type Owned = { origin: string; busy: boolean; idleSince: number; key: string };
 
-export const MAIN_KEY = "main";
+/** run 窗口：主 agent 长期持有，只执行 task。 */
+export const MAIN_KEY = "run";
 
 /**
- * tabbot agent 窗口：subagent 干活的地方，和用户的窗口分开，不抢焦点。一个 key（票据，或 主 agent 自己的 main）一个窗口，
- * 这样几个 subagent 并行时各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。
+ * tabbot agent 窗口：agent 干活的地方，和用户的窗口分开，不抢焦点。两种：
+ * run 窗口（key 为 run）主 agent 长期持有，只执行 task；debug 窗口（key 为 w-…）一个 subagent 一个，派出时开、收回时关。
+ * 一个 key 一个窗口，这样几个 subagent 并行时各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。
  * 每个窗口的第一个标签页是扩展的 anchor 页（标题 tabbot agent）。窗口里其余标签页按站点（origin）池化：
  * task 结束只是还回去，下次同站点的直接复用，空闲太久才关。
- * key 到窗口的映射只在内存里；holder 重启后留下的窗口是孤儿：第一个当 main 接管，其余关掉。
+ * key 到窗口的映射只在内存里；holder 重启（或扩展链路重连）一切归零：留下的窗口都是孤儿，第一次用窗口时全部关掉。
+ * 窗口被用户关了，下次用到时自动重开（run 和 debug 一样）。
  */
 export class AgentWindows {
   private readonly link: Pick<ExtensionLink, "request">;
@@ -21,7 +24,8 @@ export class AgentWindows {
   private readonly activeTab = new Map<string, number>();
   private readonly opening = new Map<string, Promise<number>>();
   private reaper: ReturnType<typeof setInterval> | undefined;
-  private adopted = false;
+  /** 本次链路上已经清理过孤儿窗口。 */
+  private cleaned = false;
   private readonly idleMs: number;
 
   constructor(link: Pick<ExtensionLink, "request">, idleMs = AGENT_TAB_IDLE_MS) {
@@ -30,6 +34,9 @@ export class AgentWindows {
   }
 
   isAgentTab(tab: number): boolean { return this.owned.has(tab); }
+
+  /** 标签页所在的窗口：run、debug-xxxx；不是 TabBot 开的就是用户自己的 user。 */
+  winOf(tab: number): string { return this.owned.get(tab)?.key ?? "user"; }
 
   private async list(): Promise<Tab[]> { return ((await this.link.request("tabs")) as { tabs: Tab[] }).tabs; }
 
@@ -41,15 +48,9 @@ export class AgentWindows {
 
   private async doEnsure(key: string, listed?: Tab[]): Promise<number> {
     const tabs = listed ?? await this.list();
-    if (!this.adopted) {
-      this.adopted = true;
-      const anchors = tabs.filter((t) => t.anchor);
-      const [first, ...orphans] = anchors;
-      if (first) {
-        this.windows.set(MAIN_KEY, first.windowId);
-        for (const t of tabs) if (!t.anchor && t.windowId === first.windowId) this.owned.set(t.tabId, { origin: originOf(t.url), busy: false, idleSince: Date.now(), key: MAIN_KEY });
-      }
-      for (const o of orphans) await this.link.request("closeWindow", { windowId: o.windowId }).catch(() => {});
+    if (!this.cleaned) {
+      this.cleaned = true;
+      for (const t of tabs) if (t.anchor) await this.link.request("closeWindow", { windowId: t.windowId }).catch(() => {});
     }
     const known = this.windows.get(key);
     if (known !== undefined && tabs.some((t) => t.anchor && t.windowId === known)) return known;
@@ -64,7 +65,7 @@ export class AgentWindows {
   async acquire(origin: string, key = MAIN_KEY): Promise<number> {
     // 快速路径：窗口已知、池里有同站点空闲标签页——不查标签页列表（要枚举用户全部标签页）。
     // 标签页要是已经被关了，由 RunHost.callTab 发现“No tab with id”后重新拿。
-    if (this.adopted && this.windows.has(key)) {
+    if (this.cleaned && this.windows.has(key)) {
       for (const [id, entry] of this.owned) if (!entry.busy && entry.origin === origin && entry.key === key) { entry.busy = true; return id; }
     }
     const tabs = await this.list(); // 只列一次，ensureWindow 复用
@@ -114,7 +115,7 @@ export class AgentWindows {
     await this.link.request("closeTab", { tabId: tab }).catch(() => {});
   }
 
-  /** 一个 key 用完了（票据结束）：关掉它的整个窗口。main 不关。 */
+  /** 一个 debug 窗口收回：关掉它的整个窗口。run 窗口不关。 */
   async dispose(key: string): Promise<void> {
     if (key === MAIN_KEY) return;
     const windowId = this.windows.get(key);
@@ -139,7 +140,5 @@ export class AgentWindows {
   }
 
   /** 链路断开或 holder 退出时调用。 */
-  forget(): void { this.owned.clear(); this.windows.clear(); this.activeTab.clear(); this.adopted = false; }
+  forget(): void { this.owned.clear(); this.windows.clear(); this.activeTab.clear(); this.cleaned = false; }
 }
-
-function originOf(url: string): string { try { return new URL(url).origin; } catch { return ""; } }
