@@ -33,7 +33,7 @@ export function isMirrorPath(root: string, p: string): boolean {
 
 /**
  * 把 skill 的整个目录镜像到 homeAbs（~/.tabbot）：顶层文件直接覆盖，顶层目录（src、scripts）先清空再拷。
- * 只动 payload 里有的名字，不碰 task、record、run、session、bin 这些本机数据。
+ * 只动 payload 里有的名字，不碰 sites、lib、run、session、bin、alias-salt 这些本机数据。
  */
 export function mirrorPayload(payloadAbs: string, homeAbs: string): void {
   fs.mkdirSync(homeAbs, { recursive: true });
@@ -48,4 +48,33 @@ export function mirrorPayload(payloadAbs: string, homeAbs: string): void {
       fs.copyFileSync(from, to);
     }
   }
+}
+
+/** 第一个没被占用的名字：<base>.old、<base>.old-2、<base>.old-3…… */
+function freeOldName(homeAbs: string, base: string): string {
+  let name = `${base}.old`;
+  for (let i = 2; fs.existsSync(path.join(homeAbs, name)); i++) name = `${base}.old-${i}`;
+  return name;
+}
+
+/**
+ * 旧版本的本机数据（journal、task）改名保留：不读取、不转换，由用户自己决定何时删除。
+ * 旧的脱敏盐复制到新位置，之后写下的别名和旧日志里的保持一致。返回改了名的 [原名, 新名]。
+ */
+export function retireLegacyData(homeAbs: string): Array<[string, string]> {
+  const moved: Array<[string, string]> = [];
+  const oldSalt = path.join(homeAbs, "journal", "alias-salt");
+  const newSalt = path.join(homeAbs, "alias-salt");
+  if (fs.existsSync(oldSalt) && !fs.existsSync(newSalt)) {
+    fs.writeFileSync(newSalt, fs.readFileSync(oldSalt), { mode: 0o600 });
+    fs.chmodSync(newSalt, 0o600);
+  }
+  for (const base of ["journal", "task"]) {
+    const from = path.join(homeAbs, base);
+    if (!fs.existsSync(from)) continue;
+    const to = freeOldName(homeAbs, base);
+    fs.renameSync(from, path.join(homeAbs, to));
+    moved.push([base, to]);
+  }
+  return moved;
 }

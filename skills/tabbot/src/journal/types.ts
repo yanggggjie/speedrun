@@ -1,61 +1,97 @@
 /**
- * 事件来源：human 是真人输入（isTrusted 为真），page 是页面里的脚本触发的（isTrusted 为假，包括 agent 的 DOM 事件，观察端分不出也不去分）和所有请求、导航，
- * agent 只用于命令记录（TabBot 自己发出的动作和重放）。
+ * 事件来源：user 是真人输入（isTrusted 为真），page 是页面里的脚本触发的请求和导航，
+ * agent 是 TabBot 自己发出的动作和重放；run 与 debug 窗口里发生的一切都记为 agent。
  */
-export type Src = "human" | "agent" | "page";
-/** input 是页面里的输入事件，cmd 是 agent 的命令记录，doc 是主文档渲染后的 HTML，snap 是页面快照。 */
-export type Kind = "input" | "cmd" | "nav" | "net" | "doc" | "snap" | "tab" | "bg";
+export type Src = "user" | "agent" | "page";
+/** request 是 fetch / XHR / 重放，action 是页面里的输入事件，cmd 是 agent 的命令记录，doc 是主文档渲染后的 HTML，snap 是页面快照，bg 是后台标签页的请求计数。 */
+export type RowType = "request" | "action" | "nav" | "doc" | "snap" | "cmd" | "tab" | "bg";
+/** 请求发生的阶段：load 是页面刚加载（或单页应用刚路由）的那几秒，action 是动作引发的，idle 是轮询、后台自发。 */
+export type Phase = "load" | "action" | "idle";
 
-/** 写进 events 表的一行（不含 seq）。 */
-export type NewEvent = {
-  ts: number;
-  tab: number;
-  frame: number;
+/** 窗口：用户自己的、主 agent 的 run 窗口、subagent 的 debug 窗口（debug-xxxx）。 */
+export const USER_WIN = "user";
+
+/** timeline.<窗口>.jsonl 里的一行。字段名沿用 yodo 的录制材料（type / actionType / requestType / selector / role / name）。 */
+export type Row = {
+  seq: number;
+  /** 毫秒时间戳。 */
+  t: number;
+  win: string;
   src: Src;
-  kind: Kind;
-  verb: string;
-  /** 页面地址（脱敏后，不含参数）。 */
+  tab: number;
+  frame?: number;
+  type: RowType;
+  /** 页面地址（脱敏、不含参数）。 */
   page?: string;
-  /** 动作的目标元素描述，或 ws 的地址。 */
-  target?: string;
   url?: string;
+  /** action / cmd：click、input、scroll、key、goto、request……；target 是元素的简短描述，如 button[Like]。 */
+  actionType?: string;
+  target?: string;
+  role?: string;
+  name?: string;
+  selector?: string;
+  key?: string;
+  deltaY?: number;
+  /** input 事件合并后的字数。 */
+  n?: number;
+  /** cmd 的结果。 */
+  ok?: boolean;
+  error?: string;
+  detail?: Record<string, unknown>;
+  /** request：fetch / xhr / replay。 */
+  requestType?: string;
   method?: string;
   status?: number;
   size?: number;
-  /** 响应体或文档文件的引用 `<分段序号>/<文件名>`（bodies/ 下）；snap 是快照文件（snapshots/ 下）。 */
-  body?: string;
-  /** 1 = 埋点、广告等噪声，默认视图隐藏。 */
-  noise?: number;
-  /** 这个请求是被哪个动作引发的：指向 2 秒内最近一次人的事件或 agent 命令的 seq。 */
+  /** request：`方法 接口名`，也就是 task 文件头 @endpoint 的写法。 */
+  endpoint?: string;
+  /** 1 = 埋点、广告等噪声，默认不看。 */
+  noise?: 1;
+  /** 这个请求由哪个动作引发：同一标签页 2 秒内最近一次用户事件或 agent 命令的 seq，causeDt 是相隔的毫秒数。 */
   cause?: number;
-  /** 其它字段（JSON 文本）：请求头、请求体、脱敏记录等。 */
-  detail?: string;
+  causeDt?: number;
+  phase?: Phase;
+  replayOf?: number;
+  /** nav / tab：load、pushState、popstate…；bg：后台标签页发出的请求数。 */
+  via?: string;
+  count?: number;
+  /** 指向请求文件、文档或快照，路径相对站点的 log/ 目录：`<段>/<文件名>`。 */
+  file?: string;
 };
 
-export type EventRow = NewEvent & { seq: number; ts_last: number | null; dup: number };
+export type ParsedUrl = { bareUrl: string; query: Record<string, string> };
 
-export const SCHEMA = `
-CREATE TABLE IF NOT EXISTS events(
-  seq INTEGER PRIMARY KEY,
-  ts INTEGER NOT NULL,
-  ts_last INTEGER,
-  tab INTEGER NOT NULL,
-  frame INTEGER NOT NULL DEFAULT 0,
-  src TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  verb TEXT NOT NULL,
-  page TEXT,
-  target TEXT,
-  url TEXT,
-  method TEXT,
-  status INTEGER,
-  size INTEGER,
-  body TEXT,
-  noise INTEGER NOT NULL DEFAULT 0,
-  dup INTEGER NOT NULL DEFAULT 1,
-  cause INTEGER,
-  detail TEXT
-);
-CREATE INDEX IF NOT EXISTS ev_ts ON events(ts);
-CREATE INDEX IF NOT EXISTS ev_tab_seq ON events(tab, seq);
-`;
+/** 一次请求的完整元数据，一个请求一个 JSON 文件；沿用 yodo 的请求文件，另加 seq / win / 因果 / 接口名 / rid。秘密都是别名。 */
+export type RequestFile = {
+  seq: number;
+  win: string;
+  endpoint: string;
+  requestType: string;
+  /** 发出请求的标签页；原始请求在内存里按 标签页 + rid 存。 */
+  tab?: number;
+  /** 页面脚本给的请求编号；原始请求（含 token 真值）在 holder 内存里，靠它找回来重放。 */
+  rid?: string;
+  cause?: number;
+  causeDt?: number;
+  phase?: Phase;
+  replayOf?: number;
+  /** 重放时 --set 改了哪些名字（只记名字，不记值）。 */
+  set?: string[];
+  method: string;
+  url: ParsedUrl;
+  frameUrl?: ParsedUrl;
+  headers: Record<string, string>;
+  /** JSON 请求体解析成对象；表单解析成对象；其它是脱敏后的文字，或页面脚本放的占位文字。 */
+  requestBody?: unknown;
+  requestBodyTruncated?: boolean;
+  status?: number;
+  responseHeaders?: Record<string, string>;
+  /** 相对站点 log/ 目录：`<段>/<文件名>`；没存响应体时没有这个字段，bodyOmitted 写明原因。 */
+  responseBodyPath?: string;
+  responseSize?: number;
+  truncated?: boolean;
+  bodyOmitted?: string;
+  error?: string;
+  startedAt: number;
+  endedAt: number;
+};

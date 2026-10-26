@@ -3,6 +3,7 @@ import type { Ingestor } from "../journal/ingest.ts";
 import type { RawStore } from "../journal/raw.ts";
 import { replayHeaders } from "../journal/replay-core.ts";
 import { STEP_TIMEOUT_MS } from "../utils/constants.ts";
+import { siteOfUrl } from "../utils/url.ts";
 import { MAIN_KEY, type AgentWindows } from "./window.ts";
 
 /** 一次运行（或一次探索）用到的页面：绑定到 tabbot agent 窗口里的一个标签页，站点（origin）变了就换一个。 */
@@ -10,7 +11,7 @@ export class Session {
   tab: number | undefined;
   origin: string | undefined;
   lastUsed = Date.now();
-  /** 所在的 agent 窗口：票据号，或 主 agent 自己的 main。 */
+  /** 所在的 agent 窗口：debug 窗口号，或主 agent 的 run 窗口 run。 */
   readonly key: string;
   /** 只许组合 task（compose）：任何页面操作都拒绝。 */
   composeOnly = false;
@@ -62,7 +63,7 @@ export class RunHost {
   }
 
   private page(s: Session): number {
-    if (s.tab === undefined) throw new Error("还没有打开页面：先 goto（探索时 tabbot open <网址>）");
+    if (s.tab === undefined) throw new Error("还没有打开页面：先 goto（调试时 tabbot debug --window <窗口号> open <网址>）");
     s.lastUsed = Date.now();
     return s.tab;
   }
@@ -84,8 +85,9 @@ export class RunHost {
     }
   }
 
-  private log<T>(tab: number, verb: string, target: string, detail: Record<string, unknown>, run: () => Promise<T>, after?: (r: T) => Record<string, unknown>): Promise<T> {
-    const ref = this.d.ingest.beginCmd(tab, Date.now(), verb, target, detail);
+  private log<T>(tab: number, verb: string, target: string, detail: Record<string, unknown>, run: () => Promise<T>, after?: (r: T) => Record<string, unknown>, site?: string): Promise<T> {
+    // 命令记在它所在页面的站点里：goto 时标签页还没报上来，由调用方给；其余用标签页绑定的站点
+    const ref = this.d.ingest.beginCmd(tab, Date.now(), verb, target, detail, site ?? (siteOfUrl(this.byTab.get(tab)?.origin) || undefined));
     return run().then(
       (r) => { this.d.ingest.endCmd(ref, { detail: { ...detail, ...(after?.(r) ?? {}), ok: true } }); return r; },
       (e: unknown) => { this.d.ingest.endCmd(ref, { detail: { ...detail, ok: false, error: e instanceof Error ? e.message : String(e) } }); throw e; },
@@ -118,7 +120,7 @@ export class RunHost {
       this.d.win.moved(tab, originOf(res.url || url.href));
       s.origin = originOf(res.url || url.href);
       return { url: res.url, title: res.title };
-    });
+    }, undefined, siteOfUrl(url.href) || undefined);
   }
 
   private async request(s: Session, a: { url: string; method?: string; headers?: Record<string, string>; json?: unknown; body?: string; inherit?: boolean; pageOrigin?: string; timeout?: number }): Promise<unknown> {

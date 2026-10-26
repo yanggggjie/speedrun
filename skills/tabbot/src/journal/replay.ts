@@ -1,31 +1,29 @@
+import { bodyToText, readableUrl } from "./reqfile.ts";
 import { BROWSER_HEADERS, isSafeMethod, UNREPLAYABLE_BODY } from "./replay-core.ts";
-import type { EventRow } from "./types.ts";
+import type { RequestFile } from "./types.ts";
 
 export { isSafeMethod };
 
-/** 日志里一个请求的样子（给人和 agent 看的）：地址、请求头、请求体里的秘密都是别名。真正重放用的原始内容在浏览器里，不在这里。 */
+/** 日志里一个请求的样子（给人和 agent 看的）：地址、请求头、请求体里的秘密都是别名。真正重放用的原始内容在 holder 内存里，不在这里。 */
 export type ReplayTemplate = { method: string; url: string; headers: Record<string, string>; body?: string };
 
 /** 签名、时间戳、一次性随机数这类每次请求都会变的头或参数：原样重放通常会被拒。 */
 const VOLATILE = /(^|[-_])(sign|signature|nonce|bogus|timestamp|zse|ts|t)([-_]|$)|^x-s(-common)?$|^msToken$|^a_bogus$/i;
 
-
-/** 从日志里的一行还原请求。不能重放（不是请求、是埋点、请求体没存全、是二进制）时说明原因。 */
-export function templateFromRow(row: EventRow): { template: ReplayTemplate; warnings: string[] } | { error: string } {
-  if (row.kind !== "net" || !row.url || !row.method) return { error: `#${row.seq} 不是一个请求（${row.kind} ${row.verb}）` };
-  if (row.verb === "replay") return { error: `#${row.seq} 本身就是一次重放，请用被重放的那个请求` };
-  if (row.noise) return { error: `#${row.seq} 是埋点或广告请求，不重放` };
-  let detail: { reqHeaders?: Record<string, string>; reqBody?: unknown; reqBodyTruncated?: boolean } = {};
-  try { detail = row.detail ? JSON.parse(row.detail) : {}; } catch { /* 没有细节 */ }
-  const body = typeof detail.reqBody === "string" ? detail.reqBody : detail.reqBody === undefined ? undefined : JSON.stringify(detail.reqBody);
-  if (body !== undefined && UNREPLAYABLE_BODY.test(body)) return { error: `#${row.seq} 的请求体是文件、二进制或表单数据，日志里没有内容，没法重放` };
+/** 从请求文件还原请求。不能重放（是埋点、请求体没存全、是二进制、本身就是重放）时说明原因。 */
+export function templateFromRequestFile(file: RequestFile, noise = false): { template: ReplayTemplate; warnings: string[] } | { error: string } {
+  if (file.requestType === "replay") return { error: `#${file.seq} 本身就是一次重放，请用被重放的那个请求（#${file.replayOf ?? "?"}）` };
+  if (noise) return { error: `#${file.seq} 是埋点或广告请求，不重放` };
+  const body = bodyToText(file.requestBody);
+  if (body !== undefined && UNREPLAYABLE_BODY.test(body)) return { error: `#${file.seq} 的请求体是文件、二进制或表单数据，日志里没有内容，没法重放` };
+  if (file.requestBodyTruncated) return { error: `#${file.seq} 的请求体太大，日志里没存全，没法重放` };
   const headers: Record<string, string> = {};
-  for (const [k, v] of Object.entries(detail.reqHeaders ?? {})) if (!BROWSER_HEADERS.test(k)) headers[k.toLowerCase()] = v;
+  for (const [k, v] of Object.entries(file.headers ?? {})) if (!BROWSER_HEADERS.test(k)) headers[k.toLowerCase()] = v;
   const warnings: string[] = [];
-  const volatile = [...Object.keys(headers).filter((k) => VOLATILE.test(k)), ...[...new URL(row.url.replace(/⟨[^⟩]*⟩/g, "x")).searchParams.keys()].filter((k) => VOLATILE.test(k))];
+  const volatile = [...Object.keys(headers).filter((k) => VOLATILE.test(k)), ...Object.keys(file.url.query).filter((k) => VOLATILE.test(k))];
   if (volatile.length) warnings.push(`带有签名或时间戳类的参数（${[...new Set(volatile)].join(", ")}），重放可能被服务器拒绝；被拒就改用 act`);
-  if (!isSafeMethod(row.method)) warnings.push(`${row.method} 请求可能有副作用（下单、提交、删除），重放要加 --yes，并先问过用户`);
-  return { template: { method: row.method, url: row.url, headers, ...(body !== undefined ? { body } : {}) }, warnings };
+  if (!isSafeMethod(file.method)) warnings.push(`${file.method} 请求可能有副作用（下单、提交、删除），重放要加 --yes，并先问过用户`);
+  return { template: { method: file.method, url: readableUrl(file.url), headers, ...(body !== undefined ? { body } : {}) }, warnings };
 }
 
 /** 响应的一行摘要：JSON 给顶层结构，其它给长度。 */

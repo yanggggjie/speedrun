@@ -1,5 +1,5 @@
 // task 的 SDK：task 脚本跑在 holder 的 worker 线程里，每个函数都是向 holder 发一个操作，holder 在 tabbot agent 窗口的标签页里执行。
-// 这个目录由 holder 启动时同步到 ~/.tabbot/task/lib，task 里 `import { ... } from "../task/lib/index.js"`（task 在 ~/.tabbot/task/ 下）。
+// 这个目录由 holder 启动时同步到 ~/.tabbot/lib，task 里 `import { ... } from "../../../lib/index.js"`（task 在 ~/.tabbot/sites/<站点>/tasks/ 下）。
 import { parentPort, workerData } from "node:worker_threads";
 
 let nextId = 1;

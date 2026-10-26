@@ -1,15 +1,16 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
-import { RUN_BUSY_WAIT_MS, RUN_DIR, RUN_HISTORY_KEEP, TASK_DIR } from "../utils/constants.ts";
+import { LIB_DIR, RUN_BUSY_WAIT_MS, RUN_DIR, RUN_HISTORY_KEEP, SITES_DIR } from "../utils/constants.ts";
 import { RunHost, Session } from "./host.ts";
-import { checkParams, taskFile, taskSummary, taskTimeoutMs, promoteTask, writeRunHistory } from "./tasks.ts";
+import { checkParams, findTask, taskSummary, taskTimeoutMs, promoteTask, writeRunHistory } from "./tasks.ts";
 import { MAIN_KEY } from "./window.ts";
 
 export type Outcome = { status: "success"; result: unknown; dry?: string[] } | { status: "failure"; error: string; failedTask?: string; dry?: string[] };
 
-export type RunnerPaths = { taskDir: string; runDir: string };
-const DEFAULT_PATHS: RunnerPaths = { taskDir: TASK_DIR, runDir: RUN_DIR };
+/** sitesDir：各站点的 tasks/ 在它下面；libDir：task SDK；runDir：运行历史。 */
+export type RunnerPaths = { sitesDir: string; libDir: string; runDir: string };
+const DEFAULT_PATHS: RunnerPaths = { sitesDir: SITES_DIR, libDir: LIB_DIR, runDir: RUN_DIR };
 const WORKER = path.join(import.meta.dirname, "worker.ts");
 const MAX_LOG_LINES = 50;
 
@@ -46,8 +47,9 @@ export class TaskRunner {
 
   /** 运行一个 task（run 命令或 compose 调用）。session 传进来表示嵌套调用，共用页面、不再抢锁。 */
   async runTask(name: string, params: Record<string, string>, nested?: Session, opts: RunOptions = {}): Promise<Outcome> {
-    const file = taskFile(this.paths.taskDir, name);
-    if (!fs.existsSync(file)) return { status: "failure", error: `task 不存在：${name}（tabbot task list 列出已有的）` };
+    const found = findTask(this.paths.sitesDir, name);
+    if (!found) return { status: "failure", error: `task 不存在：${name}（task 都在 ${this.paths.sitesDir}/<站点>/tasks/ 下，ls 看有哪些）` };
+    const file = found.file;
     if (nested && taskSummary(file).status === "draft") return { status: "failure", error: `[${name}] 是草稿（@status: draft），compose 里不允许调用；请先单独 run 并验证为 verified`, failedTask: name };
     const problem = checkParams(file, params);
     if (problem) return { status: "failure", error: `[${name}] ${problem}`, ...(nested ? { failedTask: name } : {}) };
@@ -77,11 +79,11 @@ export class TaskRunner {
     await this.lock(key);
     const session = new Session(key);
     session.composeOnly = true;
-    const dir = path.join(this.paths.taskDir, ".compose");
+    const dir = path.join(this.paths.sitesDir, ".compose");
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${Date.now()}-${process.pid}.mjs`);
     fs.writeFileSync(file, [
-      `import { tabbot } from ${JSON.stringify(path.join(this.paths.taskDir, "lib", "index.js"))};`,
+      `import { tabbot } from ${JSON.stringify(path.join(this.paths.libDir, "index.js"))};`,
       "const task = (name, params) => tabbot.task(name, params);",
       "await tabbot.run(async () => {",
       code,

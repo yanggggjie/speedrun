@@ -1,9 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { TASK_DIR, TASK_TIMEOUT_MS } from "../utils/constants.ts";
+import { LIB_DIR, TASK_TIMEOUT_MS } from "../utils/constants.ts";
+import { siteDirName } from "../utils/url.ts";
 
 export interface TaskSummary {
   name: string;
+  /** task 所在的站点目录名（sites/<站点>/tasks/<名字>.js）。 */
+  site: string;
   /** 文件头 `@endpoint 方法 路径`：这份 task 覆盖的接口（一份 task 一个请求）。 */
   endpoints: string[];
   status: string;
@@ -35,6 +38,7 @@ export function taskSummary(file: string): TaskSummary {
   const timeout = Number(first("timeout"));
   return {
     name: path.basename(file, ".js"),
+    site: path.basename(path.dirname(path.dirname(file))),
     endpoints: tags.filter(([key]) => key === "endpoint").map(([, value]) => value.trim().replace(/\s+/g, " ")),
     status: first("status") || "verified",
     summary: first("summary"),
@@ -87,13 +91,39 @@ export function taskTimeoutMs(file: string): number {
   return declared ? declared * 1000 : TASK_TIMEOUT_MS;
 }
 
-export function taskFile(taskDir: string, name: string): string {
-  return path.join(taskDir, `${name}.js`);
+/** task 脚本的位置：<sitesDir>/<站点>/tasks/<名字>.js。 */
+export function taskFile(tasksDir: string, name: string): string {
+  return path.join(tasksDir, `${name}.js`);
 }
 
-export function listTasks(taskDir: string): TaskSummary[] {
-  if (!fs.existsSync(taskDir)) return [];
-  return fs.readdirSync(taskDir).filter((f) => f.endsWith(".js")).sort().map((f) => taskSummary(path.join(taskDir, f)));
+export function tasksDirOf(sitesDir: string, site: string): string {
+  return path.join(sitesDir, siteDirName(site), "tasks");
+}
+
+/** 站点目录名（有 tasks/ 的），按字母序；忽略以 . 开头的目录（.compose 等）。 */
+function siteDirs(sitesDir: string): string[] {
+  if (!fs.existsSync(sitesDir)) return [];
+  return fs.readdirSync(sitesDir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => e.name).sort();
+}
+
+/** 按 task 名在所有站点里找（task 名全局唯一）。 */
+export function findTask(sitesDir: string, name: string): { file: string; site: string } | undefined {
+  for (const site of siteDirs(sitesDir)) {
+    const file = taskFile(tasksDirOf(sitesDir, site), name);
+    if (fs.existsSync(file)) return { file, site };
+  }
+  return undefined;
+}
+
+/** 列出 task；给了 site 就只列这个站点的，否则列所有站点的。 */
+export function listTasks(sitesDir: string, site?: string): TaskSummary[] {
+  const out: TaskSummary[] = [];
+  for (const s of site ? [siteDirName(site)] : siteDirs(sitesDir)) {
+    const dir = tasksDirOf(sitesDir, s);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".js")).sort()) out.push(taskSummary(path.join(dir, f)));
+  }
+  return out;
 }
 
 /** 把一次运行的输入与输出写到 <runDir>/<name>/<时间戳>.json，并删除超出份数的旧记录。 */
@@ -108,12 +138,11 @@ export function writeRunHistory(runDir: string, name: string, entry: unknown, ke
   for (const old of files.slice(0, Math.max(0, files.length - keep))) fs.rmSync(path.join(dir, old), { force: true });
 }
 
-/** 把 src/task-lib 同步到 ~/.tabbot/task/lib：task 脚本从 ../task/lib/index.js 引用 SDK，holder 每次启动都覆盖，保证和代码一致。 */
-export function syncTaskLib(taskDir = TASK_DIR, from = path.join(import.meta.dirname, "..", "task-lib")): void {
-  const to = path.join(taskDir, "lib");
-  fs.mkdirSync(taskDir, { recursive: true });
-  fs.rmSync(to, { recursive: true, force: true });
-  fs.cpSync(from, to, { recursive: true });
+/** 把 src/task-lib 同步到 ~/.tabbot/lib：task 脚本（sites/<站点>/tasks/）从 ../../../lib/index.js 引用 SDK，holder 每次启动都覆盖，保证和代码一致。 */
+export function syncTaskLib(libDir = LIB_DIR, from = path.join(import.meta.dirname, "..", "task-lib")): void {
+  fs.mkdirSync(path.dirname(libDir), { recursive: true });
+  fs.rmSync(libDir, { recursive: true, force: true });
+  fs.cpSync(from, libDir, { recursive: true });
 }
 
 /** 真跑成功一次就把文件头的 `@status: draft` 改成 verified；已经是 verified 或没有 @status 的不动。 */
@@ -125,9 +154,14 @@ export function promoteTask(file: string): boolean {
   return true;
 }
 
-/** 所有 task 覆盖的接口：键是 `方法 路径`（路径写法和 tabbot api 输出的一致），值是 task 名。 */
-export function coveredEndpoints(taskDir: string): Map<string, string> {
+/** 这个站点的 task 覆盖的接口：键是 `方法 接口名`（和 endpoints.json 的 key 一致），值是 task 名。 */
+export function coveredEndpoints(sitesDir: string, site: string): Map<string, string> {
   const out = new Map<string, string>();
-  for (const r of listTasks(taskDir)) for (const e of r.endpoints) out.set(e, r.name);
+  for (const r of listTasks(sitesDir, site)) for (const e of r.endpoints) out.set(e, r.name);
   return out;
+}
+
+/** 还没验证的草稿（@status: draft）。 */
+export function draftTasks(sitesDir: string): TaskSummary[] {
+  return listTasks(sitesDir).filter((t) => t.status === "draft");
 }

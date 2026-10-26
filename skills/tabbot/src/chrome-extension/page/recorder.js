@@ -69,7 +69,7 @@
     const p = prevFetch.apply(this, arguments);
     if (!fg) { bg++; return p; }
     p.then(async (res) => {
-      const rec = { k: "net", via: "fetch", id, rid: docId + ":" + id, url, finalUrl: res.url, method, reqHeaders, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0) };
+      const rec = { k: "net", via: "fetch", id, rid: docId + ":" + id, url, finalUrl: res.url, method, reqHeaders, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0), at: Math.round(t0) };
       try {
         if (!res.body) { rec.size = 0; rec.body = ""; }
         else if (readBodyOf(url, rec.ct)) {
@@ -86,7 +86,7 @@
         }
       } catch (e) { rec.bodyErr = String(e); }
       post(rec);
-    }, (e) => post({ k: "net", via: "fetch", id, rid: docId + ":" + id, url, method, reqHeaders, reqBody, err: String(e) }));
+    }, (e) => post({ k: "net", via: "fetch", id, rid: docId + ":" + id, url, method, reqHeaders, reqBody, err: String(e), ms: Math.round(performance.now() - t0), at: Math.round(t0) }));
     return p;
   };
 
@@ -108,7 +108,7 @@
         t.reqBody = bodyStr(b);
         const t0 = performance.now();
         this.addEventListener("loadend", () => {
-          const xid = ++seq, rec = { k: "net", via: "xhr", id: xid, rid: docId + ":" + xid, ...t, finalUrl: this.responseURL, status: this.status, ct: this.getResponseHeader("content-type"), ms: Math.round(performance.now() - t0) };
+          const xid = ++seq, rec = { k: "net", via: "xhr", id: xid, rid: docId + ":" + xid, ...t, finalUrl: this.responseURL, status: this.status, ct: this.getResponseHeader("content-type"), ms: Math.round(performance.now() - t0), at: Math.round(t0) };
           try {
             if (readBodyOf(t.url, rec.ct)) {
               const rt = this.responseType;
