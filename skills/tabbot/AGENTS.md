@@ -27,7 +27,7 @@ TabBot 完全以原始源码分发：`skills/tabbot/` 整个目录（源码、`s
 
 ### 2.1.1 调试触发：用 Claude in Chrome
 
-在真实 Chrome 里调试时，用 Claude in Chrome 触发页面操作（导航、点击、滚动、输入），TabBot 的常驻录制同时记录，再用 `tabbot log`、`tabbot api`、`tabbot context` 检查结果。流程：本地安装 → 在 `chrome://extensions` 加载或刷新 `~/.tabbot/src/chrome-extension` → 用 Claude in Chrome 在测试 tab 里操作 → 读日志。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `human`；它在后台标签页里加载的页面按设计不会被完整记录（后台只计数）。
+在真实 Chrome 里调试时，用 Claude in Chrome 触发页面操作（导航、点击、滚动、输入），TabBot 的常驻录制同时记录，再读 `~/.tabbot/sites/<站点>/` 下的文件检查结果（`endpoints.json`、`log/*/timeline.*.jsonl`、请求文件，格式见 `SKILL.md` 第 3 节）。流程：本地安装 → 在 `chrome://extensions` 加载或刷新 `~/.tabbot/src/chrome-extension` → 用 Claude in Chrome 在测试 tab 里操作 → 读日志。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `user`，写进 `timeline.user.jsonl`；它在后台标签页里加载的页面按设计不会被完整记录（后台只计数）。
 
 ### 2.2 检查与测试
 
@@ -53,11 +53,11 @@ npm run verify:pack
 **不再模拟扩展**：没有假扩展、没有桩 `chrome.*`、没有起 Chrome for Testing 的端到端脚本。改了扩展、页面脚本、agent 窗口、task 运行时之后，用真实的 Chrome 验证：
 
 1. `node skills/tabbot/setup.js` 重装到 `~/.tabbot`；改了 `background.js`、`manifest.json`、`page/` 下的页面脚本要在 `chrome://extensions` 里刷新 TabBot；只改了 holder、CLI、`src/run/` 的 `tabbot daemon restart` 即可。`tabbot doctor` 的 `extension-abi` 提示扩展是否太旧。
-2. 用 Claude in Chrome 在真实页面里触发行为（导航、点击、滚动、输入），TabBot 的常驻录制同时记录；再用 `tabbot context`、`api`、`log` 检查。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `human`。
-3. 走一遍 主 agent 派 subagent：`tabbot delegate <task 名> --goal …`，把 brief 交给 subagent，确认它在自己的 agent 窗口里调试、写出 task，`tabbot run` 跑通，`tabbot log --src agent` 对得上。
+2. 用 Claude in Chrome 在真实页面里触发行为（导航、点击、滚动、输入），TabBot 的常驻录制同时记录；再读 `~/.tabbot/sites/<站点>/` 下的文件检查：站点目录名是页面的 host（去 `www.`）、`timeline.user.jsonl`、请求文件、`endpoints.json` 里的 `phase` 统计要和实际操作相符。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `user`。至少在三个站点上试：一个公共站点、一个 GraphQL 站点、一个公司内部多子域站点。
+3. 走一遍 主 agent 派 subagent：`tabbot delegate <task 名> --goal …`，把 brief 交给 subagent，确认它读了 `material/manifest.json`、在自己的 debug 窗口里调试、写出 `sites/<站点>/tasks/<名>.js`，`tabbot run … --window <号>` 跑通后窗口收回；`log/*/timeline.<窗口号>.jsonl` 里是它做的一切。并行派两个 subagent（同一站点、不同 task），确认第二个的材料排除了第一个的行。重启 holder，确认窗口清空、编号继续递增、`endpoints.json` 读回。
 4. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露“等页面加载完”这类问题）：量 `tabbot debug … open`、`tabbot run` 的耗时。
 
-日常 Chrome 里测试时日志含登录态内容，在 `~/.tabbot/journal`；测完删除该目录。
+日常 Chrome 里测试时日志含登录态内容，在 `~/.tabbot/sites`；测完删除该目录（旧版本留下的 `journal.old`、`task.old` 同理）。
 
 ### 2.4 命名与约定
 

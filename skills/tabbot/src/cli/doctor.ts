@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { SESSION_DIR, TABBOT_HOME } from "../utils/constants.ts";
 import { tryPing } from "./session.ts";
-import { status as journalStatus } from "../journal/query.ts";
+import { SiteLog } from "../journal/sitelog.ts";
 import { readVersion } from "../store/version.ts";
 import { chromeRunning } from "../browser/connect.ts";
 import { ABI } from "../browser/extension.ts";
@@ -78,11 +78,11 @@ async function collectChecks(): Promise<Check[]> {
   });
 
   // 日志：几段、多少事件、占了多少空间
-  const journal = await journalStatus().catch(() => null);
+  const usage = (() => { try { const l = new SiteLog(); l.open(); return l.usage(); } catch { return null; } })();
   add({
     name: "journal",
     ok: true,
-    detail: `${journal?.segments ?? 0} 段 ${journal?.events ?? 0} 条事件，${((journal?.bytes ?? 0) / 1024 / 1024).toFixed(1)}MB`,
+    detail: `${Object.keys(usage?.sites ?? {}).length} 个站点，轻量层 ${((usage?.light ?? 0) / 1024 / 1024).toFixed(1)}MB，重量层 ${((usage?.heavy ?? 0) / 1024 / 1024).toFixed(1)}MB`,
     fix: "",
     optional: true,
   });

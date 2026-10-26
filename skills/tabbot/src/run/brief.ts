@@ -1,18 +1,45 @@
-import type { Ticket } from "./tickets.ts";
+import type { EndpointJson } from "../journal/endpoints.ts";
+import type { Manifest } from "../journal/material.ts";
+import { DEBUG_IDLE_MS, DEBUG_MAX_OPS, type DebugWindow } from "./debug-windows.ts";
+
+export type BriefInfo = {
+  siteDir: string;
+  tasksDir: string;
+  /** debug 窗口的工作区：草稿、中间结果放这里，窗口收回时整个删除。 */
+  workDir: string;
+  materialDir: string;
+  logDir: string;
+  libDir: string;
+  manifest: Manifest;
+  endpoint?: string;
+  stat?: EndpointJson;
+  /** --fix 或续草稿时已有的 task 文件。 */
+  existing?: string;
+};
 
 /**
  * 派 subagent 时给 subagent 的 brief：自包含，subagent 不需要读别的文档。
- * 讲清楚为什么 主 agent 和 subagent 要分开，让 subagent 知道自己的目标是把 task 写对，不是替用户把眼前的事做完。
+ * 讲清楚为什么 主 agent 和 subagent 要分开，让 subagent 知道自己的目标是把 task 写对，不是替用户把眼前的事做完；
+ * 数据是文件，用 rg / node / Python 读。
  */
-export function makeBrief(t: Ticket, taskDir: string): string {
-  const dbg = `tabbot debug --ticket ${t.id}`;
+export function makeBrief(t: DebugWindow, info: BriefInfo): string {
+  const dbg = `tabbot debug --window ${t.id}`;
+  const taskFile = `${info.tasksDir}/${t.task}.js`;
+  const own = `${info.logDir}/*/timeline.${t.id}.jsonl`;
+  const warnings = info.manifest.warnings.length ? info.manifest.warnings.map((w) => `  - ${w}`).join("\n") : "  （无）";
+  const stat = info.stat
+    ? `
+  - 在日志里出现 ${info.stat.count} 次（用户动作引发 ${info.stat.userTriggered} 次，页面加载期 ${info.stat.onLoad} 次，其余 ${info.stat.idle} 次），最近一次 #${info.stat.lastSeq} ${info.stat.lastStatus ?? ""}，最近的触发动作：${info.stat.lastCause ?? "无"}
+  - 变量：${info.stat.variables.join(", ") || "无"}；响应结构：${info.stat.shape ?? "未知"}；原始请求${info.stat.replayable ? "还在内存里，可以直接重放" : "已不在内存里（replayable 为 false），要自己触发一次才能重放"}`
+    : "";
   return `你是 subagent（TabBot 的 task 作者）。主 agent 派你为下面的目标学会一份 task，写好交回去。
 
 # 目标
 ${t.goal}
-- task 名：${t.task}${t.fix ? "（已存在，你要修好它）" : ""}
-- 站点：${t.site || "（未指定，自己判断）"}
-- 票据：${t.id}（调试命令都要带 --ticket ${t.id}；最多 ${80} 次调试操作；你有自己独立的 agent 窗口，不会打扰用户）
+- task 名：${t.task}${t.fix ? `（已存在，你要接着做或修好它：${info.existing ?? taskFile}）` : ""}
+- 站点：${t.site}（一个 subagent 只学一个站点的一个接口；页面要登录就停下来，回报请主 agent 转告用户，不要自己登录）
+- 接口：${info.endpoint ?? "（没指定，自己从材料里判断用户做的是哪一个）"}${stat}
+- debug 窗口：${t.id}（调试命令都要带 --window ${t.id}；最多 ${DEBUG_MAX_OPS} 次调试操作；这是你自己独立的 agent 窗口，不会打扰用户；${Math.round(DEBUG_IDLE_MS / 60_000)} 分钟没有操作会被收回）
 
 # 为什么分主 agent 和 subagent
 - 调试一次慢，按 task 执行只要几十毫秒：批量的事（点 10 个赞、取 30 条）用 task 循环就是最快的做法。
@@ -20,15 +47,37 @@ ${t.goal}
 - 你的试错、失败的尝试、响应原文只留在你这里，主 agent 只收到 task 和一份回报。
 - 主 agent 没有调试权限，所以这份 task 就是主 agent 能用的全部。写清楚、写对。
 
+# 你手里的材料（都是文件，用 rg / node / Python 读；没有读日志的 TabBot 命令）
+- 交接材料（派你时导出的，冻结的）：${info.materialDir}/
+  - manifest.json：里面有什么、缺什么。**先读它。** 当前的缺口：
+${warnings}
+  - timeline.<窗口>.jsonl：一行一条，type 是 request / action / nav / cmd / tab / bg；win 是窗口（user 是用户自己，run 是主 agent，debug-… 是别的 subagent 留下的历史）；request 行的 cause 是引发它的动作的 seq，causeDt 是相隔毫秒，phase 是 load（页面刚加载）/ action（动作引发）/ idle（轮询等）。
+  - <段>/<编号>_<方法>_<地址>.json：一个请求的完整元数据（url.query 和 requestBody 已解析成对象，秘密是 ⟨secret_…⟩ 别名）；.response.json 是响应体（只给了锚点请求的）。
+- 这个站点的接口清单：${info.siteDir}/endpoints.json（每个接口的次数、阶段统计、变量、响应结构、样本、被哪个 task 覆盖）。
+- 全部日志（会随时间增长，包含用户此刻的操作，和你无关的别去读）：${info.logDir}/<段>/。
+- 你自己干了什么：cat ${own}
+- 你的工作区：${info.workDir}/（草稿放这里）。已有的 task：${info.tasksDir}/。
+
 # 怎么做
-1. 先看已有的：\`tabbot api ${t.site || "<站点>"}\`、\`tabbot context ${t.site || "<站点>"}\`、\`tabbot task list\`。用户做过的操作和它引发的请求都在日志里，**有请求就用请求**（\`tabbot req show <编号>\` 给出可粘贴的 request 代码和 @endpoint 行）。
-2. 请求能直接重放：\`${dbg} replay <编号> --set 名字=值\`。非 GET 的请求你可以真的发（学习需要），但只做学习所必需的最少几次（比如点一个样本），批量留给主 agent。
+1. 读 manifest.json，再读目标接口的请求文件：方法、地址、请求体里哪些是变量、响应长什么样。**有请求就用请求。**
+2. 请求能直接重放：\`${dbg} replay <编号> --set 名字=值\`（编号是请求文件名开头的数字）。非 GET 的请求你可以真的发（学习需要），但只做学习所必需的最少几次，批量留给主 agent。原始请求不在内存里时（replayable 为 false）：\`${dbg} open <网址>\`、\`${dbg} act click …\` 自己在页面上触发一次，它就进内存了，再用新的编号重放。
 3. 没有请求或被拒才操作页面：\`${dbg} open <网址>\`、\`${dbg} snapshot\`、\`${dbg} text\`、\`${dbg} act click|fill|... <目标>\`（目标：@e12、CSS、或 {"role":"button","name":"提交"}）。act 会告诉你它的持久定位和引发的请求——**有请求就改用请求**。
-4. 写 task：\`tabbot task new ${t.task}\` 生成骨架，放在 ${taskDir}/${t.task}.js。**一份 task 只覆盖一个请求**，文件头写一行 \`@endpoint 方法 路径\`（路径写法和 tabbot api 输出的一致），\`@summary\`、\`@param\`。
-5. 跑通它：\`tabbot run ${t.task} --参数 值 --ticket ${t.id}\`（有副作用且想先看看会发什么：加 \`--dry\`）。跑通一次它自动变成 verified。
+4. 写 task：直接写文件 ${taskFile}（一份 task 只覆盖一个接口）。文件头：
+
+\`\`\`javascript
+/**
+ * @summary 一句话：做什么
+ * @status: draft
+ * @endpoint ${info.endpoint ?? "方法 接口名"}
+ * @param 参数名 说明（可选参数写成 参数名? 说明）
+ * @note 经验：签名、风控、必须先做的步骤、踩过的坑（一行一条）
+ */
+\`\`\`
+
+5. 跑通它：\`tabbot run ${t.task} --参数 值 --window ${t.id}\`（有副作用且想先看看会发什么：加 \`--dry\`）。跑通一次它自动变成 verified，你的 debug 窗口随之收回。做不下去就 \`${dbg} close\` 放弃，再写回报。
 
 # 写 task 的规则
-- SDK：\`import { tabbot, goto, request, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../task/lib/index.js"\`，入口 \`await tabbot.run(async ({ page }) => { ... })\`，返回值就是结果。
+- SDK：\`import { tabbot, goto, request, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../../../lib/index.js"\`（路径相对 ${info.tasksDir}/，SDK 在 ${info.libDir}/），入口 \`await tabbot.run(async ({ page }) => { ... })\`，返回值就是结果。
 - \`request(page, {url, method?, headers?, json?})\` 默认继承页面自己最近发出的请求头（token 真值只在 holder 内存里）；内存里没有可继承的头时会自动打开站点首页让页面自己发请求。
 - 参数用 \`tabbot.params.名字\`（字符串）；变化的值（id、关键词、页码）都做成参数。
 - 成功判断：检查 HTTP 状态码和业务码；结果必须对应本次参数；有副作用的先读状态，已满足返回 already；返回被操作对象的稳定 id。
@@ -40,6 +89,6 @@ ${t.goal}
 - 验证结果：真跑了几次、成败、返回了什么（摘要，不带响应原文）
 - **副作用清单**：你真实做过什么（方法、地址、对象 id、时间、日志编号 #…），没有就写“无”
 - 遗留问题（签名、风控、没覆盖的分支）
-你的所有操作都在日志里（tabbot log --src agent），主 agent 会对照。如实写。
+你的所有操作都在日志里，副作用清单如实写。
 `;
 }

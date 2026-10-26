@@ -1,4 +1,4 @@
-export const USAGE = "用法：tabbot task list|new | run | compose | delegate | api | context | tabs | log | sql | req | status | debug（subagent 用）| daemon restart | doctor [--json]";
+export const USAGE = "用法：tabbot run | compose | delegate | tabs | status | debug --window <窗口号>（subagent 用）| daemon restart | doctor [--json]；日志和 task 是文件，在 ~/.tabbot/sites/<站点>/ 下，见 SKILL.md";
 export type HandshakeStatus = "need-install" | "need-chrome" | "need-extension";
 export type RpcMethod = "ping" | "run";
 export type JsonRpcRequest = { jsonrpc: "2.0"; id: string; method: RpcMethod; params?: Record<string, unknown> };

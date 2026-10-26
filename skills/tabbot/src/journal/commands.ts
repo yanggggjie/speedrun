@@ -1,27 +1,29 @@
 /**
  * 命令行的全部命令都在这里：tabbot <argv> 原样发给 holder，holder 调 runCommand，返回文本和退出码，CLI 只负责打印。
  * 第一行是结论；失败是 { status: "failure", error }，握手类失败是 { status: "need-*", guide }，退出码非零。
+ *
+ * 只保留必须由 TabBot 做的事：控制浏览器（run / compose / delegate / debug）、持有不能落盘的原始请求（debug replay）、运维。
+ * 读日志不是命令：日志是 <sitesDir>/<站点>/ 下的文件（timeline.<窗口>.jsonl、请求文件、endpoints.json），用 rg / node / Python 读，见 SKILL.md。
  */
 import * as fs from "node:fs";
-import * as os from "node:os";
+import * as path from "node:path";
 import { USAGE, handshakeStatusFromError, formatErrorStdout, formatHandshakeStdout } from "../protocol.ts";
-import { JOURNAL_CAP_BYTES, JOURNAL_DIR, TASK_DIR } from "../utils/constants.ts";
-import { TICKET_MAX_OPS } from "../run/tickets.ts";
+import { LOG_LIMITS, MB } from "../utils/constants.ts";
+import { DEBUG_MAX_OPS, type DebugWindow, type DebugWindows } from "../run/debug-windows.ts";
 import { Session, type RunHost } from "../run/host.ts";
 import { makeBrief } from "../run/brief.ts";
-import type { Tickets } from "../run/tickets.ts";
 import type { TaskRunner } from "../run/runner.ts";
-import { coveredEndpoints, listTasks, parseCliParams, taskFile } from "../run/tasks.ts";
+import { draftTasks, findTask, parseCliParams, tasksDirOf } from "../run/tasks.ts";
 import type { AgentWindows } from "../run/window.ts";
-import { buildCatalog, buildContext, endpointOf, formatCatalog, normalizeSite } from "./digest.ts";
-import { formatEvent } from "./format.ts";
+import { normalizeSite } from "./digest.ts";
+import type { EndpointIndex } from "./endpoints.ts";
 import type { Ingestor } from "./ingest.ts";
-import { findInBodies, formatRows, lastSeq, readEvents, readEventBySeq, runSql, status as journalStatus } from "./query.ts";
+import { exportMaterial } from "./material.ts";
 import type { RawStore } from "./raw.ts";
 import { applySets, isSafeMethod, replayHeaders, UNREPLAYABLE_BODY } from "./replay-core.ts";
-import { summarizeBody, templateFromRow } from "./replay.ts";
+import { summarizeBody, templateFromRequestFile } from "./replay.ts";
 import { renderSnapshot, type Snapshot } from "./render.ts";
-import type { EventRow, Src } from "./types.ts";
+import type { SiteLog } from "./sitelog.ts";
 
 export type TabInfo = { tabId: number; windowId: number; active: boolean; url: string; title: string; status: string; anchor?: boolean };
 
@@ -33,12 +35,14 @@ export interface Ctx {
   host: RunHost;
   runner: TaskRunner;
   win: AgentWindows;
-  tickets: Tickets;
-  /** 调试用的页面，按票据号各一个（每个 subagent 有自己的 agent 窗口）。 */
+  debugWindows: DebugWindows;
+  /** 调试用的页面，按 debug 窗口号各一个（每个 subagent 有自己的 agent 窗口）。 */
   sessions: Map<string, Session>;
   ingest: Ingestor;
   raw: RawStore;
-  taskDir?: string;
+  /** 站点日志；log.dir 就是 sites 目录（task 也在它下面）。 */
+  log: SiteLog;
+  index: EndpointIndex;
   daemon(): { extension: boolean; pid: number };
 }
 
@@ -80,8 +84,10 @@ function intFlag(flags: Flags, name: string): number | undefined | { error: stri
   return Number.isInteger(n) && n >= 0 ? n : { error: `--${name} 需要非负整数` };
 }
 
-
 const isError = (v: unknown): v is { error: string } => typeof v === "object" && v !== null && "error" in v;
+
+/** 已经没有的命令：日志和 task 现在是文件，给出去哪里读，免得 agent 按老习惯一直试。 */
+const REMOVED = new Set(["log", "sql", "req", "context", "api", "task", "replay", "open", "snapshot", "act"]);
 
 /** 执行一条命令。argv 是 `tabbot` 后面的全部参数。 */
 export async function runCommand(argv: string[], ctx: Ctx): Promise<{ stdout: string; code: number }> {
@@ -89,19 +95,15 @@ export async function runCommand(argv: string[], ctx: Ctx): Promise<{ stdout: st
   const [cmd, ...args] = argv;
   try {
     switch (cmd) {
-      case "context": await contextCommand(args, out); break;
-      case "api": await apiCommand(args, ctx, out); break;
       case "tabs": await tabsCommand(ctx, out); break;
-      case "log": await logCommand(args, out); break;
-      case "sql": await sqlCommand(args, out); break;
       case "status": await statusCommand(ctx, out); break;
-      case "req": await reqCommand(args, out); break;
-      case "task": await taskCommand(args, ctx, out); break;
       case "run": await runTaskCommand(args, ctx, out); break;
       case "compose": await composeCommand(args, ctx, out); break;
       case "delegate": await delegateCommand(args, ctx, out); break;
       case "debug": await debugCommand(args, ctx, out); break;
-      default: out.fail(USAGE);
+      default:
+        if (cmd && REMOVED.has(cmd)) out.fail(`tabbot ${cmd} 已经没有了：日志和 task 是文件，在 ${ctx.log.dir}/<站点>/ 下（endpoints.json 是接口清单，log/<段>/timeline.<窗口>.jsonl 是时间线，tasks/ 是 task），用 rg / node / Python 读，格式见 SKILL.md。调试用 tabbot debug --window <窗口号> …，由 subagent 做。`);
+        else out.fail(USAGE);
     }
   } catch (error) {
     const status = handshakeStatusFromError(error);
@@ -111,45 +113,7 @@ export async function runCommand(argv: string[], ctx: Ctx): Promise<{ stdout: st
   return out.result();
 }
 
-
 // ---- 观察 ----
-
-/** 日志行里有 cause 指向更早的行（可能不在已读出的这批里）：把缺的补读出来，返回按 seq 查的函数。 */
-async function causeResolver(rows: EventRow[]): Promise<(seq: number) => EventRow | undefined> {
-  const bySeq = new Map(rows.map((r) => [r.seq, r]));
-  for (const seq of new Set(rows.map((r) => r.cause).filter((c): c is number => typeof c === "number" && !bySeq.has(c)))) {
-    const row = await readEventBySeq(seq);
-    if (row) bySeq.set(seq, row);
-  }
-  return (seq) => bySeq.get(seq);
-}
-
-/** tabbot context [站点] [--minutes 180]：用户最近在各个站点上做了什么——接到任务的第一步。 */
-async function contextCommand(args: string[], out: Output): Promise<void> {
-  const flags = parseFlags(args);
-  if ("error" in flags) return out.fail(flags.error);
-  const minutes = intFlag(flags, "minutes"); if (isError(minutes)) return out.fail(minutes.error);
-  const window = (minutes as number | undefined) || 180;
-  const site = flags.rest[0] ? normalizeSite(flags.rest[0]) : undefined;
-  if (flags.rest[0] && !site) return out.fail(`不是有效的站点：${flags.rest[0]}`);
-  const since = Date.now() - window * 60_000;
-  const rows = (await readEvents({ limit: 5000 })).filter((r) => r.ts >= since);
-  for (const line of buildContext(rows, { causeOf: await causeResolver(rows), minutes: window, site })) out.line(line);
-}
-
-/** tabbot api <站点> [-n 30]：这个站点上出现过的接口，以及触发它们的用户操作——找"能不能直接重放"的第一步。 */
-async function apiCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
-  const flags = parseFlags(args);
-  if ("error" in flags) return out.fail(flags.error);
-  const n = intFlag(flags, "n"); if (isError(n)) return out.fail(n.error);
-  const site = normalizeSite(flags.rest[0] ?? "");
-  if (!site) return out.fail("用法：tabbot api <站点>（如 tabbot api x.com）");
-  const rows = await readEvents({ limit: 20_000 });
-  const canReplay = (row: EventRow): boolean => {
-    try { const rid = (JSON.parse(row.detail ?? "{}") as { rid?: string }).rid; return !!rid && !!ctx.raw.get(row.tab, rid); } catch { return false; }
-  };
-  for (const line of formatCatalog(buildCatalog(rows, site, { causeOf: await causeResolver(rows), canReplay }), site, (n as number | undefined) || 30, coveredEndpoints(ctx.taskDir ?? TASK_DIR))) out.line(line);
-}
 
 /** 你自己（用户）的标签页；tabbot agent 窗口里 agent 的页面不在这里。 */
 async function tabsCommand(ctx: Ctx, out: Output): Promise<void> {
@@ -160,81 +124,74 @@ async function tabsCommand(ctx: Ctx, out: Output): Promise<void> {
   for (const t of tabs) out.line(`tab${t.tabId} win${t.windowId} ${t.active ? "前台" : "后台"} ${t.url} "${t.title}"`);
 }
 
-
-async function logCommand(args: string[], out: Output): Promise<void> {
-  const flags = parseFlags(args, ["all", "json"]);
-  if ("error" in flags) return out.fail(flags.error);
-  const since = intFlag(flags, "since"), tab = intFlag(flags, "tab"), n = intFlag(flags, "n");
-  for (const v of [since, tab, n]) if (isError(v)) return out.fail(v.error);
-  const src = flags.values.get("src");
-  if (src !== undefined && !["human", "agent", "page"].includes(src)) return out.fail("--src 只能是 human、agent、page");
-  const rows = await readEvents({ since: since as number | undefined, tab: tab as number | undefined, src: src as Src | undefined, all: flags.bools.has("all"), limit: (n as number | undefined) ?? 50 });
-  if (flags.bools.has("json")) return out.line(JSON.stringify(rows, null, 1));
-  const cursor = rows.length ? rows[rows.length - 1]!.seq : (since as number | undefined) ?? (await lastSeq());
-  if (rows.length === 0) return out.line(`无新事件（游标 ${cursor}）`);
-  const humans = rows.filter((r) => r.src === "human").length;
-  out.line(`${rows.length} 条事件${humans ? `，其中人的操作 ${humans} 条` : ""}（游标 ${cursor}，下次加 --since ${cursor}）`);
-  out.line(formatRows(rows));
-}
-
-async function sqlCommand(args: string[], out: Output): Promise<void> {
-  const flags = parseFlags(args, ["json"]);
-  if ("error" in flags) return out.fail(flags.error);
-  const query = flags.rest.join(" ");
-  if (!query) return out.fail("用法：tabbot sql \"SELECT ... FROM events ...\"（表 events，最新的 10 段，只读）");
-  const limit = intFlag(flags, "limit");
-  if (isError(limit)) return out.fail(limit.error);
-  const res = await runSql(query, { limit: limit as number | undefined });
-  if (flags.bools.has("json")) return out.line(JSON.stringify(res, null, 1));
-  out.line(`${res.rows.length} 行${res.truncated ? "（已截断，加 --limit 调大）" : ""}`);
-  out.line(res.columns.join("\t"));
-  for (const row of res.rows) out.line(row.map((v) => (v === null ? "" : String(v))).join("\t"));
+async function statusCommand(ctx: Ctx, out: Output): Promise<void> {
+  const u = ctx.log.usage();
+  const mb = (n: number): string => (n / MB).toFixed(1);
+  out.line(`录制：${Object.keys(u.sites).length} 个站点，轻量层（时间线、请求文件）${mb(u.light)}MB / ${LOG_LIMITS.totalLight / MB}MB，重量层（响应体、文档、快照）${mb(u.heavy)}MB / ${LOG_LIMITS.totalHeavy / MB}MB，最新编号 #${ctx.log.lastSeq()}`);
+  const d = ctx.daemon();
+  out.line(`daemon：在运行 pid=${d.pid}，扩展${d.extension ? "已连接" : "未连接"}`);
+  const dbg = ctx.debugWindows.active();
+  out.line(dbg.length ? `debug 窗口：${dbg.map((w) => `${w.id}（${w.site}，${w.task}，${w.ops}/${DEBUG_MAX_OPS}）`).join("；")}` : "debug 窗口：无");
+  const drafts = draftTasks(ctx.log.dir).filter((t) => !dbg.some((w) => w.task === t.name));
+  if (drafts.length) out.line(`没完成的草稿 task（@status: draft）：${drafts.map((t) => `${t.name}（${t.site}）`).join("、")}；用 tabbot delegate <名字> --fix 续`);
+  out.line(`目录：${ctx.log.dir}（每个站点：endpoints.json、tasks/、log/<段>/）`);
 }
 
 // ---- 调试（subagent 的）：在自己的 agent 窗口里打开页面、看、操作。每一步都进日志 ----
 
-/** debug 子命令的入口：必须带 --ticket（主 agent 没有调试权限）。 */
-async function debugCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
-  let ticketId: string | undefined;
+/** 收回一个 debug 窗口（交付、放弃、超时）：登记、页面状态、浏览器窗口、工作区（含交接材料）一起清掉；它留下的日志是历史，不删。 */
+export async function releaseDebugWindow(ctx: Pick<Ctx, "debugWindows" | "sessions" | "win" | "log">, id: string): Promise<void> {
+  const w = ctx.debugWindows.finish(id);
+  ctx.sessions.delete(id);
+  await ctx.win.dispose(id);
+  if (w) fs.rmSync(path.join(ctx.log.siteDir(w.site), "debug", id), { recursive: true, force: true });
+}
+
+/** 取出 `--window <号>`（也认 `--window=<号>`），其余参数原样返回。 */
+function takeWindowFlag(args: string[]): { windowId: string | undefined; rest: string[] } {
+  let windowId: string | undefined;
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--ticket") ticketId = args[++i];
-    else if (a.startsWith("--ticket=")) ticketId = a.slice(9);
+    if (a === "--window") windowId = args[++i];
+    else if (a.startsWith("--window=")) windowId = a.slice(9);
     else rest.push(a);
   }
-  const t = ctx.tickets.use(ticketId);
-  if ("error" in t) return out.fail(t.error);
+  return { windowId, rest };
+}
+
+/** debug 子命令的入口：必须带 --window <debug 窗口号>（主 agent 的 run 窗口不能调试）。 */
+async function debugCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+  const { windowId, rest } = takeWindowFlag(args);
+  const w = ctx.debugWindows.use(windowId);
+  if ("error" in w) return out.fail(w.error);
   const [sub, ...subArgs] = rest;
-  let sess = ctx.sessions.get(t.id);
-  if (!sess) { sess = new Session(t.id); ctx.sessions.set(t.id, sess); }
-  out.line(`[调试] 票据 ${t.id}（${t.ops}/${TICKET_MAX_OPS}），目标 task：${t.task}`);
+  let sess = ctx.sessions.get(w.id);
+  if (!sess) { sess = new Session(w.id); ctx.sessions.set(w.id, sess); }
+  out.line(`[调试] debug 窗口 ${w.id}（${w.ops}/${DEBUG_MAX_OPS}），站点 ${w.site}，目标 task：${w.task}`);
   switch (sub) {
     case "open": return openCommand(subArgs, ctx, out, sess);
     case "snapshot": return snapshotCommand(subArgs, ctx, out, sess);
     case "text": return textCommand(subArgs, ctx, out, sess);
-    case "act": return actCommand(subArgs, ctx, out, sess);
-    case "close": return closeCommand(ctx, out, sess);
-    case "replay": return replayCommand(subArgs, ctx, out, t.id);
-    default: return out.fail("用法：tabbot debug --ticket <票据> open|snapshot|text|act|close|replay ...");
+    case "act": return actCommand(subArgs, ctx, out, sess, w);
+    case "replay": return replayCommand(subArgs, ctx, out, w);
+    case "close":
+      await releaseDebugWindow(ctx, w.id);
+      return out.line(`✓ 已放弃 task ${w.task}，debug 窗口 ${w.id} 已收回（工作区已删除）；把进展和副作用清单写进回报`);
+    default: return out.fail("用法：tabbot debug --window <窗口号> open|snapshot|text|act|replay|close ...");
   }
 }
 
 async function openCommand(args: string[], ctx: Ctx, out: Output, sess: Session): Promise<void> {
   const url = args[0];
-  if (!url) return out.fail("用法：tabbot debug open <网址>（在你自己的 agent 窗口里打开，不打扰用户）");
+  if (!url) return out.fail("用法：tabbot debug --window <窗口号> open <网址>（在你自己的 agent 窗口里打开，不打扰用户）");
   await ctx.ensureExtension();
   const res = (await ctx.host.op(sess, "goto", { url })) as { url: string; title: string };
   out.line(`✓ 已在 agent 窗口打开 ${res.url} "${res.title}"（debug snapshot 看元素，debug text 读文字）`);
 }
 
-async function closeCommand(ctx: Ctx, out: Output, sess: Session): Promise<void> {
-  await ctx.host.end(sess);
-  out.line("✓ 已还回调试用的页面");
-}
-
 function requireExplore(sess: Session): void {
-  if (sess.tab === undefined) throw new Error("agent 窗口里还没有打开页面：先 tabbot debug open <网址>");
+  if (sess.tab === undefined) throw new Error("agent 窗口里还没有打开页面：先 tabbot debug --window <窗口号> open <网址>");
 }
 
 async function snapshotCommand(args: string[], ctx: Ctx, out: Output, sess: Session): Promise<void> {
@@ -265,7 +222,7 @@ const REF = /^@?e\d+$/;
 const normRef = (r: string): string => (r.startsWith("@") ? r : `@${r}`);
 /** 目标：元素引用 @e12（来自 snapshot），或持久定位——CSS 选择器，或 JSON 如 {"role":"button","name":"提交"}。 */
 function targetOf(v: string | undefined): Partial<ActCmd> | { error: string } {
-  if (!v) return { error: "需要目标：元素引用 @e12（先 tabbot snapshot），或 CSS 选择器，或 JSON 定位 {\"role\":\"button\",\"name\":\"提交\"}" };
+  if (!v) return { error: "需要目标：元素引用 @e12（先 tabbot debug snapshot），或 CSS 选择器，或 JSON 定位 {\"role\":\"button\",\"name\":\"提交\"}" };
   if (REF.test(v)) return { ref: normRef(v) };
   if (v.startsWith("{")) { try { return { loc: JSON.parse(v) as unknown }; } catch { return { error: `定位不是合法 JSON：${v}` }; } }
   return { loc: v };
@@ -280,18 +237,18 @@ export function parseAct(args: string[]): { cmd: ActCmd } | { error: string } {
     case "click": { const t = targetOf(rest[0]); return isError(t) ? t : { cmd: { kind, ...t } }; }
     case "fill": case "select": {
       const t = targetOf(rest[0]); if (isError(t)) return t;
-      if (rest[1] === undefined) return { error: `用法：tabbot act ${kind} <目标> "文字"` };
+      if (rest[1] === undefined) return { error: `用法：tabbot debug act ${kind} <目标> "文字"` };
       return { cmd: { kind, ...t, text: rest.slice(1).join(" ") } };
     }
     case "check": { const t = targetOf(rest[0]); return isError(t) ? t : { cmd: { kind, ...t, checked: !flags.bools.has("off") } }; }
     case "press": {
-      if (!rest[0]) return { error: "用法：tabbot act press Enter [目标]（组合键如 Ctrl+K、Cmd+A）" };
+      if (!rest[0]) return { error: "用法：tabbot debug act press Enter [目标]（组合键如 Ctrl+K、Cmd+A）" };
       if (rest[1] === undefined) return { cmd: { kind, key: rest[0] } };
       const t = targetOf(rest[1]); return isError(t) ? t : { cmd: { kind, key: rest[0], ...t } };
     }
     case "scroll": {
       const dirIdx = rest.findIndex((x) => ["down", "up", "top", "bottom"].includes(x));
-      if (dirIdx < 0) return { error: "用法：tabbot act scroll down|up [像素] [目标] | scroll top|bottom [目标]" };
+      if (dirIdx < 0) return { error: "用法：tabbot debug act scroll down|up [像素] [目标] | scroll top|bottom [目标]" };
       const dir = rest[dirIdx]!;
       const after = rest.slice(dirIdx + 1);
       const amountArg = after[0] !== undefined && /^-?\d+(\.\d+)?$/.test(after[0]) ? after.shift() : undefined;
@@ -301,15 +258,17 @@ export function parseAct(args: string[]): { cmd: ActCmd } | { error: string } {
       const amount = amountArg === undefined ? 600 : Number(amountArg);
       return { cmd: { kind, dy: dir === "up" ? -amount : amount, ...target } };
     }
-    default: return { error: "用法：tabbot act click|fill|select|check|press|scroll ...（目标：@e12、CSS、或 JSON 定位；网址用 tabbot open）" };
+    default: return { error: "用法：tabbot debug act click|fill|select|check|press|scroll ...（目标：@e12、CSS、或 JSON 定位；网址用 tabbot debug open）" };
   }
 }
 
-async function actCommand(args: string[], ctx: Ctx, out: Output, sess: Session): Promise<void> {
+async function actCommand(args: string[], ctx: Ctx, out: Output, sess: Session, w: DebugWindow): Promise<void> {
   const parsed = parseAct(args);
   if ("error" in parsed) return out.fail(parsed.error);
   await ctx.ensureExtension();
   requireExplore(sess);
+  ctx.ingest.flush();
+  const before = ctx.log.lastSeq();
   const res = (await ctx.host.op(sess, "act", { ...parsed.cmd, settle: true })) as { navigated?: boolean; url?: string; title?: string; loc?: unknown; settle?: { settled: boolean; waitedMs: number } };
   const lines = [`✓ ${parsed.cmd.kind}${res.loc ? ` 持久定位 ${JSON.stringify(res.loc)}` : ""}${res.settle ? (res.settle.settled ? `（页面已稳定，等了 ${(res.settle.waitedMs / 1000).toFixed(1)}s）` : "（等了很久页面还在变化，没有稳定）") : ""}`];
   if (res.navigated) lines.push(`页面已跳转：${res.url ?? ""} "${res.title ?? ""}"`);
@@ -317,64 +276,35 @@ async function actCommand(args: string[], ctx: Ctx, out: Output, sess: Session):
   // 这一步引发的请求：有请求就改用请求
   await new Promise((r) => setTimeout(r, 100));
   ctx.ingest.flush();
-  const caused = (await readEvents({ since: Math.max(0, (await lastSeq()) - 30), tab: sess.tab, limit: 30 })).filter((r) => r.kind === "net" && !r.noise && r.src === "agent" && r.method && r.method !== "GET");
-  if (caused.length) lines.push(`这一步引发了请求：${caused.slice(-3).map((r) => `#${r.seq} ${r.method} ${r.url?.split("?")[0]}`).join("；")} —— 有请求就改用请求（tabbot req show <编号> 给出 request 代码）`);
+  const caused = ctx.log.readRows(w.site, { wins: [w.id], sinceSeq: before, limit: 60 }).filter((r) => r.type === "request" && !r.noise && r.requestType !== "replay" && r.method && r.method !== "GET");
+  if (caused.length) {
+    const show = caused.slice(-3).map((r) => `#${r.seq} ${r.method} ${r.url} → ${ctx.log.findRequestFile(w.site, r.seq)?.abs ?? "（请求文件未找到）"}`);
+    lines.push(`这一步引发了请求：\n  ${show.join("\n  ")}\n有请求就改用请求：读请求文件，用 tabbot debug --window ${w.id} replay <编号> 试，再写进 task。`);
+  }
   out.line(lines.join("\n"));
 }
 
 // ---- task：学会的做法 ----
 
-/** tabbot task list 列出；tabbot task new <名字> 生成带头注释的骨架。 */
-async function taskCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
-  const dir = ctx.taskDir ?? TASK_DIR;
-  const [name, ...rest] = args;
-  if (!name || name === "list") {
-    const tasks = listTasks(dir);
-    if (tasks.length === 0) return out.line("还没有 task。tabbot api <站点> 看有哪些接口，缺的用 tabbot delegate <task 名> --goal \"…\" 派 subagent 去学。");
-    return out.line(JSON.stringify(tasks, null, 2));
-  }
-  if (name !== "new") return out.fail("用法：tabbot task list | tabbot task new <名字> [--summary 一句话]；运行用 tabbot run <task 名>");
-  const flags = parseFlags(rest);
-  if ("error" in flags) return out.fail(flags.error);
-  const task = flags.rest[0];
-  if (!task || !/^[a-z0-9][a-z0-9-]*$/.test(task)) return out.fail("task 名用小写字母、数字和 -，如 zhihu-like-answer");
-  const file = taskFile(dir, task);
-  if (fs.existsSync(file)) return out.fail(`task 已存在：${file}`);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, [
-    "/**", ` * @summary ${flags.values.get("summary") ?? "（一句话：做什么）"}`, " * @status: draft", " * @endpoint 方法 接口名（和 tabbot api 输出的一致；一份 task 一个请求）", " * @param example? （参数；没有就删掉这行）", " */",
-    'import { tabbot, goto, request, click, fill, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../task/lib/index.js";', "",
-    "await tabbot.run(async ({ page }) => {", "  // 有请求就用请求：const res = await request(page, { method, url, json });", "  // 检查 res.status 和业务码；返回用户要的内容", "  return null;", "});", "",
-  ].join("\n"), "utf8");
-  out.line(`✓ 已生成骨架 ${file}`);
-}
-
-/** tabbot run <task> [--参数 值] [--dry] [--ticket 票据]：执行。用户拿到的结果必须来自这里。 */
+/** tabbot run <task> [--参数 值] [--dry] [--window 窗口号]：执行。用户拿到的结果必须来自这里。不带 --window 在 run 窗口里跑。 */
 async function runTaskCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
   const [name, ...rest0] = args;
-  if (!name) return out.fail("用法：tabbot run <task 名> [--参数 值 ...] [--dry]（tabbot task list 列出已有的）");
-  let dry = false, ticketId: string | undefined;
+  if (!name) return out.fail(`用法：tabbot run <task 名> [--参数 值 ...] [--dry]（task 在 ${ctx.log.dir}/<站点>/tasks/ 下，ls 看有哪些）`);
+  let dry = false;
   const rest: string[] = [];
-  for (let i = 0; i < rest0.length; i++) {
-    const a = rest0[i]!;
-    if (a === "--dry") dry = true;
-    else if (a === "--ticket") ticketId = rest0[++i];
-    else if (a.startsWith("--ticket=")) ticketId = a.slice(9);
-    else rest.push(a);
-  }
+  const { windowId, rest: rest1 } = takeWindowFlag(rest0);
+  for (const a of rest1) { if (a === "--dry") dry = true; else rest.push(a); }
   const parsed = parseCliParams(rest);
   if ("error" in parsed) return out.fail(parsed.error);
-  const ticket = ticketId ? ctx.tickets.get(ticketId) : undefined;
-  if (ticketId && !ticket) return out.fail(`票据 ${ticketId} 不存在或已失效`);
+  const dbg = windowId ? ctx.debugWindows.get(windowId) : undefined;
+  if (windowId && !dbg) return out.fail(`${windowId} 不是 debug 窗口，或已失效（holder 重启过？）`);
+  if (dbg?.done) return out.fail(`debug 窗口 ${dbg.id} 已经收回，不能再跑`);
+  if (dbg) dbg.lastActive = Date.now();
   await ctx.ensureExtension();
-  const outcome = await ctx.runner.runTask(name, parsed.params, undefined, { key: ticket?.id, dry });
+  const outcome = await ctx.runner.runTask(name, parsed.params, undefined, { key: dbg?.id, dry });
   if (outcome.status !== "success") out.code = 1;
-  // subagent 把自己那份 task 真跑通了：票据结束，窗口关掉
-  if (ticket && outcome.status === "success" && !dry && name === ticket.task) {
-    ctx.tickets.finish(ticket.id);
-    ctx.sessions.delete(ticket.id);
-    await ctx.win.dispose(ticket.id);
-  }
+  // subagent 把自己那份 task 真跑通了：debug 窗口收回
+  if (dbg && outcome.status === "success" && !dry && name === dbg.task) await releaseDebugWindow(ctx, dbg.id);
   out.line(JSON.stringify({ mode: dry ? "试运行" : "执行", ...outcome }, null, 2));
 }
 
@@ -395,80 +325,51 @@ async function composeCommand(args: string[], ctx: Ctx, out: Output): Promise<vo
   out.line(JSON.stringify({ mode: "执行", ...outcome }, null, 2));
 }
 
-/** tabbot delegate <task 名> --goal "…" [--site 站点] [--fix]：派一个 subagent，输出要交给 subagent 的 brief。 */
+/**
+ * tabbot delegate <task 名> --goal "…" --site <站点> [--endpoint "方法 接口名"] [--fix]：
+ * 派一个 subagent：开一个 debug 窗口，导出冻结的交接材料，输出要交给 subagent 的 brief。
+ */
 async function delegateCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
   const flags = parseFlags(args, ["fix"]);
   if ("error" in flags) return out.fail(flags.error);
   const name = flags.rest[0];
   const goal = flags.values.get("goal");
-  if (!name || !goal || !/^[a-z0-9][a-z0-9-]*$/.test(name)) return out.fail('用法：tabbot delegate <task 名，小写字母数字和 -> --goal "一句话目标" [--site 站点] [--fix]');
-  const dir = ctx.taskDir ?? TASK_DIR;
-  const exists = fs.existsSync(taskFile(dir, name));
-  if (exists && !flags.bools.has("fix")) return out.fail(`task ${name} 已存在：直接 tabbot run，或坏了用 --fix 派 subagent 修`);
-  if (!exists && flags.bools.has("fix")) return out.fail(`task ${name} 不存在，不能 --fix`);
-  const site = flags.values.get("site") ? normalizeSite(flags.values.get("site")!) : "";
-  const t = ctx.tickets.issue({ task: name, goal, site, fix: flags.bools.has("fix") });
+  const usage = '用法：tabbot delegate <task 名，小写字母数字和 -> --goal "一句话目标" --site <站点> [--endpoint "方法 接口名"] [--fix]';
+  if (!name || !goal || !/^[a-z0-9][a-z0-9-]*$/.test(name)) return out.fail(usage);
+  const site = normalizeSite(flags.values.get("site") ?? "");
+  if (!site) return out.fail(`需要 --site <站点>（页面的 host，如 x.com、docs.google.com）。${usage}`);
+  const fix = flags.bools.has("fix");
+  const found = findTask(ctx.log.dir, name);
+  const siteKey = ctx.log.siteKey(site);
+  if (found && !fix) {
+    const draft = fs.readFileSync(found.file, "utf8").match(/^\s*\*?\s*@status:?\s*draft\b/m);
+    return out.fail(draft
+      ? `task ${name} 是上次没完成的草稿（@status: draft，${found.file}）：用 --fix 续，subagent 会从这份草稿接着做`
+      : `task ${name} 已存在：直接 tabbot run，或坏了用 --fix 派 subagent 修`);
+  }
+  if (!found && fix) return out.fail(`task ${name} 不存在，不能 --fix`);
+  if (found && found.site !== siteKey) return out.fail(`task ${name} 在站点 ${found.site} 下（${found.file}），不在 ${siteKey}：task 名全局唯一，换个名字，或 --site ${found.site}`);
+  const endpoint = flags.values.get("endpoint")?.trim().replace(/\s+/g, " ");
+
+  const t = ctx.debugWindows.open({ task: name, goal, site, fix });
   if ("error" in t) return out.fail(t.error);
-  out.line(`把下面整段交给一个 subagent（Agent 工具，后台运行）；它回报后你再 tabbot run ${name}。独立的 task 可以同时派几个 subagent。\n\n${makeBrief(t, dir)}`);
+  const tasksDir = tasksDirOf(ctx.log.dir, site);
+  const workDir = path.join(ctx.log.siteDir(site), "debug", t.id);
+  const materialDir = path.join(workDir, "material");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  fs.mkdirSync(workDir, { recursive: true });
+  // 先把内存里的写进日志和 endpoints.json，材料才是此刻最新的
+  ctx.ingest.flush();
+  ctx.index.touch(site);
+  ctx.index.flush();
+  const manifest = exportMaterial(ctx.log, ctx.index, { site, dir: materialDir, endpoint, excludeWins: ctx.debugWindows.active().filter((w) => w.id !== t.id).map((w) => w.id) });
+  const stat = endpoint ? ctx.index.snapshot(site).endpoints.find((e) => e.key === endpoint) : undefined;
+  const lines = [`把下面整段交给一个 subagent（Agent 工具，后台运行）；它回报后你再 tabbot run ${name}。独立的 task 可以同时派几个 subagent（一个 subagent 只学一个站点的一个接口）。`];
+  if (endpoint && !stat) lines.push(`⚠ ${site} 的 endpoints.json 里没有接口「${endpoint}」（写法是 \`方法 接口名\`，和 endpoints.json 的 key 一致）：材料里不会有它的样本。`);
+  out.line(`${lines.join("\n")}\n\n${makeBrief(t, { siteDir: ctx.log.siteDir(site), tasksDir, workDir, materialDir, logDir: ctx.log.logDir(site), libDir: path.join(path.dirname(ctx.log.dir), "lib"), manifest, endpoint, stat, existing: found?.file })}`);
 }
 
-async function statusCommand(ctx: Ctx, out: Output): Promise<void> {
-  const st = await journalStatus();
-  const mb = (st.bytes / 1024 / 1024).toFixed(1);
-  out.line(`录制：${st.segments} 段 ${st.events} 条事件，占用 ${mb}MB / ${Math.round(JOURNAL_CAP_BYTES / 1024 / 1024)}MB`);
-  const d = ctx.daemon();
-  out.line(`daemon：在运行 pid=${d.pid}，扩展${d.extension ? "已连接" : "未连接"}`);
-  out.line(`目录：${JOURNAL_DIR.replace(os.homedir(), "~")}（每段 seg-<序号>/：events.db、bodies/、snapshots/）`);
-}
-
-// ---- 请求优先：找请求、看请求、重放请求 ----
-
-async function reqCommand(args: string[], out: Output): Promise<void> {
-  const [sub, ...rest] = args;
-  if (sub === "find") {
-    const flags = parseFlags(rest);
-    if ("error" in flags) return out.fail(flags.error);
-    const needle = flags.rest.join(" ");
-    if (!needle) return out.fail('用法：tabbot req find "页面上看到的文字" [--n 20]');
-    const n = intFlag(flags, "n"); if (isError(n)) return out.fail(n.error);
-    const hits = await findInBodies(needle, { limit: (n as number | undefined) ?? 20 });
-    if (hits.length === 0) return out.line(`没有响应体或页面里包含「${needle}」（只搜保留下来的响应体和页面 HTML）`);
-    out.line(`${hits.length} 处有「${needle}」：（tabbot req show <编号> 看请求，tabbot replay <编号> 重放）`);
-    for (const h of hits) out.line(`${formatEvent(h.row)}\n    …${h.snippet}…`);
-    return;
-  }
-  if (sub === "show") {
-    const seq = Number((rest[0] ?? "").replace(/^#/, ""));
-    if (!Number.isInteger(seq)) return out.fail("用法：tabbot req show <编号>（编号来自 tabbot log 或 req find）");
-    const row = await readEventBySeq(seq);
-    if (!row) return out.fail(`找不到事件 #${seq}`);
-    out.line(formatEvent(row));
-    const t = templateFromRow(row);
-    if ("error" in t) return out.line(`不能重放：${t.error}`);
-    const u = new URL(row.url!.replace(/⟨[^⟩]*⟩/g, "x"));
-    const lines = [`地址：${row.url}`];
-    const headers = Object.entries(t.template.headers);
-    if (headers.length) lines.push(`请求头：\n${headers.map(([k, v]) => `  ${k}: ${v}`).join("\n")}`);
-    if (t.template.body !== undefined) lines.push(`请求体：${t.template.body.length > 600 ? `${t.template.body.slice(0, 600)}…` : t.template.body}`);
-    if (row.body) lines.push(`响应体文件：${row.body}（在 ~/.tabbot/journal/seg-<序号>/bodies 下，可以直接 rg）`);
-    const params = [...u.searchParams.entries()].flatMap(([k, v]) => {
-      try { const j = JSON.parse(v) as unknown; if (j && typeof j === "object" && !Array.isArray(j)) return Object.keys(j).map((x) => `${k}.${x}`); } catch { /* 不是 JSON */ }
-      return [k];
-    });
-    lines.push(`重放：tabbot replay ${seq}${isSafeMethod(row.method!) ? "" : " --yes"} [--set 名字=值 ...]；可以改的查询参数：${params.length ? params.join(", ") : "（无）"}${t.template.body !== undefined ? "；请求体字段用 body.字段名=值" : ""}；请求头 header.名字=值`);
-    {
-      const bare = row.url!.split("?")[0]!;
-      const q = [...u.searchParams.keys()];
-      const urlCode = q.length ? `serializeUrl({ bareUrl: ${JSON.stringify(bare)}, query: { ${q.map((k) => `${JSON.stringify(k)}: tabbot.params.${k.replace(/\W/g, "_")}`).join(", ")} } })` : JSON.stringify(bare);
-      const body = t.template.body !== undefined && t.template.body.length < 800 ? `, json: ${t.template.body}` : "";
-      lines.push(`task 代码：\n@endpoint ${row.method} ${endpointOf(row.url!.replace(/⟨[^⟩]*⟩/g, "x")).name}\nconst res = await request(page, { method: ${JSON.stringify(row.method)}, url: ${urlCode}${body} });\nif (!res.ok) throw new Error("状态码 " + res.status);`);
-    }
-    lines.push("token 等秘密在日志里是别名或 [redacted]；--set 里可以直接写别名（holder 内存里有对照表，holder 重启后失效），你拿不到真值。");
-    for (const w of t.warnings) lines.push(`⚠ ${w}`);
-    return out.line(lines.join("\n"));
-  }
-  out.fail('用法：tabbot req find "页面上看到的文字" | req show <编号>');
-}
+// ---- 重放 ----
 
 /** 解析 replay 的参数：<编号> [--set k=v]... [--yes]。--set 可以重复。 */
 export function parseReplayArgs(args: string[]): { seq: number; sets: string[]; yes: boolean } | { error: string } {
@@ -480,30 +381,30 @@ export function parseReplayArgs(args: string[]): { seq: number; sets: string[]; 
     else if (a === "--set") { const v = args[++i]; if (v === undefined) return { error: "--set 缺少值（写成 名字=值）" }; sets.push(v); }
     else if (a.startsWith("--set=")) sets.push(a.slice(6));
     else if (a.startsWith("--")) return { error: `不认识的参数 ${a}` };
-    else if (seq === undefined) { const n = Number(a.replace(/^#/, "")); if (!Number.isInteger(n)) return { error: `请求编号要是整数（来自 tabbot log 或 req find），收到：${a}` }; seq = n; }
+    else if (seq === undefined) { const n = Number(a.replace(/^#/, "")); if (!Number.isInteger(n)) return { error: `日志编号要是整数（请求文件名开头的数字），收到：${a}` }; seq = n; }
     else return { error: `多余的参数：${a}` };
   }
-  if (seq === undefined) return { error: "用法：tabbot replay <编号> [--set 名字=值 ...] [--yes]" };
+  if (seq === undefined) return { error: "用法：tabbot debug --window <窗口号> replay <编号> [--set 名字=值 ...] [--yes]" };
   return { seq, sets, yes };
 }
 
-type ReplayResult = { ok?: boolean; error?: string; method?: string; status?: number; size?: number; ms?: number; truncated?: boolean; summary?: string; preview?: string; bodyFile?: string; replaySeq?: number; warnings?: string[] };
+type ReplayResult = { ok?: boolean; error?: string; method?: string; status?: number; size?: number; ms?: number; truncated?: boolean; summary?: string; preview?: string; bodyFile?: string; replaySeq?: number; requestFile?: string; warnings?: string[] };
 
 /**
  * 重放日志里的一个请求：原始内容（含 token 真值）在 holder 的内存里，这里应用 --set（值里可以写别名），
  * 在 subagent 自己的 agent 窗口里和原来同一个 origin 的页面里原样发出（带登录态），响应脱敏后记进日志。非 GET 要 --yes。
+ * 请求文件在 debug 窗口绑定的站点里找。
  */
-export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[]; yes: boolean }, key = "main"): Promise<ReplayResult> {
-  const replaySession = new Session(key);
+export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[]; yes: boolean }, w: Pick<DebugWindow, "id" | "site">): Promise<ReplayResult> {
+  const replaySession = new Session(w.id);
   const fail = (error: string): ReplayResult => ({ ok: false, error });
-  const row = await readEventBySeq(params.seq);
-  if (!row) return fail(`找不到事件 #${params.seq}（用 tabbot req find 找请求）`);
-  const base = templateFromRow(row);
+  const found = ctx.log.readRequestFile(w.site, params.seq);
+  if (!found) return fail(`找不到站点 ${w.site} 的请求 #${params.seq}：请求文件在 ${ctx.log.logDir(w.site)}/<段>/ 下，文件名以 ${String(params.seq).padStart(6, "0")}_ 开头；编号看 endpoints.json 的 samples，或 rg 时间线`);
+  const base = templateFromRequestFile(found.file);
   if ("error" in base) return fail(base.error);
-  let rid: string | undefined;
-  try { rid = (JSON.parse(row.detail ?? "{}") as { rid?: string }).rid; } catch { /* 没有细节 */ }
-  const raw = rid ? ctx.raw.get(row.tab, rid) : undefined;
-  if (!raw) return fail(`#${row.seq} 的原始内容已经不在 holder 的内存里了（holder 重启过、太旧被清掉，或者不是页面里发的请求）。在页面上再触发一次这个操作（tabbot open 打开页面再 act，或用户自己做一次），然后重试`);
+  const rid = found.file.rid;
+  const raw = rid && found.file.tab !== undefined ? ctx.raw.get(found.file.tab, rid) : undefined;
+  if (!raw) return fail(`#${found.file.seq} 的原始内容已经不在 holder 的内存里了（holder 重启过、太旧被清掉，或者不是页面里发的请求）。tabbot debug --window ${w.id} open 打开页面再 act 触发一次这个操作（或让用户自己做一次），再用新的编号重试`);
   if (raw.body && UNREPLAYABLE_BODY.test(raw.body)) return fail("这个请求的请求体是文件、二进制或表单数据，没法重放");
   if (!isSafeMethod(raw.method) && !params.yes) return fail(`${raw.method} 请求可能有副作用（下单、提交、删除）：确认要重放请加 --yes，并且先问过用户`);
   let sets: string[];
@@ -516,13 +417,15 @@ export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[];
   try {
     const res = (await ctx.host.callTab(tab, "replay", [{ method: req.method, url: req.url, headers: req.headers, body: req.body ?? null }])) as { ok?: boolean; error?: string; status?: number; ct?: string; size?: number; text?: string; truncated?: boolean; ms?: number };
     const setKeys = params.sets.map((x) => x.split("=")[0]!);
+    const common = { site: w.site, page: raw.page, method: req.method, rawUrl: req.url, replayOf: params.seq, setKeys, headers: req.headers };
     if (res.ok === false) {
-      ctx.ingest.recordReplay(tab, ts, { method: req.method, rawUrl: req.url, replayOf: params.seq, setKeys, error: res.error });
+      ctx.ingest.recordReplay(tab, ts, { ...common, error: res.error });
       return { ok: false, error: res.error };
     }
-    const rec = ctx.ingest.recordReplay(tab, ts, { method: req.method, rawUrl: req.url, replayOf: params.seq, setKeys, status: res.status, ct: res.ct, size: res.size, text: res.text, ms: res.ms, reqBody: req.body ?? undefined });
+    const rec = ctx.ingest.recordReplay(tab, ts, { ...common, status: res.status, ct: res.ct, size: res.size, text: res.text, ms: res.ms, reqBody: req.body ?? undefined });
     return {
-      ok: true, status: res.status, size: res.size, ms: res.ms, truncated: res.truncated === true, replaySeq: rec.seq, bodyFile: rec.bodyFile,
+      ok: true, status: res.status, size: res.size, ms: res.ms, truncated: res.truncated === true, replaySeq: rec.seq,
+      bodyFile: rec.bodyFile ? ctx.log.abs(w.site, rec.bodyFile) : undefined, requestFile: ctx.log.findRequestFile(w.site, rec.seq)?.abs,
       method: req.method, summary: summarizeBody(rec.preview, res.ct ?? ""), preview: rec.preview.slice(0, 1500), warnings: base.warnings,
     };
   } finally {
@@ -530,21 +433,20 @@ export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[];
   }
 }
 
-async function replayCommand(args: string[], ctx: Ctx, out: Output, key = "main"): Promise<void> {
+async function replayCommand(args: string[], ctx: Ctx, out: Output, w: DebugWindow): Promise<void> {
   const p = parseReplayArgs(args);
   if ("error" in p) return out.fail(p.error);
   await ctx.ensureExtension();
-  const res = await runReplay(ctx, p, key);
+  const res = await runReplay(ctx, p, w);
   if (res.ok === false) { out.code = 1; return out.line(`✗ 重放 #${p.seq}：${res.error ?? "失败"}`); }
   const bad = (res.status ?? 0) >= 400;
   if (bad) out.code = 1;
   const kb = (res.size ?? 0) >= 1024 ? `${((res.size ?? 0) / 1024).toFixed(1)}KB` : `${res.size ?? 0}B`;
   const lines = [`${bad ? "✗" : "✓"} 重放 #${p.seq}${p.sets.length ? `（改了 ${p.sets.map((x) => x.split("=")[0]).join(", ")}）` : ""}：${res.method} → ${res.status}，${kb}，${res.ms}ms；${res.summary ?? ""}`];
-  if (bad) lines.push(res.status === 401 || res.status === 403 ? "服务器拒绝了：登录态过期、需要签名，或这个请求依赖页面上一步的状态。改用 tabbot open + act 在页面上做。" : "服务器返回了错误，先看下面的响应内容再决定。");
-  if (res.bodyFile) lines.push(`响应体文件：${res.bodyFile}（~/.tabbot/journal/seg-<序号>/bodies 下，可以直接 rg）`);
+  if (bad) lines.push(res.status === 401 || res.status === 403 ? "服务器拒绝了：登录态过期、需要签名，或这个请求依赖页面上一步的状态。改用 tabbot debug open + act 在页面上做。" : "服务器返回了错误，先看下面的响应内容再决定。");
+  lines.push(`这次重放记为 #${res.replaySeq}${res.requestFile ? `，请求文件 ${res.requestFile}` : ""}${res.bodyFile ? `，响应体 ${res.bodyFile}（可以直接 rg）` : ""}`);
   if (res.truncated) lines.push("⚠ 响应超过 1MB，只取了前 1MB");
-  for (const w of res.warnings ?? []) lines.push(`⚠ ${w}`);
+  for (const warn of res.warnings ?? []) lines.push(`⚠ ${warn}`);
   if (res.preview) lines.push(`响应（前 ${Math.min(res.preview.length, 1500)} 字符，已脱敏）：\n${res.preview}`);
   out.line(lines.join("\n"));
 }
-

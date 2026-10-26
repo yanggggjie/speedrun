@@ -29,7 +29,7 @@
 node <安装目录>/setup.js
 ```
 
-脚本依次完成：把 skill 目录原样镜像到 `~/.tabbot`（含 `src`、`scripts`、文档），在 `~/.tabbot/src` 安装依赖，注册 native messaging host，生成 `~/.tabbot/bin/tabbot` 与 `tabbot.cmd`，创建 `~/.tabbot/session`，最后运行 `doctor`。
+脚本依次完成：把 skill 目录原样镜像到 `~/.tabbot`（含 `src`、`scripts`、文档），把旧版本留下的 `~/.tabbot/journal`、`~/.tabbot/task` 改名为 `journal.old`、`task.old`（不读取、不转换，用户不需要时自己删除），在 `~/.tabbot/src` 安装依赖，注册 native messaging host，生成 `~/.tabbot/bin/tabbot` 与 `tabbot.cmd`，创建 `~/.tabbot/session`，最后运行 `doctor`。
 
 ## 4. 加载或刷新 Chrome 扩展（需要用户操作）
 

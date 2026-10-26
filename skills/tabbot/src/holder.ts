@@ -4,19 +4,21 @@ import * as net from "node:net";
 import { ABI, ExtensionLink, frame, parseFrames } from "./browser/extension.ts";
 import { NeedExtensionError, handshakeError, missingStatus } from "./browser/connect.ts";
 import { loadAdblockEngine } from "./journal/filter.ts";
-import { runCommand, type Ctx, type TabInfo } from "./journal/commands.ts";
+import { EndpointIndex } from "./journal/endpoints.ts";
+import { enforce } from "./journal/retention.ts";
+import { SiteLog } from "./journal/sitelog.ts";
+import { releaseDebugWindow, runCommand, type Ctx, type TabInfo } from "./journal/commands.ts";
 import { RunHost, Session } from "./run/host.ts";
-import { Tickets } from "./run/tickets.ts";
+import { DebugWindows } from "./run/debug-windows.ts";
 import { TaskRunner } from "./run/runner.ts";
-import { syncTaskLib } from "./run/tasks.ts";
+import { coveredEndpoints, syncTaskLib } from "./run/tasks.ts";
 import { AgentWindows } from "./run/window.ts";
 import { Ingestor, type PageMsg } from "./journal/ingest.ts";
 import { RawStore } from "./journal/raw.ts";
-import { JournalStore } from "./journal/store.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
 import { readVersion } from "./store/version.ts";
 import { HANDSHAKE_GUIDES, RPC_ERRORS, handshakeStatusFromError, type JsonRpcRequest, type JsonRpcResponse } from "./protocol.ts";
-import { HOLDER_IDLE_EXIT_MS, HOLDER_READY_MS, JOURNAL_ALIAS_SALT_FILE, JOURNAL_DIR, SESSION_DIR, SESSION_EXT_SOCK, SESSION_LOG, SESSION_SOCK, SESSION_SOCK_IS_FILE } from "./utils/constants.ts";
+import { ALIAS_SALT_FILE, HOLDER_IDLE_EXIT_MS, HOLDER_READY_MS, SESSION_DIR, TABBOT_HOME, SESSION_EXT_SOCK, SESSION_LOG, SESSION_SOCK, SESSION_SOCK_IS_FILE } from "./utils/constants.ts";
 import { createLogger, setLogFile } from "./utils/logger.ts";
 
 /**
@@ -37,23 +39,25 @@ const startupBuild = readVersion()?.build ?? "";
 const link = new ExtensionLink();
 const win = new AgentWindows(link);
 const raw = new RawStore();
+const log = new SiteLog();
+const index = new EndpointIndex({ raw, coverage: (site) => coveredEndpoints(log.dir, site) });
 let ingest: Ingestor | undefined;
 let adblock: FiltersEngine | undefined;
 let host: RunHost | undefined;
 let runner: TaskRunner | undefined;
-const tickets = new Tickets();
+const debugWindows = new DebugWindows();
 const sessions = new Map<string, Session>();
 
 function aliasSalt(): string {
-  try { return fs.readFileSync(JOURNAL_ALIAS_SALT_FILE, "utf8").trim(); } catch { /* 第一次 */ }
+  try { return fs.readFileSync(ALIAS_SALT_FILE, "utf8").trim(); } catch { /* 第一次 */ }
   const salt = randomBytes(24).toString("hex");
-  fs.mkdirSync(JOURNAL_DIR, { recursive: true });
-  fs.writeFileSync(JOURNAL_ALIAS_SALT_FILE, salt, { mode: 0o600 });
+  fs.mkdirSync(TABBOT_HOME, { recursive: true });
+  fs.writeFileSync(ALIAS_SALT_FILE, salt, { mode: 0o600 });
   return salt;
 }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
 
-/** 页面消息：写日志。tabbot agent 窗口里的标签页记为 agent 的（Ingestor 按 win.isAgentTab 判断）。 */
+/** 页面消息：写日志。tabbot agent 窗口里的标签页记为 agent 的（Ingestor 按 win.winOf 判断是哪个窗口）。 */
 link.on("page", (m) => {
   const inner = (m.msg ?? {}) as Record<string, unknown>;
   const msg = { ...inner, k: String(inner.k ?? ""), t: typeof inner.t === "number" ? inner.t : Date.now(), tab: Number(m.tab), frame: Number(m.frame ?? 0), top: m.top === true, page: typeof m.page === "string" ? m.page : undefined } as PageMsg;
@@ -87,8 +91,10 @@ const ctx: Ctx = {
   get host() { return host!; },
   get runner() { return runner!; },
   win,
-  tickets,
+  debugWindows,
   sessions,
+  log,
+  index,
   get ingest() { return ingest!; },
   get raw() { return raw; },
   daemon: () => ({ extension: extSocket !== null, pid: process.pid }),
@@ -142,7 +148,7 @@ async function shutdown(code: number): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("holder exit", { code });
-  try { ingest?.flush(); } catch (error) { warnCatch("flush on exit")(error); }
+  try { ingest?.flush(); index.flush(); log.close(); } catch (error) { warnCatch("flush on exit")(error); }
   server?.close();
   extServer?.close();
   extSocket?.destroy();
@@ -224,15 +230,19 @@ export async function runHolder(): Promise<void> {
   if (!extServer) { logger.warn("已有 holder 在运行，本进程退出"); process.exit(0); }
   server = await listenUnique(SESSION_SOCK, onConnection);
   if (!server) { logger.warn("CLI socket 被占用，本进程退出"); extServer.close(); if (SESSION_SOCK_IS_FILE) fs.rmSync(SESSION_EXT_SOCK, { force: true }); process.exit(0); }
-  const store = new JournalStore();
-  await store.open();
-  store.enforceCap();
-  ingest = new Ingestor(store, { engine: () => adblock, aliasKey: aliasSalt(), raw, isAgentTab: (tab) => win.isAgentTab(tab) });
+  log.open();
+  ingest = new Ingestor(log, { engine: () => adblock, aliasKey: aliasSalt(), raw, winOf: (tab) => win.winOf(tab), index });
   host = new RunHost({ link, win, ingest, raw });
   runner = new TaskRunner(host);
   try { syncTaskLib(); } catch (error) { warnCatch("sync task lib")(error); }
   loadAdblockEngine().then((engine) => { adblock = engine; }).catch(warnCatch("adblock engine"));
   // 没有扩展连接、也没有命令请求超过 HOLDER_IDLE_EXIT_MS 就退出；下次需要时由 relay 或 CLI 重新拉起
+  // 日志按额度淘汰（先只删重量层的旧文件，再删整段；接口样本受保护）
+  const retain = (): void => { try { enforce(log, { protect: (site) => index.protect(site), changed: (site) => index.touch(site) }); } catch (error) { warnCatch("retention")(error); } };
+  retain();
+  setInterval(retain, 10_000).unref();
+  // 空闲太久的 debug 窗口收回（subagent 失败、被中断时不留下窗口）
+  setInterval(() => { for (const w of debugWindows.idle()) void releaseDebugWindow(ctx, w.id).catch(warnCatch("release debug window")); }, 60_000).unref();
   setInterval(() => { if (!extSocket && Date.now() - lastActivity > HOLDER_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();
   process.on("SIGINT", () => void shutdown(0));
   process.on("SIGTERM", () => void shutdown(0));
