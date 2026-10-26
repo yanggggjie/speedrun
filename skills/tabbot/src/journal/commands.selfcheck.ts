@@ -130,15 +130,21 @@ let r = await run("debug", "open", "x.com/home");
 assert.equal(r.code, 1); assert.match(r.stdout, /主 agent 没有调试权限/);
 assert.match((await run("debug", "--window", "run", "open", "x.com")).stdout, /不是 debug 窗口/, "run 窗口不能调试");
 assert.equal((await run("debug", "--window", "debug-nope", "open", "x.com")).code, 1);
-assert.match((await run("delegate", "like-tweet", "--goal", "点赞")).stdout, /需要 --site/);
-assert.match((await run("delegate", "Bad Name", "--goal", "g", "--site", "x.com")).stdout, /用法/);
-assert.match((await run("delegate", "no-such", "--goal", "g", "--site", "x.com", "--fix")).stdout, /不存在，不能 --fix/);
+assert.match((await run("delegate", "like-tweet", "--endpoint", "POST /api/like")).stdout, /需要 --site/);
+assert.match((await run("delegate", "Bad Name", "--site", "x.com", "--endpoint", "POST /api/like")).stdout, /用法/);
+assert.match((await run("delegate", "no-such", "--site", "x.com", "--endpoint", "POST /api/like", "--fix")).stdout, /不存在，不能 --fix/);
+// 一个 subagent 只学一个请求：--endpoint 必填，接口必须在 endpoints.json 里
+r = await run("delegate", "like-tweet", "--site", "x.com");
+assert.equal(r.code, 1); assert.match(r.stdout, /需要 --endpoint.*--find.*只学一个请求/);
+assert.match((await run("delegate", "like-tweet", "--site", "x.com", "--endpoint", "POST /api/like", "--find", "点赞")).stdout, /只能给一个/);
+assert.equal(debugWindows.active().length, 0, "被拒绝的 delegate 不开 debug 窗口");
 
 // delegate：开 debug 窗口，创建工作区和 tasks/，导出材料，brief 指向这些文件
-r = await run("delegate", "like-tweet", "--goal", "给指定推文点赞", "--site", "WWW.X.com", "--endpoint", "POST /api/like");
+r = await run("delegate", "like-tweet", "--note", "tweet_id 做成参数", "--site", "WWW.X.com", "--endpoint", "POST /api/like");
 assert.equal(r.code, 0, r.stdout);
 const win1 = idOf(r.stdout);
-assert.match(r.stdout, /你是 subagent/); assert.match(r.stdout, /为什么分主 agent 和 subagent/);
+assert.match(r.stdout, /你是 subagent/); assert.match(r.stdout, /为什么分主 agent 和 subagent/); assert.match(r.stdout, /用最快的模型档位.*model: "haiku"/, "派发说明里要求 subagent 用快模型");
+assert.match(r.stdout, /学会请求 POST \/api\/like/); assert.match(r.stdout, /只学这一个请求/); assert.match(r.stdout, /先 network，不行才 dom/); assert.match(r.stdout, /补充说明.*tweet_id 做成参数/);
 assert.match(r.stdout, new RegExp(`tabbot debug --window ${win1} replay`)); assert.match(r.stdout, /没有读日志的 TabBot 命令/);
 const work = path.join(dir, "x.com", "debug", win1);
 const manifest = JSON.parse(fs.readFileSync(path.join(work, "material", "manifest.json"), "utf8"));
@@ -146,9 +152,13 @@ assert.equal(manifest.site, "x.com", "站点归一：WWW.X.com → x.com");
 assert.equal(manifest.counts.anchors, 1);
 assert.ok(fs.existsSync(path.join(dir, "x.com", "tasks")));
 for (const f of fs.readdirSync(work, { recursive: true, withFileTypes: true })) if (f.isFile()) assert.ok(!fs.readFileSync(path.join(f.parentPath, f.name)).includes(SECRET), "材料里没有 token 真值");
-assert.match((await run("delegate", "like-tweet", "--goal", "再来一个", "--site", "x.com")).stdout, /已经有 debug 窗口 debug-/, "同一个 task 只派一个 subagent");
-assert.match((await run("delegate", "typo-endpoint", "--goal", "g", "--site", "x.com", "--endpoint", "POST /api/nope")).stdout, /endpoints\.json 里没有接口「POST \/api\/nope」/, "接口写错了要提示");
-for (const n of ["a-1", "a-2", "a-3"]) assert.equal((await run("delegate", n, "--goal", "g", "--site", "x.com")).code, 0, "同一个站点的 subagent 不设上限");
+assert.match((await run("delegate", "like-tweet", "--site", "x.com", "--endpoint", "POST /api/like")).stdout, /已经有 debug 窗口 debug-/, "同一个 task 只派一个 subagent");
+// 不知道接口：--find 派发，接口写错或没有样本只警告，不拒绝；brief 要求最终只交一个 @endpoint
+r = await run("delegate", "typo-endpoint", "--site", "x.com", "--endpoint", "POST /api/nope");
+assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /endpoints\.json 里没有接口「POST \/api\/nope」.*改用 --find/);
+r = await run("delegate", "find-share", "--site", "x.com", "--find", "分享推文拿到链接");
+assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /找到并学会「分享推文拿到链接」背后的那一个请求/); assert.match(r.stdout, /最终只交一个 @endpoint/); assert.match(r.stdout, /待你找出来/);
+for (const n of ["a-1", "a-2", "a-3"]) assert.equal((await run("delegate", n, "--site", "x.com", "--endpoint", "POST /api/like")).code, 0, "同一个站点的 subagent 不设上限");
 
 // subagent 用 debug 窗口调试：在自己的 agent 窗口里
 r = await run("debug", "--window", win1, "open", "x.com/home");
@@ -164,7 +174,7 @@ assert.ok(own.length >= 3 && own.every((x) => x.win === win1 && x.src === "agent
 assert.ok(log.readRows("x.com", { wins: ["user"], limit: 50 }).every((x) => x.win === "user"), "用户的时间线里没有 agent 的行");
 
 // 第二个 subagent 的材料不含第一个（仍开着）的行
-const second = await run("delegate", "fav-tweet", "--goal", "收藏", "--site", "x.com", "--endpoint", "POST /api/like");
+const second = await run("delegate", "fav-tweet", "--site", "x.com", "--endpoint", "POST /api/like");
 const win2 = idOf(second.stdout);
 const m2 = JSON.parse(fs.readFileSync(path.join(dir, "x.com", "debug", win2, "material", "manifest.json"), "utf8"));
 assert.ok(m2.windows.excluded.includes(win1) && !m2.windows.included.includes(win1), JSON.stringify(m2.windows));
@@ -216,7 +226,7 @@ assert.equal((await run("run", "demo", "--window", win1)).code, 1);
 disposed.length = 0;
 r = await run("debug", "--window", win2, "close");
 assert.equal(r.code, 0, r.stdout); assert.deepEqual(disposed, [win2]); assert.ok(!sessions.has(win2));
-assert.equal((await run("delegate", "fav-tweet", "--goal", "收藏（重来）", "--site", "x.com")).code, 0);
+assert.equal((await run("delegate", "fav-tweet", "--site", "x.com", "--endpoint", "POST /api/like")).code, 0);
 const a1 = debugWindows.active().find((w) => w.task === "a-1")!;
 assert.ok(debugWindows.idle(Date.now() + 31 * 60_000).some((w) => w.id === a1.id), "30 分钟没有操作就该回收");
 assert.equal(debugWindows.idle().length, 0);
@@ -228,11 +238,11 @@ assert.deepEqual(disposed, [a1.id]);
 const tasks = path.join(dir, "x.com", "tasks");
 fs.writeFileSync(path.join(tasks, "half-done.js"), "/**\n * @summary 做了一半\n * @status: draft\n * @endpoint POST /api/save\n */\n");
 fs.writeFileSync(path.join(tasks, "done.js"), "/**\n * @summary 做完了\n * @status: verified\n * @endpoint POST /api/like\n */\n");
-assert.match((await run("delegate", "half-done", "--goal", "g", "--site", "x.com")).stdout, /上次没完成的草稿.*--fix/);
-assert.match((await run("delegate", "done", "--goal", "g", "--site", "x.com")).stdout, /已存在/);
-assert.match((await run("delegate", "half-done", "--goal", "g", "--site", "y.com", "--fix")).stdout, /在站点 x\.com 下/);
-r = await run("delegate", "half-done", "--goal", "接着做", "--site", "x.com", "--fix");
-assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /接着做或修好它/);
+assert.match((await run("delegate", "half-done", "--site", "x.com", "--endpoint", "POST /api/save")).stdout, /上次没完成的草稿.*--fix/);
+assert.match((await run("delegate", "done", "--site", "x.com", "--endpoint", "POST /api/like")).stdout, /已存在/);
+assert.match((await run("delegate", "half-done", "--site", "y.com", "--endpoint", "POST /api/save", "--fix")).stdout, /在站点 x\.com 下/);
+r = await run("delegate", "half-done", "--site", "x.com", "--fix");
+assert.equal(r.code, 0, r.stdout); assert.match(r.stdout, /接着做或修好它/); assert.match(r.stdout, /学会请求 POST \/api\/save/, "--fix 缺省取 task 文件头的 @endpoint");
 // status：日志占用、debug 窗口、没完成的草稿
 const st = (await run("status")).stdout;
 assert.match(st, /录制：\d+ 个站点，轻量层/); assert.match(st, /debug 窗口：debug-/); assert.match(st, new RegExp(escapeRe(dir)));

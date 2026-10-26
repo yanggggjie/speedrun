@@ -28,7 +28,7 @@ export class DebugWindows {
 
   /** 一次调试操作：校验窗口并计数。 */
   use(id: string | undefined): DebugWindow | { error: string } {
-    if (!id) return { error: "调试由 subagent 做：主 agent 没有调试权限（run 窗口只执行 task）。缺 task 就 tabbot delegate <task 名> --goal \"…\" 派一个 subagent，把输出的 brief 交给 subagent" };
+    if (!id) return { error: "调试由 subagent 做：主 agent 没有调试权限（run 窗口只执行 task）。缺 task 就 tabbot delegate <task 名> --site <站点> --endpoint \"方法 接口名\"（或 --find \"要的数据或动作\"）派一个 subagent 学会这个请求，把输出的 brief 交给 subagent" };
     const w = this.map.get(id);
     if (!w) return { error: `${id} 不是 debug 窗口，或已失效（holder 重启过？）：回报现状，由主 agent 重新派` };
     if (w.done) return { error: `debug 窗口 ${id} 已经收回（task ${w.task} 已交付或已放弃）：现在写回报` };

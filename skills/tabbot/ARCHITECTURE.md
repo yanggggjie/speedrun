@@ -25,7 +25,7 @@ TabBot 的目标、角色分工和运行时架构。agent 怎么用见 `SKILL.md
 6. 事后可查：subagent 的每个动作都在日志里。
 
 **强制机制（全在 TabBot 内，不依赖 harness）**
-1. `tabbot delegate <task 名> --goal "…" --site <站点> [--endpoint "方法 接口名"] [--fix]` 是派 subagent 的唯一入口：开一个 **debug 窗口**（绑定 task 名和站点，只在 holder 内存里；同一个 task 名同时只能有一个，站点不限），把目标接口的样本和触发它的动作导出成冻结的**交接材料**（§6），输出自包含的 brief（目标、窗口号、材料和日志在哪、SDK 用法、写 task 的规则、副作用边界、回报格式）。一个 subagent 只学一个站点的一个接口；task 名全局唯一，同名的草稿（`@status: draft`）要加 `--fix` 续。
+1. `tabbot delegate <task 名> --site <站点> (--endpoint "方法 接口名" | --find "要的那一个数据或动作") [--note "…"] [--fix]` 是派 subagent 的唯一入口（二选一：知道接口名用 `--endpoint`；只知道要什么用 `--find`，subagent 自己从材料和页面里找到那一个请求；`--fix` 时缺省取现有 task 文件头的 `@endpoint`；`--endpoint` 在 endpoints.json 里没有样本只警告）：开一个 **debug 窗口**（绑定 task 名和站点，只在 holder 内存里；同一个 task 名同时只能有一个，站点不限），把目标接口的样本和触发它的动作导出成冻结的**交接材料**（§6），输出自包含的 brief（派发时约定 subagent 一律用 harness 里最快的模型档位，Claude Code 是 haiku；TabBot 不选模型，只在 delegate 的输出里写明；目标、窗口号、材料和日志在哪、SDK 用法、写 task 的规则、副作用边界、回报格式）。一个 subagent 只学一个站点的一个请求（`--find` 时最终也只交一个 `@endpoint`，发现还需要别的请求就在回报里列出，由主 agent 按请求逐个派）：做法优先 network（task 里直接发请求），不行才 dom（触发这个请求的最小页面操作）；遍历、批量、聚合、业务汇总留给主 agent 用 task 循环和 `compose`，不写进 task；task 名全局唯一，同名的草稿（`@status: draft`）要加 `--fix` 续。
 2. `tabbot debug` 必须带 `--window <debug 窗口号>`：没有、是 run 窗口、不存在、已收回、用完 80 次操作，一律拒绝并说明。debug 窗口收回有三种：自己那份 task `run` 成功；`debug … close` 放弃；30 分钟没有操作自动回收；收回时窗口和工作区（含材料）一起删，它留下的日志是历史，不删。
 3. `compose` 只能 `task(名字, 参数)` 组合 task：compose 自己的会话被标为 compose-only，任何页面操作（包括 `import` SDK 后调用）都被 host 拒绝。
 4. `run` 真跑成功一次，task 头里的 `@status: draft` 自动变 `verified`；`--dry` 让非 GET 的 `request` 不真发，只打印将发送的内容（subagent 迭代用）。subagent 带 `--window` `run` 自己那份 task 成功，debug 窗口收回、关掉。

@@ -17,7 +17,7 @@ description: >-
 你的唯一目标是**完成用户的任务**。你有一个长期的 **run 窗口**，它只执行 task，**没有调试权限**（`tabbot debug` 会拒绝你）——这是设计，不是缺陷：
 
 - **task** 是学会的做法，一份只覆盖一个接口。**`tabbot run <task>` 才算执行**，用户拿到的结果必须来自 task 的返回值。
-- 缺哪个能力，派一个 **subagent** 去学：它得到一个自己的 **debug 窗口**，在里面调试，把做法写成 task 交给你。独立的几件事同时派几个 subagent；一个 subagent 只学一个站点的一个接口。
+- 缺哪个能力，派一个 **subagent** 去学：它得到一个自己的 **debug 窗口**，在里面调试，把做法写成 task 交给你。独立的几个接口同时派几个 subagent；**一个 subagent 只学一个站点的一个请求**：它的任务就是把这个请求学会、写成 task，做法优先 network（直接发请求），不行才 dom（触发请求的最小页面操作）。遍历、批量、聚合、整理成结果这些业务动作不派给 subagent，由你用 task 循环和 `compose` 完成。
 - 为什么要这样分：
   1. 速度——调试一次慢，按 task 执行是毫秒；批量的事（点 10 个赞、取 30 条）用 task 循环就是这一次最快的做法。
   2. 目标不同——你要把结果交给用户，subagent 要把 task 写对；一个人背两个目标会省掉 task。
@@ -28,7 +28,7 @@ description: >-
 
 1. 找现成的 task：`rg -H '@summary|@endpoint|@param|@status' ~/.tabbot/sites/*/tasks/`。有就 `tabbot run <名字> --参数 值`，输出是 JSON（`mode`、`status`、`result`）。
 2. 没有就看这个站点有哪些接口、用户刚才做了什么：读 `~/.tabbot/sites/<站点>/endpoints.json`（`task` 为 `null` 的是还没学会的；`userTriggered > 0` 且 `onLoad == 0` 的最像用户的显式操作，`lastCause` 是触发它的动作），再看 `log/*/timeline.user.jsonl` 的末尾。第 5 节有现成的脚本。站点不确定就 `tabbot tabs` 看用户开着什么页面。
-3. 缺的接口，每个派一个 subagent：`tabbot delegate <task 名> --goal "一句话目标" --site <站点> --endpoint "方法 接口名"`（接口名照抄 `endpoints.json` 的 `key`）。它开一个 debug 窗口，把目标接口的样本和触发它的动作导出成一份冻结的材料，输出一份 brief（含窗口号）；**把整段原样交给一个 subagent（Agent 工具，后台运行）**。task 名由你取，小写字母数字和 `-`，全局唯一，建议以站点简称开头，如 `zhihu-like-answer`；坏了的 task 用 `--fix` 派 subagent 修，上次没做完的草稿也用 `--fix` 续（`tabbot status` 会列出草稿）。
+3. 缺的请求，每个派一个 subagent，入口二选一：知道接口名用 `tabbot delegate <task 名> --site <站点> --endpoint "方法 接口名"`（接口名照抄 `endpoints.json` 的 `key`）；只知道要什么、不知道是哪个接口（日志里没有、或认不出）用 `--find "要的那一个数据或动作"`，subagent 自己在材料和页面里找到那一个请求；找到后如果发现还需要别的请求，它会在回报里列出，你再按请求逐个派。`--note` 只放这个请求的补充信息，不放业务目标。它开一个 debug 窗口，把目标接口的样本和触发它的动作导出成一份冻结的材料，输出一份 brief（含窗口号）；**把整段原样交给一个 subagent（Agent 工具，后台运行，模型用最快的一档：Claude Code 里 `model: "haiku"`，其他 harness 用各自最快最便宜的那一档）**。task 名由你取，小写字母数字和 `-`，全局唯一，建议以站点简称开头，如 `zhihu-like-answer`；坏了的 task 用 `--fix` 派 subagent 修，上次没做完的草稿也用 `--fix` 续（`tabbot status` 会列出草稿）。
 4. subagent 回报后：看它的**副作用清单**（它为学习真实做过什么），再 `tabbot run` 执行；几份 task 的组合用 `tabbot compose 'const a = await task("名字", { 参数: 值 }); return …'`（compose 里只能组合 task，不能碰页面）。
 5. 综合所有 subagent 的回报和 task 的结果，向用户汇报。subagent 在学习时已经做掉的副作用（比如点过的赞）算交付的一部分，不要重复做。
 
@@ -79,7 +79,7 @@ description: >-
 |---|---|
 | `tabbot run <task 名> [--参数 值] [--dry]` | 在 run 窗口执行 task（`--dry`：非 GET 的请求不真发，只打印将发送的内容） |
 | `tabbot compose '<代码>'` | 只组合 task |
-| `tabbot delegate <名字> --goal "…" --site <站点> [--endpoint "方法 接口名"] [--fix]` | 派 subagent：开 debug 窗口、导出材料、输出 brief |
+| `tabbot delegate <名字> --site <站点> (--endpoint "方法 接口名" \| --find "要的数据或动作") [--note "…"] [--fix]` | 派 subagent 学会一个请求：开 debug 窗口、导出材料、输出 brief |
 | `tabbot debug --window <号> open\|snapshot\|text\|act\|replay\|close` | subagent 用，调试 |
 | `tabbot run <task 名> --window <号>` | subagent 在自己的窗口里验证自己的 task，成功后窗口收回 |
 | `tabbot tabs` `status` `doctor [--json]` `daemon restart` | 用户的标签页 / 状态（日志占用、debug 窗口、没做完的草稿）/ 检查安装 / 重启 daemon |

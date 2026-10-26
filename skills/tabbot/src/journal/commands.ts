@@ -13,7 +13,7 @@ import { DEBUG_MAX_OPS, type DebugWindow, type DebugWindows } from "../run/debug
 import { Session, type RunHost } from "../run/host.ts";
 import { makeBrief } from "../run/brief.ts";
 import type { TaskRunner } from "../run/runner.ts";
-import { draftTasks, findTask, parseCliParams, tasksDirOf } from "../run/tasks.ts";
+import { draftTasks, findTask, parseCliParams, taskSummary, tasksDirOf } from "../run/tasks.ts";
 import type { AgentWindows } from "../run/window.ts";
 import { normalizeSite } from "./digest.ts";
 import type { EndpointIndex } from "./endpoints.ts";
@@ -326,16 +326,18 @@ async function composeCommand(args: string[], ctx: Ctx, out: Output): Promise<vo
 }
 
 /**
- * tabbot delegate <task 名> --goal "…" --site <站点> [--endpoint "方法 接口名"] [--fix]：
- * 派一个 subagent：开一个 debug 窗口，导出冻结的交接材料，输出要交给 subagent 的 brief。
+ * tabbot delegate <task 名> --site <站点> (--endpoint "方法 接口名" | --find "要的那一个数据或动作") [--note "补充说明"] [--fix]：
+ * 派一个 subagent 学会一个请求：开一个 debug 窗口，导出冻结的交接材料，输出要交给 subagent 的 brief。
+ * 粒度固定是一个请求；入口二选一：知道接口名用 --endpoint，只知道要什么用 --find（subagent 自己找到那个请求）。
+ * 业务目标、批量、聚合都不在这里，由主 agent 用 task 组合完成。
  */
 async function delegateCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
   const flags = parseFlags(args, ["fix"]);
   if ("error" in flags) return out.fail(flags.error);
   const name = flags.rest[0];
-  const goal = flags.values.get("goal");
-  const usage = '用法：tabbot delegate <task 名，小写字母数字和 -> --goal "一句话目标" --site <站点> [--endpoint "方法 接口名"] [--fix]';
-  if (!name || !goal || !/^[a-z0-9][a-z0-9-]*$/.test(name)) return out.fail(usage);
+  const note = flags.values.get("note") ?? "";
+  const usage = '用法：tabbot delegate <task 名，小写字母数字和 -> --site <站点> (--endpoint "方法 接口名" | --find "要的那一个数据或动作") [--note "补充说明"] [--fix]（一个 subagent 只学一个请求；接口名照抄 endpoints.json 的 key）';
+  if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name)) return out.fail(usage);
   const site = normalizeSite(flags.values.get("site") ?? "");
   if (!site) return out.fail(`需要 --site <站点>（页面的 host，如 x.com、docs.google.com）。${usage}`);
   const fix = flags.bools.has("fix");
@@ -349,24 +351,30 @@ async function delegateCommand(args: string[], ctx: Ctx, out: Output): Promise<v
   }
   if (!found && fix) return out.fail(`task ${name} 不存在，不能 --fix`);
   if (found && found.site !== siteKey) return out.fail(`task ${name} 在站点 ${found.site} 下（${found.file}），不在 ${siteKey}：task 名全局唯一，换个名字，或 --site ${found.site}`);
-  const endpoint = flags.values.get("endpoint")?.trim().replace(/\s+/g, " ");
+  // 一个 subagent 只学一个请求。入口二选一：--endpoint（知道接口）或 --find（只知道要什么，subagent 自己找）；
+  // --fix 时缺省取现有 task 文件头的 @endpoint
+  const find = flags.values.get("find")?.trim() || undefined;
+  const given = flags.values.get("endpoint")?.trim().replace(/\s+/g, " ") || undefined;
+  if (find && given) return out.fail(`--endpoint 和 --find 只能给一个：知道接口名用 --endpoint，只知道要什么用 --find。${usage}`);
+  const endpoint = given ?? (find || !found ? undefined : taskSummary(found.file).endpoints[0]);
+  if (!endpoint && !find) return out.fail(`需要 --endpoint "方法 接口名"（照抄 ${ctx.log.siteDir(site)}/endpoints.json 的 key），或 --find "要的那一个数据或动作"（不知道是哪个接口时，subagent 自己找）。一个 subagent 只学一个请求；业务目标、批量、聚合不派给 subagent，由主 agent 用 task 组合。${usage}`);
+  // 先把内存里的写进日志和 endpoints.json，材料才是此刻最新的
+  ctx.ingest.flush();
+  ctx.index.touch(site);
+  ctx.index.flush();
+  const stat = endpoint ? ctx.index.snapshot(site).endpoints.find((e) => e.key === endpoint) : undefined;
 
-  const t = ctx.debugWindows.open({ task: name, goal, site, fix });
+  const t = ctx.debugWindows.open({ task: name, goal: find ?? note, site, fix });
   if ("error" in t) return out.fail(t.error);
   const tasksDir = tasksDirOf(ctx.log.dir, site);
   const workDir = path.join(ctx.log.siteDir(site), "debug", t.id);
   const materialDir = path.join(workDir, "material");
   fs.mkdirSync(tasksDir, { recursive: true });
   fs.mkdirSync(workDir, { recursive: true });
-  // 先把内存里的写进日志和 endpoints.json，材料才是此刻最新的
-  ctx.ingest.flush();
-  ctx.index.touch(site);
-  ctx.index.flush();
   const manifest = exportMaterial(ctx.log, ctx.index, { site, dir: materialDir, endpoint, excludeWins: ctx.debugWindows.active().filter((w) => w.id !== t.id).map((w) => w.id) });
-  const stat = endpoint ? ctx.index.snapshot(site).endpoints.find((e) => e.key === endpoint) : undefined;
-  const lines = [`把下面整段交给一个 subagent（Agent 工具，后台运行）；它回报后你再 tabbot run ${name}。独立的 task 可以同时派几个 subagent（一个 subagent 只学一个站点的一个接口）。`];
-  if (endpoint && !stat) lines.push(`⚠ ${site} 的 endpoints.json 里没有接口「${endpoint}」（写法是 \`方法 接口名\`，和 endpoints.json 的 key 一致）：材料里不会有它的样本。`);
-  out.line(`${lines.join("\n")}\n\n${makeBrief(t, { siteDir: ctx.log.siteDir(site), tasksDir, workDir, materialDir, logDir: ctx.log.logDir(site), libDir: path.join(path.dirname(ctx.log.dir), "lib"), manifest, endpoint, stat, existing: found?.file })}`);
+  const lines = [`把下面整段交给一个 subagent（Agent 工具，后台运行，**用最快的模型档位**：Claude Code 里 Agent 工具传 model: "haiku"，其他 harness 用各自最快最便宜的那一档；学一个请求是机械活，不需要强模型）；它回报后你再 tabbot run ${name}。独立的请求可以同时派几个 subagent（一个 subagent 只学一个站点的一个请求）。`];
+  if (endpoint && !stat) lines.push(`⚠ ${site} 的 endpoints.json 里没有接口「${endpoint}」（写法是 \`方法 接口名\`，和 endpoints.json 的 key 一致）：材料里没有它的样本，subagent 要自己在页面上触发出来。接口名写错的话，改用 --find。`);
+  out.line(`${lines.join("\n")}\n\n${makeBrief(t, { siteDir: ctx.log.siteDir(site), tasksDir, workDir, materialDir, logDir: ctx.log.logDir(site), libDir: path.join(path.dirname(ctx.log.dir), "lib"), manifest, endpoint, find, note, stat, existing: found?.file })}`);
 }
 
 // ---- 重放 ----
