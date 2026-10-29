@@ -2,11 +2,18 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
 import { LIB_DIR, RUN_BUSY_WAIT_MS, RUN_DIR, RUN_HISTORY_KEEP, SITES_DIR } from "../utils/constants.ts";
-import { RunHost, Session } from "./host.ts";
+import { RunHost, Session, type FailurePage } from "./host.ts";
 import { checkParams, findTask, taskSummary, taskTimeoutMs, promoteTask, writeRunHistory } from "./tasks.ts";
 import { MAIN_KEY } from "./window.ts";
 
-export type Outcome = { status: "success"; result: unknown; dry?: string[] } | { status: "failure"; error: string; failedTask?: string; dry?: string[] };
+export type Outcome = { status: "success"; result: unknown; dry?: string[] } | { status: "failure"; error: string; failedTask?: string; dry?: string[]; page?: FailurePage; hint?: string };
+
+const LOGIN_URL = /(?:^|[/.\-_?=])(login|signin|sign-in|sso|passport|oauth|authorize|auth|cas)(?:[/.\-_?=]|$)|登录/i;
+/** 失败时的页面看起来像登录页，或错误里是 401/403：多半是登录失效，不是 task 坏了。 */
+export function looksLoggedOut(error: string, url: string | undefined): boolean {
+  if (url && LOGIN_URL.test(url)) return true;
+  return /\b(401|403)\b|unauthori[sz]ed|未登录|登录/i.test(error);
+}
 
 /** sitesDir：各站点的 tasks/ 在它下面；libDir：task SDK；runDir：运行历史。 */
 export type RunnerPaths = { sitesDir: string; libDir: string; runDir: string };
@@ -64,6 +71,12 @@ export class TaskRunner {
     try {
       const out = await this.work(file, params, taskTimeoutMs(file), session);
       if (out.status === "failure" && nested) out.failedTask ??= name;
+      if (out.status === "failure" && !nested) {
+        const page = await this.host.failureShot(session, path.join(this.paths.runDir, "failures"), name);
+        if (page) out.page = page;
+        if (looksLoggedOut(out.error, page?.url)) out.hint = "像是登录失效：用读图片的方式看 page.screenshot；确认是登录页就请用户在 Chrome 里登录后重跑同一条命令，不要重新学习、不要改 task。";
+        else if (page?.screenshot) out.hint = "看 page.screenshot 判断页面停在了哪；页面正常但 task 失败，才是 task 坏了。";
+      }
       if (nested) { nested.tab = session.tab; nested.origin = session.origin; nested.dryLog.push(...session.dryLog); }
       else if (session.dryLog.length) out.dry = [...session.dryLog];
       // 真跑成功一次就晋升为 verified（试运行不算）

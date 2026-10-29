@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { TaskRunner } from "./runner.ts";
+import { TaskRunner, looksLoggedOut } from "./runner.ts";
 import { blockTask, syncTaskLib } from "./tasks.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-runner-"));
@@ -48,4 +48,9 @@ assert.match((sdk as { error: string }).error, /不该碰页面|compose/, "compo
 const missing = await runner.runTask("nope", {});
 assert.equal(missing.status, "failure");
 assert.match((missing as { error: string }).error, /task 不存在/);
+// 登录失效判断：登录页 URL 或 401/403 算；普通业务错误、普通页面不算
+assert.equal(looksLoggedOut("x", "https://passport.example.com/login?next=/"), true);
+assert.equal(looksLoggedOut("请求返回 401", "https://example.com/home"), true);
+assert.equal(looksLoggedOut("元素没找到", "https://example.com/author/list"), false);
+assert.equal(looksLoggedOut("元素没找到", undefined), false);
 console.log("runner selfcheck ok");

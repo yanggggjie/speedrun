@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ExtensionLink } from "../browser/extension.ts";
 import type { Ingestor } from "../journal/ingest.ts";
 import type { RawStore } from "../journal/raw.ts";
@@ -22,6 +24,10 @@ export class Session {
   readonly warmed = new Set<string>();
   constructor(key = MAIN_KEY) { this.key = key; }
 }
+
+/** run 失败时的页面现场。 */
+export type FailurePage = { url: string; title: string; screenshot?: string };
+const FAILURE_SHOTS_KEEP = 10;
 
 export type HostDeps = { link: Pick<ExtensionLink, "request">; win: AgentWindows; ingest: Ingestor; raw: RawStore };
 
@@ -54,6 +60,26 @@ export class RunHost {
     s.origin = origin;
     this.byTab.set(s.tab, s);
     return s.tab;
+  }
+
+  /** run 失败时留一张现场：当前页面的 URL、标题和截图（存成文件）。没有页面、或任何一步失败就返回 undefined，不影响原来的错误。 */
+  async failureShot(s: Session, dir: string, name: string): Promise<FailurePage | undefined> {
+    if (s.tab === undefined) return undefined;
+    const tab = s.tab;
+    try {
+      const info = ((await this.d.link.request("tabs")) as { tabs: { tabId: number; url: string; title: string }[] }).tabs.find((t) => t.tabId === tab);
+      let shot: string | undefined;
+      try {
+        await this.d.win.activate(tab);
+        const r = (await withTimeout(this.d.link.request("screenshot", { tabId: tab }), STEP_TIMEOUT_MS, "截图")) as { data: string; mime: string };
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        for (const old of fs.readdirSync(dir).filter((f) => f.startsWith("fail-")).sort().slice(0, -(FAILURE_SHOTS_KEEP - 1))) fs.rmSync(path.join(dir, old), { force: true });
+        shot = path.join(dir, `fail-${Date.now()}-${name.replace(/[^\w-]/g, "_")}.${r.mime.includes("png") ? "png" : "jpg"}`);
+        fs.writeFileSync(shot, Buffer.from(r.data, "base64"), { mode: 0o600 });
+      } catch { /* 截不了也给 URL */ }
+      if (!info && !shot) return undefined;
+      return { url: info?.url ?? "", title: info?.title ?? "", ...(shot ? { screenshot: shot } : {}) };
+    } catch { return undefined; }
   }
 
   async end(s: Session): Promise<void> {

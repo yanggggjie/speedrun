@@ -103,7 +103,7 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 
 - **agent 窗口**（`run/window.ts`）分两种：**run 窗口**（key 为 `run`）长期持有，只执行 task，不能调试；**debug 窗口**（key 为 `debug-xxxx`，登记在 `run/debug-windows.ts`）一个学习会话一个，开会话时开、收回时关。一个 key 一个窗口，所以 run 窗口和学习会话的页面各在自己窗口的前台（浏览器不渲染后台标签页）。窗口的第一个标签页是扩展的 anchor 页（标题 `tabbot agent`）。其余标签页按 origin（协议加主机加端口，只在执行层用：保证请求和页面同源）池化：`acquire(origin, key)` 复用同站点空闲标签页，没有就开 `origin/robots.txt`（很轻，页面脚本就位）；用完还回去，空闲 5 分钟关闭；debug 窗口收回时整个窗口关掉。key 到窗口的映射只在内存里：holder 重启（或扩展链路重连）一切归零，留下的窗口都是孤儿，第一次用窗口时全部关掉。用户关了窗口会自动重开（run 和 debug 一样）。run 窗口不并发：`run` 和 `compose` 同一个 key 一次只跑一个。
 - **RunHost**（`run/host.ts`）：goto、request、act、pointer、screenshot、waitFor、text、query、eval，每个都写一行 `cmd` 记录。`request` 默认继承 holder 内存里同站点最近一个带身份头（authorization、csrf、x-*）的原始请求的请求头；内存里没有（holder 重启过、页面还没发过请求）时，自动打开该站点首页让页面自己发请求，每个站点只试一次，仍没有再按需报错。
-- **TaskRunner**（`run/runner.ts`）：task 脚本在 worker 线程里运行（`task-lib/index.js` 同步到 `~/.tabbot/lib`），SDK 的每个函数是向 holder 发一个操作；同一个 key 一次只跑一个，不同 key 可以同时跑；整体超时 115 秒（`@timeout` 可改）；`tabbot.task()` 嵌套调用共用页面状态；运行历史在 `~/.tabbot/run/<task>/`。
+- **TaskRunner**（`run/runner.ts`）：task 脚本在 worker 线程里运行（`task-lib/index.js` 同步到 `~/.tabbot/lib`），SDK 的每个函数是向 holder 发一个操作；同一个 key 一次只跑一个，不同 key 可以同时跑；整体超时 115 秒（`@timeout` 可改）；`tabbot.task()` 嵌套调用共用页面状态；运行历史在 `~/.tabbot/run/<task>/`。`run` 失败（非嵌套）时，如果 run 窗口里有页面，输出带 `page`（URL、标题、截图文件 `~/.tabbot/run/failures/fail-*`，只留最近 10 张）；页面像登录页或错误是 401/403 时带 `hint`（请用户登录后重跑，不要重新学习）。截图失败不影响原来的错误。
 - task 是 `~/.tabbot/sites/<站点>/tasks/<名字>.js`，从 `../../../lib/index.js` 引用 SDK；task 名全局唯一，`tabbot run <名字>` 在所有站点的 `tasks/` 里找。文件头 `@summary`、`@status: draft|verified`、`@endpoint 方法 接口名`、`@param 名字? 说明`、`@timeout`、`@note`（经验：签名、风控、踩过的坑，一行一条）。参数一律具名 `--名字 值`，缺必填或传了没声明的参数直接报错。
 
 ### 重放（debug replay）
