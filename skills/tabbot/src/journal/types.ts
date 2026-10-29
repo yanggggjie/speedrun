@@ -8,7 +8,7 @@ export type RowType = "request" | "action" | "nav" | "doc" | "snap" | "cmd" | "t
 /** 请求发生的阶段：load 是页面刚加载（或单页应用刚路由）的那几秒，action 是动作引发的，idle 是轮询、后台自发。 */
 export type Phase = "load" | "action" | "idle";
 
-/** 窗口：用户自己的、主 agent 的 run 窗口、subagent 的 debug 窗口（debug-xxxx）。 */
+/** 窗口：用户自己的、run 窗口、学习会话的 debug 窗口（debug-xxxx）。 */
 export const USER_WIN = "user";
 
 /** timeline.<窗口>.jsonl 里的一行。字段名沿用 yodo 的录制材料（type / actionType / requestType / selector / role / name）。 */

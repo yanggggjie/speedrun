@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { TaskRunner } from "./runner.ts";
-import { syncTaskLib } from "./tasks.ts";
+import { blockTask, syncTaskLib } from "./tasks.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-runner-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
@@ -15,6 +15,15 @@ syncTaskLib(libDir);
 fs.writeFileSync(path.join(taskDir, "echo.js"), `/**\n * @summary 回显\n * @status: draft\n * @param v 值\n */\nimport { tabbot, sleep } from "../../../lib/index.js";\nawait tabbot.run(async () => { await sleep(150); return { v: tabbot.params.v }; });\n`);
 const host = { op: async () => { throw new Error("不该碰页面"); }, end: async () => {} };
 const runner = new TaskRunner(host as never, { sitesDir, libDir, runDir });
+
+// 学不会的 task（blocked）：run 直接拒绝，不执行；原因写在文件头 @note
+blockTask(path.join(taskDir, "never.js"), "network 无响应体，DOM 读不到");
+const never = await runner.runTask("never", {});
+assert.equal(never.status, "failure"); assert.match(String(never.error), /学不会的记录.*@note/);
+fs.writeFileSync(path.join(taskDir, "half.js"), "/**\n * @summary 做了一半\n * @status: draft\n * @endpoint GET /a\n */\nawait 1;\n");
+blockTask(path.join(taskDir, "half.js"), "试过了");
+const half = fs.readFileSync(path.join(taskDir, "half.js"), "utf8");
+assert.match(half, /@status: blocked/); assert.ok(!/@status: draft/.test(half), "原来的状态被替换"); assert.match(half, /@endpoint GET \/a/, "其他标签和代码保留"); assert.match(half, /await 1;/);
 
 const a = await runner.runTask("echo", { v: "1" });
 assert.deepEqual(a, { status: "success", result: { v: "1" } });

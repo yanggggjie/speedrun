@@ -62,11 +62,6 @@
     }
     return r;
   };
-  T.resolveRef = (ref) => {
-    const el = byRef.get(String(ref).replace(/^@/, ""))?.deref();
-    if (!el || !el.isConnected) throw new Error(`元素 ${ref} 已不在页面上，请重新 snapshot`);
-    return el;
-  };
 
   // ---- DOM 变化：录制的快照带"自上次以来的变化数"，执行端等页面稳定要看最近一次变化的时间 ----
   T.mut = 0;

@@ -5,7 +5,7 @@ import type { SiteLog } from "./sitelog.ts";
 import type { RequestFile, Row } from "./types.ts";
 
 /**
- * 交接材料：派 subagent（delegate）时从站点日志里导出的一份冻结的"录制材料"，格式和日志一样（timeline.<窗口>.jsonl、请求文件、响应体），
+ * 交接材料：开学习会话（learn）时从站点日志里导出的一份冻结的"录制材料"，格式和日志一样（timeline.<窗口>.jsonl、请求文件、响应体），
  * 可以直接用 rg / node / Python 读。原则：
  * - 只含一个站点；
  * - 行和文件逐字复制（硬链接，不行就复制），不改写、不汇总；
@@ -91,6 +91,8 @@ export function exportMaterial(log: SiteLog, index: EndpointIndex | undefined, o
     for (const r of all) if (r.tab === a.tab && r.win === a.win && r.t >= a.t - BEFORE_MS && r.t <= a.t) keep.add(r.seq);
   }
   for (const r of all) if (r.win === "user" && r.t >= now - lookback) keep.add(r.seq);
+  // --fix 的线索：最近 run 窗口里这个接口失败的请求（task 坏了，就是它们）
+  if (opts.endpoint) for (const r of all.filter((x) => x.type === "request" && x.endpoint === opts.endpoint && x.win === "run" && !isOk(x.status) && x.t >= now - lookback).slice(-3)) addChain(r);
 
   const exportable = (r: Row): boolean => r.type !== "doc" && r.type !== "snap";
   let chosen = all.filter((r) => keep.has(r.seq) && exportable(r));
@@ -127,7 +129,7 @@ export function exportMaterial(log: SiteLog, index: EndpointIndex | undefined, o
 
   // 缺口
   const warnings: string[] = [];
-  if (all.length === 0) warnings.push("这个站点还没有任何记录（用户没在 Chrome 里访问过，或日志已被清理）：需要 subagent 自己 debug open 加 act 去触发");
+  if (all.length === 0) warnings.push("这个站点还没有任何记录（用户没在 Chrome 里访问过，或日志已被清理）：需要自己 debug open 加 act 去触发");
   const fromSeq = chosen.length ? chosen[0]!.seq : 0, toSeq = chosen.length ? chosen[chosen.length - 1]!.seq : 0;
   const lo = chosen.length ? Math.min(...chosen.map((r) => r.t)) : 0, hi = chosen.length ? Math.max(...chosen.map((r) => r.t)) : 0;
   const bg = all.filter((r) => r.type === "bg" && r.t >= lo && r.t <= hi).reduce((n, r) => n + (r.count ?? 0), 0);
@@ -138,7 +140,7 @@ export function exportMaterial(log: SiteLog, index: EndpointIndex | undefined, o
     if (anchors.length === 0) warnings.push(`没有找到目标接口 ${opts.endpoint} 的成功请求样本`);
     else if (anchors.length < 3) warnings.push(`目标接口只有 ${anchors.length} 个样本`);
     const stat = index?.snapshot(opts.site).endpoints.find((e) => e.key === opts.endpoint);
-    if (stat && !stat.replayable) warnings.push("目标接口最近一次请求的原始内容已不在内存（holder 重启过，或页面之后没再发过）：replayable 为 false，需要 subagent 自己 debug open 加 act 触发一次再重放");
+    if (stat && !stat.replayable) warnings.push("目标接口最近一次请求的原始内容已不在内存（holder 重启过，或页面之后没再发过）：replayable 为 false，需要自己 debug open 加 screenshot、click 触发一次再重放，或请用户在 Chrome 里做一次");
   } else if (anchors.length === 0) warnings.push("用户窗口最近没有动作引发的非 GET 请求");
 
   const manifest: Manifest = {

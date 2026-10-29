@@ -1,6 +1,6 @@
 # AGENTS
 
-agent（主 agent）使用 TabBot 的流程见 `skills/tabbot/SKILL.md`。本文只规定仓库边界、开发验证、分发发布和运行时实现。
+agent 使用 TabBot 的流程见 `skills/tabbot/SKILL.md`。本文只规定仓库边界、开发验证、分发发布和运行时实现。
 
 TabBot 完全以原始源码分发：`skills/tabbot/` 整个目录（源码、`scripts/dev`、文档）安装后原样镜像到 `~/.tabbot`，本文在 `~/.tabbot/AGENTS.md`。文中以仓库为基准的路径，在本机去掉 `skills/tabbot/` 前缀即可，如 `skills/tabbot/src` → `~/.tabbot/src`、`skills/tabbot/scripts/dev` → `~/.tabbot/scripts/dev`。目标、角色分工、运行时架构和故障排查都在 `ARCHITECTURE.md`。遇到问题可以直接读源码并修改；下次升级会覆盖 `~/.tabbot/src` 与 `~/.tabbot/scripts`。
 
@@ -54,7 +54,7 @@ npm run verify:pack
 
 1. `node skills/tabbot/setup.js` 重装到 `~/.tabbot`；改了 `background.js`、`manifest.json`、`page/` 下的页面脚本要在 `chrome://extensions` 里刷新 TabBot；只改了 holder、CLI、`src/run/` 的 `tabbot daemon restart` 即可。`tabbot doctor` 的 `extension-abi` 提示扩展是否太旧。
 2. 用 Claude in Chrome 在真实页面里触发行为（导航、点击、滚动、输入），TabBot 的常驻录制同时记录；再读 `~/.tabbot/sites/<站点>/` 下的文件检查：站点目录名是页面的 host（去 `www.`）、`timeline.user.jsonl`、请求文件、`endpoints.json` 里的 `phase` 统计要和实际操作相符。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `user`。至少在三个站点上试：一个公共站点、一个 GraphQL 站点、一个公司内部多子域站点。
-3. 走一遍 主 agent 派 subagent：`tabbot delegate <task 名> --goal …`，把 brief 交给 subagent，确认它读了 `material/manifest.json`、在自己的 debug 窗口里调试、写出 `sites/<站点>/tasks/<名>.js`，`tabbot run … --window <号>` 跑通后窗口收回；`log/*/timeline.<窗口号>.jsonl` 里是它做的一切。并行派两个 subagent（同一站点、不同 task），确认第二个的材料排除了第一个的行。重启 holder，确认窗口清空、编号继续递增、`endpoints.json` 读回。
+3. 走一遍学习会话：`tabbot learn <task 名> --site <站点> --endpoint …`（或 `--find …`），确认输出的学习指引里材料、纪律、做法齐全，读了 `material/manifest.json`，在自己的会话窗口里调试（截图加坐标，没有页面结构），写出 `sites/<站点>/tasks/<名>.js`，`tabbot run … --window <号>` 跑通后会话收回；`log/*/timeline.<窗口号>.jsonl` 里是它做的一切；`run` 输出里有回执。同时开两个会话（同一站点、不同 task），确认第二个的材料排除了第一个的行，且不写 `--window` 时 `debug` 会报“开着 2 个学习会话”。重启 holder，确认会话清空、编号继续递增、`endpoints.json` 读回。再验证：一步动作引发请求后，下一个 `open` / `click` / `type` / `key` / `scroll` 被拒绝（`screenshot`、`replay` 不受限），改了 `sites/<站点>/tasks/<名>.js` 后解锁；周期性接口（如 claude.ai 的 `ReportViewing`）不触发锁；`debug close` 不带 `--blocked` 被拒，带上后 task 变成 `@status: blocked` 且 `learn` 不再重开。可选：把 `src/hooks/stop-receipt.mjs` 注册成 Stop hook，确认跑过 `tabbot run` 却没引用回执、或用过 `learn`/`debug` 却没有任何回执时会被拦一次。
 4. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露“等页面加载完”这类问题）：量 `tabbot debug … open`、`tabbot run` 的耗时。
 
 日常 Chrome 里测试时日志含登录态内容，在 `~/.tabbot/sites`；测完删除该目录（旧版本留下的 `journal.old`、`task.old` 同理）。

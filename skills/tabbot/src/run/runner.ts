@@ -50,6 +50,7 @@ export class TaskRunner {
     const found = findTask(this.paths.sitesDir, name);
     if (!found) return { status: "failure", error: `task 不存在：${name}（task 都在 ${this.paths.sitesDir}/<站点>/tasks/ 下，ls 看有哪些）` };
     const file = found.file;
+    if (taskSummary(file).status === "blocked") return { status: "failure", error: `[${name}] 是学不会的记录（@status: blocked，原因见 ${file} 的 @note）：不要再探索，请用户在 Chrome 里示范一次这个操作`, ...(nested ? { failedTask: name } : {}) };
     if (nested && taskSummary(file).status === "draft") return { status: "failure", error: `[${name}] 是草稿（@status: draft），compose 里不允许调用；请先单独 run 并验证为 verified`, failedTask: name };
     const problem = checkParams(file, params);
     if (problem) return { status: "failure", error: `[${name}] ${problem}`, ...(nested ? { failedTask: name } : {}) };

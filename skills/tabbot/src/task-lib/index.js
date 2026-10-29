@@ -72,7 +72,6 @@ export const press = (_page, key, loc, options = {}) => call("act", { kind: "pre
 export const scroll = (_page, options = {}) => call("act", { kind: "scroll", ...options });
 export const waitFor = (_page, loc, options = {}) => call("waitFor", { loc, ...options });
 export const text = (_page, options = {}) => call("text", options);
-export const snapshot = (_page, options = {}) => call("snapshot", options);
 /** 声明式取数：query(page, { css: "article", fields: { author: ".name", link: "a@href" }, limit: 20 })。严格 CSP 的页面也能用。 */
 export const query = (_page, spec) => call("query", spec);
 /** 兜底：在页面里执行任意函数，参数必须可 JSON 序列化。严格 CSP 的页面会被浏览器拒绝，那时改用 query / request。 */

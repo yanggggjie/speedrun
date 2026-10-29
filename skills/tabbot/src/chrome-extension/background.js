@@ -9,9 +9,10 @@
 //   openTab { windowId, url, active }  在窗口里新开标签页
 //   activateTab { tabId }              把标签页切到所在窗口的前台（后台标签页浏览器不渲染）
 //   closeTab { tabId } | closeWindow { windowId }
+//   screenshot { tabId }               截图：把标签页切到前台，截可见区域，缩到视口的 CSS 像素尺寸（截图上的坐标就是页面坐标），返回 { data(base64), mime, w, h }
 // 扩展 → holder：{ type: "hello", abi, ... } | { type: "page", tab, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化和关闭）
 
-const ABI = 2;
+const ABI = 3;
 const HOST = "com.tabbot.connect";
 const RETRY_MAX_MS = 30_000;
 const KEEPALIVE_MINUTES = 0.5;
@@ -153,6 +154,22 @@ async function runOp(name, args) {
     case "closeTab": {
       await chrome.tabs.remove(args.tabId);
       return {};
+    }
+    case "screenshot": {
+      const tab = await chrome.tabs.get(args.tabId);
+      if (!tab.active) await chrome.tabs.update(args.tabId, { active: true });
+      const [vp] = await chrome.scripting.executeScript({ target: { tabId: args.tabId }, func: () => ({ w: window.innerWidth, h: window.innerHeight }) });
+      const w = vp?.result?.w, h = vp?.result?.h;
+      if (!w || !h) throw new Error("取不到页面视口大小（受限页面截不了图）");
+      const shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
+      const bitmap = await createImageBitmap(await (await fetch(shot)).blob());
+      const canvas = new OffscreenCanvas(w, h);
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+      const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.7 });
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return { data: btoa(bin), mime: "image/jpeg", w, h };
     }
     case "closeWindow": {
       await chrome.windows.remove(args.windowId);

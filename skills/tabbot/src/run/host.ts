@@ -11,7 +11,7 @@ export class Session {
   tab: number | undefined;
   origin: string | undefined;
   lastUsed = Date.now();
-  /** 所在的 agent 窗口：debug 窗口号，或主 agent 的 run 窗口 run。 */
+  /** 所在的 agent 窗口：学习会话的窗口号，或 run 窗口 run。 */
   readonly key: string;
   /** 只许组合 task（compose）：任何页面操作都拒绝。 */
   composeOnly = false;
@@ -37,7 +37,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 
 /**
  * task 与探索命令共用的页面操作。每个操作都在 tabbot agent 窗口的标签页里执行，并且都记进日志（来源 agent 的 cmd 行）：
- * 做过的事就是知识——subagent 写 task 从这些记录生成 task。
+ * 做过的事就是知识——写 task 从这些记录生成 task。
  */
 export class RunHost {
   private readonly d: HostDeps;
@@ -95,14 +95,15 @@ export class RunHost {
   }
 
   async op(s: Session, name: string, a: any): Promise<unknown> {
-    if (s.composeOnly) throw new Error(`compose 里只能组合 task（task(名字, 参数)），不能操作页面：缺的做法让 subagent 去学（tabbot delegate）`);
+    if (s.composeOnly) throw new Error(`compose 里只能组合 task（task(名字, 参数)），不能操作页面：缺的做法先 tabbot learn 学会`);
     switch (name) {
       case "goto": return this.goto(s, a);
       case "request": return this.request(s, a);
       case "act": return this.act(s, a);
+      case "pointer": return this.act(s, a, "pointer");
+      case "screenshot": return this.screenshot(s);
       case "waitFor": return this.waitFor(s, a);
       case "text": { const tab = this.page(s); return this.callTab(tab, "text", [a.max ?? 20_000]); }
-      case "snapshot": { const tab = this.page(s); return this.callTab(tab, "snapshot", [a.full === true]); }
       case "query": { const tab = this.page(s); return this.callTab(tab, "query", [a]); }
       case "eval": { const tab = this.page(s); return this.log(tab, "eval", String(a.src).slice(0, 60), { src: String(a.src).slice(0, 2000) }, () => this.callTab(tab, "eval", [a])); }
       default: throw new Error(`未知操作 ${name}`);
@@ -165,14 +166,23 @@ export class RunHost {
     }, (r: any) => ({ status: r.status, size: r.size, ms: r.ms }));
   }
 
-  private async act(s: Session, a: any): Promise<unknown> {
+  /** 截图（探索用）：返回 { data(base64), mime, w, h }；图上坐标就是页面视口的 CSS 像素。图片本身不进日志。 */
+  private async screenshot(s: Session): Promise<{ data: string; mime: string; w: number; h: number }> {
+    const tab = this.page(s);
+    await this.d.win.activate(tab);
+    return this.log(tab, "screenshot", "", {}, async () => (await withTimeout(this.d.link.request("screenshot", { tabId: tab }), STEP_TIMEOUT_MS, "截图")) as { data: string; mime: string; w: number; h: number }, (r) => ({ w: r.w, h: r.h }));
+  }
+
+  /** fn 是页面里的执行函数：act 按定位（task 用），pointer 按屏幕坐标（截图探索用）。 */
+  private async act(s: Session, a: any, fn: "act" | "pointer" = "act"): Promise<unknown> {
     const tab = this.page(s);
     const cmd = { ...a };
-    const target = a.loc !== undefined ? JSON.stringify(a.loc).slice(0, 60) : a.ref ?? a.key ?? a.to ?? "";
-    const base = { kind: a.kind, ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(a.ref ? { ref: a.ref } : {}), ...(a.key ? { key: a.key } : {}), ...(a.dy !== undefined ? { dy: a.dy } : {}), ...(a.to ? { to: a.to } : {}), ...(a.checked !== undefined ? { checked: a.checked } : {}) };
+    const at = a.x !== undefined && a.y !== undefined ? `(${a.x},${a.y})` : "";
+    const target = a.loc !== undefined ? JSON.stringify(a.loc).slice(0, 60) : at || (a.key ?? a.to ?? "");
+    const base = { kind: a.kind, ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(at ? { x: a.x, y: a.y } : {}), ...(a.key ? { key: a.key } : {}), ...(a.dy !== undefined ? { dy: a.dy } : {}), ...(a.to ? { to: a.to } : {}), ...(a.checked !== undefined ? { checked: a.checked } : {}) };
     return this.log(tab, a.kind, target, base, async () => {
       let res: any;
-      try { res = await withTimeout(this.callTab(tab, "act", [cmd]), (a.timeout ?? 10_000) + 5_000, "页面操作"); }
+      try { res = await withTimeout(this.callTab(tab, fn, [cmd]), (a.timeout ?? 10_000) + 5_000, "页面操作"); }
       catch (e) {
         if (!NAVIGATED.test(e instanceof Error ? e.message : String(e))) throw e;
         res = { ok: true, navigated: true };
@@ -183,7 +193,7 @@ export class RunHost {
         if (loaded) { res.url = loaded.url; res.title = loaded.title; s.origin = originOf(loaded.url); this.d.win.moved(tab, s.origin); }
       }
       return res;
-    }, (r: any) => ({ loc: r.loc, ...(a.kind === "fill" && r.target?.type !== "password" ? { text: String(a.text ?? "").slice(0, 200) } : {}), ...(a.kind === "select" ? { text: String(a.text ?? "") } : {}), url: r.url }));
+    }, (r: any) => ({ loc: r.loc, ...((a.kind === "fill" || a.kind === "type") && r.target?.type !== "password" ? { text: String(a.text ?? "").slice(0, 200) } : {}), ...(a.kind === "select" ? { text: String(a.text ?? "") } : {}), url: r.url }));
   }
 
   private async waitFor(s: Session, a: { loc: unknown; timeout?: number; gone?: boolean }): Promise<unknown> {

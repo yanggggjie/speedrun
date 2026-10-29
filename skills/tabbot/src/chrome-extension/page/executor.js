@@ -1,4 +1,4 @@
-// 页面里（MAIN world）的执行：holder 下发的动作（点击、填写、选择、勾选、按键、滚动）、实时快照、读文字、重放请求。
+// 页面里（MAIN world）的执行：holder 下发的动作（点击、填写、选择、勾选、按键、滚动）、按屏幕坐标操作（截图探索用）、读文字、重放请求。
 // 动作都是 DOM 事件（dispatchEvent、原生 setter），不是真实输入。只管执行，不写日志，不依赖录制端；
 // 自己监听真人的设备事件，动作进行中一旦看到真人输入就停止等待、告诉 holder。
 (() => {
@@ -21,8 +21,8 @@
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   };
   const fire = (el, Ctor, type, init) => el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, composed: true, view: window, ...init }));
-  const clickEl = (el) => {
-    const { x, y } = toView(el);
+  const clickEl = (el, at) => {
+    const { x, y } = at || toView(el); // 给了坐标（截图里看到的位置）就不滚动
     const m = { clientX: x, clientY: y, button: 0 };
     const pm = { ...m, pointerId: 1, pointerType: "mouse", isPrimary: true };
     if (el.focus) el.focus({ preventScroll: true }); // 真实的 mousedown 会让元素获得焦点，合成的不会
@@ -90,7 +90,7 @@
     setTimeout(tick, 120); // 先给动作引发的请求一点时间发出来
   });
 
-  // ---- 定位：@e 引用（探索时用）或持久定位 loc（写进 task 的）：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? } ----
+  // ---- 持久定位 loc（写进 task 的）：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? } ----
   const IMPLICIT_ROLE = { a: "link", button: "button", select: "combobox", textarea: "textbox", summary: "button", img: "img", nav: "navigation", main: "main", li: "listitem", article: "article" };
   const roleOf = (el) => {
     const r = el.getAttribute("role");
@@ -167,13 +167,13 @@
   T.exec.act = async (cmd) => {
     try {
       const out = { ok: true };
-      const el = cmd.loc !== undefined ? await resolveLoc(cmd.loc, cmd.timeout ?? 10000) : cmd.ref ? T.resolveRef(cmd.ref) : null;
+      const el = cmd.loc !== undefined ? await resolveLoc(cmd.loc, cmd.timeout ?? 10000) : null;
       switch (cmd.kind) {
-        case "click": if (!el) throw new Error("click 需要元素引用（@e12）或 loc"); out.target = T.desc(el); clickEl(el); break;
-        case "fill": if (!el) throw new Error("fill 需要元素引用（@e12）或 loc"); out.target = T.desc(el); setValue(el, String(cmd.text ?? "")); out.chars = String(cmd.text ?? "").length; break;
-        case "select": if (!el) throw new Error("select 需要元素引用（@e12）或 loc"); out.target = T.desc(el); selectOption(el, String(cmd.text ?? "")); break;
+        case "click": if (!el) throw new Error("click 需要 loc"); out.target = T.desc(el); clickEl(el); break;
+        case "fill": if (!el) throw new Error("fill 需要 loc"); out.target = T.desc(el); setValue(el, String(cmd.text ?? "")); out.chars = String(cmd.text ?? "").length; break;
+        case "select": if (!el) throw new Error("select 需要 loc"); out.target = T.desc(el); selectOption(el, String(cmd.text ?? "")); break;
         case "check": {
-          if (!el) throw new Error("check 需要元素引用（@e12）或 loc");
+          if (!el) throw new Error("check 需要 loc");
           if (!(el instanceof HTMLInputElement) || !/^(checkbox|radio)$/i.test(el.type)) throw new Error("这个元素不是复选框或单选框");
           out.target = T.desc(el);
           if (el.checked !== (cmd.checked !== false)) clickEl(el);
@@ -195,9 +195,70 @@
     }
   };
 
-  T.exec.ping = () => true; // 页面脚本就位的探针
+  // ---- 按屏幕坐标操作：给截图探索用。坐标是视口里的 CSS 像素（截图就是按这个尺寸缩的），左上角 (0,0)。
+  // 返回元素的持久定位 loc，写 task 时直接用；定位不唯一时补 nth，保证回放时命中同一个元素。----
+  const deepFromPoint = (x, y) => {
+    let el = document.elementFromPoint(x, y);
+    while (el && el.shadowRoot) { const inner = el.shadowRoot.elementFromPoint(x, y); if (!inner || inner === el) break; el = inner; }
+    return el;
+  };
+  const uniqueLoc = (el) => {
+    const loc = durable(el);
+    const list = T.find(loc);
+    if (list.length === 1 && list[0] === el) return loc;
+    const i = list.indexOf(el);
+    if (i >= 0) return { ...loc, nth: i };
+    return { css: T.cssPath(el) };
+  };
+  const scrollableAt = (el) => {
+    for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+      const o = getComputedStyle(n).overflowY;
+      if (/(auto|scroll)/.test(o) && n.scrollHeight > n.clientHeight + 1) return n;
+    }
+    return null;
+  };
+  T.exec.pointer = async (cmd) => {
+    try {
+      const out = { ok: true };
+      switch (cmd.kind) {
+        case "click": {
+          const el = deepFromPoint(cmd.x, cmd.y);
+          if (!el) throw new Error(`坐标 (${cmd.x}, ${cmd.y}) 在页面之外，或没有元素`);
+          out.target = T.desc(el); out.loc = uniqueLoc(el);
+          clickEl(el, { x: cmd.x, y: cmd.y });
+          break;
+        }
+        case "type": {
+          const el = document.activeElement;
+          if (!el || el === document.body || el === document.documentElement) throw new Error("没有获得焦点的输入框：先点击输入框再 type");
+          const text = String(cmd.text ?? "");
+          out.target = T.desc(el); out.loc = uniqueLoc(el); out.chars = text.length;
+          if (el.isContentEditable || el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+            if (!document.execCommand("insertText", false, text)) setValue(el, String(el.value ?? el.textContent ?? "") + text); // 追加，像真实输入
+          } else throw new Error("焦点不在输入框上：先点击输入框再 type");
+          break;
+        }
+        case "key": out.target = T.desc(document.activeElement); pressKey(document.activeElement, cmd.key); break;
+        case "scroll": {
+          const at = cmd.x !== undefined && cmd.y !== undefined ? deepFromPoint(cmd.x, cmd.y) : null;
+          const box = at ? scrollableAt(at) : null;
+          scrollTarget(box, cmd.dx, cmd.dy, cmd.to);
+          out.target = box ? T.desc(box) : "page";
+          if (box) out.loc = uniqueLoc(box);
+          out.scrollY = box ? Math.round(box.scrollTop) : Math.round(window.scrollY);
+          break;
+        }
+        default: throw new Error(`未知动作 ${cmd.kind}`);
+      }
+      if (cmd.settle === true) out.settle = await settle(cmd.settleTimeout ?? 2000);
+      out.url = location.href; out.title = document.title;
+      return out;
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e), url: location.href };
+    }
+  };
 
-  T.exec.snapshot = (full) => T.snap("live", !!full);
+  T.exec.ping = () => true; // 页面脚本就位的探针
 
   T.exec.text = (max) => {
     const text = (document.body?.innerText ?? "").replace(/\n{3,}/g, "\n\n").trim();

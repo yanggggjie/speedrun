@@ -241,7 +241,7 @@ export async function runHolder(): Promise<void> {
   const retain = (): void => { try { enforce(log, { protect: (site) => index.protect(site), changed: (site) => index.touch(site) }); } catch (error) { warnCatch("retention")(error); } };
   retain();
   setInterval(retain, 10_000).unref();
-  // 空闲太久的 debug 窗口收回（subagent 失败、被中断时不留下窗口）
+  // 空闲太久的 debug 窗口收回（学到一半被中断时不留下窗口）
   setInterval(() => { for (const w of debugWindows.idle()) void releaseDebugWindow(ctx, w.id).catch(warnCatch("release debug window")); }, 60_000).unref();
   setInterval(() => { if (!extSocket && Date.now() - lastActivity > HOLDER_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();
   process.on("SIGINT", () => void shutdown(0));

@@ -1,14 +1,17 @@
 import { randomBytes } from "node:crypto";
 
 export const DEBUG_MAX_OPS = 80;
-/** debug 窗口这么久没有任何调试操作就回收（subagent 失败、被中断时不留下窗口）。 */
+/** 学习会话（debug 窗口）这么久没有任何调试操作就回收（学到一半被中断时不留下窗口）。 */
 export const DEBUG_IDLE_MS = 30 * 60_000;
 
-export type DebugWindow = { id: string; task: string; goal: string; site: string; fix: boolean; ops: number; done: boolean; createdAt: number; lastActive: number };
+/** 引发请求后的锁定：t 是锁定时刻；task 草稿在这之后被改过才解锁（commands.ts 的 lockReason）。 */
+export type DebugLock = { t: number; seqs: number[] };
+
+export type DebugWindow = { id: string; task: string; goal: string; site: string; fix: boolean; ops: number; done: boolean; createdAt: number; lastActive: number; lock?: DebugLock };
 
 /**
- * debug 窗口的登记表：主 agent 派 subagent 时开一个，绑定一份 task 名；窗口号同时是 agent 窗口的 key。
- * 主 agent 自己长期持有的是 run 窗口（key 为 run），不在这里登记，也不能调试。
+ * 学习会话（debug 窗口）的登记表：agent 学一个请求时开一个（tabbot learn），绑定一份 task 名；窗口号同时是 agent 窗口的 key。
+ * 执行 task 用的是 run 窗口（key 为 run），不在这里登记，也不能调试：调试只能在学习会话里做，会话有头有尾，产出必须是一份 task。
  * 只在 holder 内存里；holder 重启一切归零。
  */
 export class DebugWindows {
@@ -17,7 +20,7 @@ export class DebugWindows {
   open(info: { task: string; goal: string; site: string; fix: boolean }): DebugWindow | { error: string } {
     if (!info.site) return { error: "debug 窗口要绑定一个站点（--site）" };
     const dup = [...this.map.values()].find((w) => !w.done && w.task === info.task);
-    if (dup) return { error: `task ${info.task} 已经有 debug 窗口 ${dup.id} 在调试（同一件事只派一个 subagent）：等它回报，或让它 tabbot debug --window ${dup.id} close 放弃` };
+    if (dup) return { error: `task ${info.task} 已经有学习会话 ${dup.id} 在学（同一份 task 只开一个）：接着用它，或 tabbot debug --window ${dup.id} close 放弃` };
     const now = Date.now();
     let id = "";
     do id = `debug-${randomBytes(2).toString("hex")}`; while (this.map.has(id));
@@ -26,13 +29,18 @@ export class DebugWindows {
     return w;
   }
 
-  /** 一次调试操作：校验窗口并计数。 */
+  /** 一次调试操作：校验窗口并计数。没写窗口号时，只开着一个会话就用它。 */
   use(id: string | undefined): DebugWindow | { error: string } {
-    if (!id) return { error: "调试由 subagent 做：主 agent 没有调试权限（run 窗口只执行 task）。缺 task 就 tabbot delegate <task 名> --site <站点> --endpoint \"方法 接口名\"（或 --find \"要的数据或动作\"）派一个 subagent 学会这个请求，把输出的 brief 交给 subagent" };
+    if (!id) {
+      const open = this.active();
+      if (open.length === 0) return { error: "没有学习会话：调试要先开会话，tabbot learn <task 名> --site <站点> --endpoint \"方法 接口名\"（或 --find \"要的数据或动作\"）学会一个请求" };
+      if (open.length > 1) return { error: `开着 ${open.length} 个学习会话（${open.map((w) => w.id).join("、")}）：用 --window <窗口号> 指定` };
+      id = open[0]!.id;
+    }
     const w = this.map.get(id);
-    if (!w) return { error: `${id} 不是 debug 窗口，或已失效（holder 重启过？）：回报现状，由主 agent 重新派` };
-    if (w.done) return { error: `debug 窗口 ${id} 已经收回（task ${w.task} 已交付或已放弃）：现在写回报` };
-    if (w.ops >= DEBUG_MAX_OPS) return { error: `debug 窗口 ${id} 的调试操作用完了（${DEBUG_MAX_OPS} 次）：回报当前进展，由主 agent 决定是否续派` };
+    if (!w) return { error: `${id} 不是学习会话，或已失效（holder 重启过？）：重新 tabbot learn` };
+    if (w.done) return { error: `学习会话 ${id} 已经收回（task ${w.task} 已验证或已放弃）` };
+    if (w.ops >= DEBUG_MAX_OPS) return { error: `学习会话 ${id} 的调试操作用完了（${DEBUG_MAX_OPS} 次）：告诉用户卡在哪、需要用户做什么（登录、示范一次），或 tabbot debug close 放弃` };
     w.ops++;
     w.lastActive = Date.now();
     return w;

@@ -9,8 +9,8 @@
  */
 import { EXTENSION_COMMAND_TIMEOUT_MS } from "../utils/constants.ts";
 
-/** 扩展 ABI 版本：holder 和扩展之间的操作集合（call、tabs、goto、openWindow 等）。只有改 ABI 才加一，用户才需要刷新扩展。 */
-export const ABI = 2;
+/** 扩展 ABI 版本：holder 和扩展之间的操作集合（call、tabs、goto、openWindow、screenshot 等）。只有改 ABI 才加一，用户才需要刷新扩展。 */
+export const ABI = 3;
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
 

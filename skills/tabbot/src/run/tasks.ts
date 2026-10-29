@@ -154,6 +154,23 @@ export function promoteTask(file: string): boolean {
   return true;
 }
 
+/**
+ * 把 task 标成 blocked：试过、确认这个请求学不会，原因和证据写进文件头 @note。task 文件不存在就建一个只有文件头的。
+ * 之后同一件事 rg @status 就能找到，不会再开会话重复探索；run 对 blocked 的 task 直接拒绝。
+ */
+export function blockTask(file: string, reason: string): void {
+  const note = ` * @note 学不会：${reason.replace(/\s+/g, " ").trim()}`;
+  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const block = /^(\s*(?:#![^\n]*\n\s*)?\/\*\*?)([\s\S]*?)(\*\/)/.exec(text);
+  if (!block) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `/**\n * @summary （学不会，见 @note）\n * @status: blocked\n${note}\n */\n${text}`, "utf8");
+    return;
+  }
+  const kept = block[2]!.split("\n").filter((line) => !/^\s*\*?\s*@status:?/.test(line)).join("\n").replace(/\s*$/, "\n");
+  fs.writeFileSync(file, `${text.slice(0, block.index)}${block[1]}${kept} * @status: blocked\n${note}\n ${block[3]}${text.slice(block.index + block[0].length)}`, "utf8");
+}
+
 /** 这个站点的 task 覆盖的接口：键是 `方法 接口名`（和 endpoints.json 的 key 一致），值是 task 名。 */
 export function coveredEndpoints(sitesDir: string, site: string): Map<string, string> {
   const out = new Map<string, string>();

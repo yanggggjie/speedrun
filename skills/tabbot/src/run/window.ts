@@ -5,13 +5,13 @@ import { sleep } from "../utils/async.ts";
 type Tab = { tabId: number; windowId: number; url: string; anchor?: boolean };
 type Owned = { origin: string; busy: boolean; idleSince: number; key: string };
 
-/** run 窗口：主 agent 长期持有，只执行 task。 */
+/** run 窗口：长期持有，只执行 task。 */
 export const MAIN_KEY = "run";
 
 /**
  * tabbot agent 窗口：agent 干活的地方，和用户的窗口分开，不抢焦点。两种：
- * run 窗口（key 为 run）主 agent 长期持有，只执行 task；debug 窗口（key 为 w-…）一个 subagent 一个，派出时开、收回时关。
- * 一个 key 一个窗口，这样几个 subagent 并行时各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。
+ * run 窗口（key 为 run）长期持有，只执行 task；debug 窗口（key 为 debug-…）一个学习会话一个，开会话时开、收回时关。
+ * 一个 key 一个窗口，这样 run 窗口和学习会话的页面各在自己窗口的前台（浏览器不渲染后台标签页）。
  * 每个窗口的第一个标签页是扩展的 anchor 页（标题 tabbot agent）。窗口里其余标签页按站点（origin）池化：
  * task 结束只是还回去，下次同站点的直接复用，空闲太久才关。
  * key 到窗口的映射只在内存里；holder 重启（或扩展链路重连）一切归零：留下的窗口都是孤儿，第一次用窗口时全部关掉。

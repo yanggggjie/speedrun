@@ -2,34 +2,42 @@
 
 TabBot 的目标、角色分工和运行时架构。agent 怎么用见 `SKILL.md`；仓库边界、开发验证、分发发布见 `AGENTS.md`；安装见 `install.md`。
 
-## 1. 目标
+## 1. 目标与原则
 
-- **只有两种方向**：人做一半交接给 agent 继续；或 agent 自己单独做。没有 agent→人，没有人抢占，没有租约。
+一句话：**超快的、用已登录 Chrome 的 skill；探索一步就写一步 task，绝不探索浪费。**
+
+- **只有两种方向**：人做一半交接给 agent 继续；或 agent 自己单独做。没有 agent→人，没有人抢占，没有租约。agent 干活在单独的 `tabbot agent` 窗口里，不打扰用户的窗口和标签页。
 - **录制的用途，按优先级**：① 拿到接口信息，用接口大幅提速；② 给任务提供上下文（用户最近做了什么）；③ 接口无法重放时，给 DOM 操作提供依据（持久定位、该步触发了哪个请求）。
-- **绝对原则：以接口请求为粒度，每个接口都沉淀成 task，不重复探索。** 有请求就用请求；没有请求才用 DOM，也写成 task。一份 task 只覆盖一个请求。批量的事（点 10 个赞、取 30 条回答）用 task 循环，本来就是这一次最快的做法。
-- agent 干活在单独的 `tabbot agent` 窗口里，不打扰用户的窗口和标签页。
 
-## 2. 角色：主 agent 和 subagent
+原则（运行时做法见 `SKILL.md` 第 1 节）：
+1. **快。** 结果只来自 `tabbot run`（毫秒级），最终回复引用回执。
+2. **探索即写 task。** 探索的唯一产物是 task，不是答案。**动作一旦引发请求，立刻转去学这个请求，不再继续翻。**（最重要）
+3. **network 优先，DOM 兜底。** 一份 task 只覆盖一个请求（DOM 则是一个页面读取动作）。
+4. **成本顺序：** 读文件 < 重放录制里的请求 < 一次页面动作（截图加坐标）< 继续探索。用户演示只是最后兜底。
+5. **命令面最小。** 能读文件的不做命令；TabBot 只做必须由它做的事。（重要）
+6. **一个 agent。** 学习会话与 run 窗口隔离；浏览器只有两种用法：截图加坐标，以及 task（network 或 dom executor）。
 
-「调试」「执行」是产品的两个词：**调试**是 subagent 在自己的 agent 窗口里摸清接口和定位；**执行**只有 `tabbot run`——用户拿到的结果必须来自 task 的返回值。
+## 2. 角色：一个 agent，两种窗口
 
-- **主 agent**：唯一目标是完成用户任务。长期持有 **run 窗口**，只执行 task，**没有调试权限**。能用：`run`、`compose`（只组合 task）、`delegate`、`status`、`tabs`、`doctor`；读日志和 task 不是命令，是 `~/.tabbot/sites/<站点>/` 下的文件（见 `SKILL.md` 第 3 节）。缺哪个能力，就为它派一个 subagent；独立的并行派。subagent 回报后，主 agent 综合回报和 task 的执行结果，向用户汇报。
-- **subagent**：每个只有一个目标——「调试，然后写出 `<task 名>`」。有完整权力：`tabbot debug --window <debug 窗口号> open|snapshot|text|act|replay|close`，**包括真正发起有副作用的操作**（学习需要真的发一次才知道成败；只做学习必需的最少次数，批量留给主 agent）。产出是一份 task 加一份回报：task 名、参数、`@endpoint`、验证结果、**副作用清单**（做过什么、对象 id、日志编号）、遗留问题。
+只有一个 agent，没有 subagent。「调试」「执行」是产品的两个词：**调试**是在学习会话里摸清接口和定位，目的是写出 task；**执行**只有 `tabbot run`——用户拿到的结果必须来自 task 的返回值。
 
-**为什么这样区分**（写在 `tabbot delegate` 生成的 brief 和 `SKILL.md` 里，让 agent 明白原因，才不会想绕）：
-1. 速度：调试慢，按 task 执行只要毫秒。混在一起，agent 会一直调试，永远用不上 task。
-2. 目标不同：主 agent 要把结果交给用户，subagent 要把 task 写对。同一个 agent 背两个目标，会倾向于“先把眼前的做出来”，task 就被省掉。
-3. 上下文干净：试错、失败的尝试、响应原文只留在 subagent 那里。
-4. 可并行：独立的 task 同时让几个 subagent 调试。
-5. 边界在工具里：主 agent 没有调试权限，不是约定而是做不到；想学新东西只能派 subagent，所以探索必然产出 task。
-6. 事后可查：subagent 的每个动作都在日志里。
+- **run 窗口**（key 为 `run`）：长期持有，只执行 task，**不能调试**。`tabbot run` / `compose` 在这里跑。
+- **学习会话**（debug 窗口，key 为 `debug-xxxx`）：agent 学一个请求时用 `tabbot learn` 开一个，绑定一份 task 名；会话里才能 `tabbot debug open|screenshot|click|type|key|scroll|replay|close --blocked`，**包括真正发起有副作用的操作**（学习需要真的发一次才知道成败；只做学习必需的最少次数，写操作先问用户，批量留给 task 循环）。产出是一份 task；task `run` 成功会话就收回。
 
-**强制机制（全在 TabBot 内，不依赖 harness）**
-1. `tabbot delegate <task 名> --site <站点> (--endpoint "方法 接口名" | --find "要的那一个数据或动作") [--note "…"] [--fix]` 是派 subagent 的唯一入口（二选一：知道接口名用 `--endpoint`；只知道要什么用 `--find`，subagent 自己从材料和页面里找到那一个请求；`--fix` 时缺省取现有 task 文件头的 `@endpoint`；`--endpoint` 在 endpoints.json 里没有样本只警告）：开一个 **debug 窗口**（绑定 task 名和站点，只在 holder 内存里；同一个 task 名同时只能有一个，站点不限），把目标接口的样本和触发它的动作导出成冻结的**交接材料**（§6），输出自包含的 brief（派发时约定 subagent 一律用 harness 里最快的模型档位，Claude Code 是 haiku；TabBot 不选模型，只在 delegate 的输出里写明；目标、窗口号、材料和日志在哪、SDK 用法、写 task 的规则、副作用边界、回报格式）。一个 subagent 只学一个站点的一个请求（`--find` 时最终也只交一个 `@endpoint`，发现还需要别的请求就在回报里列出，由主 agent 按请求逐个派）：做法优先 network（task 里直接发请求），不行才 dom（触发这个请求的最小页面操作）；遍历、批量、聚合、业务汇总留给主 agent 用 task 循环和 `compose`，不写进 task；task 名全局唯一，同名的草稿（`@status: draft`）要加 `--fix` 续。
-2. `tabbot debug` 必须带 `--window <debug 窗口号>`：没有、是 run 窗口、不存在、已收回、用完 80 次操作，一律拒绝并说明。debug 窗口收回有三种：自己那份 task `run` 成功；`debug … close` 放弃；30 分钟没有操作自动回收；收回时窗口和工作区（含材料）一起删，它留下的日志是历史，不删。
+**为什么还留着学习会话**（合并掉 subagent 之后，调试不能变成随手做的事）：
+1. 速度：调试慢，按 task 执行只要毫秒。调试有头有尾（开会话、有操作上限、空闲回收、task 验证通过就收回），才不会一直调试、永远用不上 task。
+2. 目标：agent 要把结果交给用户，容易倾向于“先把眼前的做出来”，task 就被省掉。所以用户的结果必须来自 `tabbot run`，每次 `run` / `compose` 发一个**回执**（`RC-xxxxxxxx`，写进 `sites/.receipts.jsonl`），最终回复必须引用它。
+3. 上下文：试错、响应原文、截图都在会话里产生；读响应体用 `rg`、`node -e` 取字段，不整段读进来，截图只在需要时截。
+4. 事后可查：会话里的每个动作都在它自己窗口的时间线里。
+
+**强制机制（全在 TabBot 内，不依赖 harness；回执检查例外）**
+1. `tabbot learn <task 名> --site <站点> (--endpoint "方法 接口名" | --find "要的那一个数据或动作") [--note "…"] [--fix]` 是开学习会话的唯一入口（二选一：知道接口名用 `--endpoint`；只知道要什么用 `--find`，自己从材料和页面里找到那一个请求；`--fix` 时缺省取现有 task 文件头的 `@endpoint`；`--endpoint` 在 endpoints.json 里没有样本只警告）：开一个 **debug 窗口**（绑定 task 名和站点，只在 holder 内存里；同一个 task 名同时只能有一个，站点不限），把目标接口的样本和触发它的动作导出成冻结的**交接材料**（§6），输出自包含的学习指引（目标、会话号、材料和日志在哪、做法、纪律、SDK 用法、写 task 的规则）。一个会话只学一个站点的一个请求（`--find` 时最终也只写一个 `@endpoint`，发现还需要别的请求就学完再开下一个）：做法优先 network（task 里直接发请求），不行才 dom（触发这个请求的最小页面操作）；遍历、批量、聚合、业务汇总不写进 task，用 task 循环和 `compose`；task 名全局唯一，同名的草稿（`@status: draft`）要加 `--fix` 续。
+2. `tabbot debug` 只能在学习会话里：没开会话、是 run 窗口、不存在、已收回、用完 80 次操作，一律拒绝并说明；只开着一个会话时可以不写 `--window`，开着几个要写。会话收回有三种：绑定的 task `run` 成功；`debug close --blocked "…"` 确认学不会；30 分钟没有操作自动回收（没有产物，不发回执）；收回时窗口和工作区（含材料）一起删，它留下的日志是历史，不删。
 3. `compose` 只能 `task(名字, 参数)` 组合 task：compose 自己的会话被标为 compose-only，任何页面操作（包括 `import` SDK 后调用）都被 host 拒绝。
-4. `run` 真跑成功一次，task 头里的 `@status: draft` 自动变 `verified`；`--dry` 让非 GET 的 `request` 不真发，只打印将发送的内容（subagent 迭代用）。subagent 带 `--window` `run` 自己那份 task 成功，debug 窗口收回、关掉。
-5. task 头写 `@endpoint 方法 接口名`（和 `endpoints.json` 里的 `key` 一致）：聚合文件把已有 task 覆盖的接口标上 `task`，`task` 为 `null` 的就是还没学会的——主 agent 靠它决定派哪些 subagent。`debug act` 成功后输出持久定位和它引发的非 GET 请求（连同请求文件的路径），提示“有请求就改用请求”。
+4. `run` 真跑成功一次，task 头里的 `@status: draft` 自动变 `verified`；`--dry` 让非 GET 的 `request` 不真发，只打印将发送的内容（学习时迭代用）。在学习会话里带 `--window` `run` 它绑定的 task 成功，会话收回、关掉。
+5. task 头写 `@endpoint 方法 接口名`（和 `endpoints.json` 里的 `key` 一致）：聚合文件把已有 task 覆盖的接口标上 `task`，`task` 为 `null` 的就是还没学会的。`@status` 有 `draft`、`verified`、`blocked` 三种，`blocked` 是确认学不会的记录（原因在 `@note`）：`run` 拒绝，`learn` 不再开会话，`--fix` 才能重开。
+6. **探索即写 task 的结构化落实**（`journal/explore.ts` 加 `journal/commands.ts` 的 `pointerCommand`、`lockReason`）：`debug click` / `type` / `key` / `scroll` 成功后输出持久定位、**一行可贴进 task 的代码**，以及**这一步引发的请求**（非噪声、非 idle、非静态资源、非周期性接口；含 GET；写明内容类型和有没有响应体，没有就写 `bodyOmitted` 的原因）。引发了请求就**锁定**这个会话：task 草稿在锁定之后被改过之前，`open` / `click` / `type` / `key` / `scroll` 被拒绝且不占操作次数，`screenshot` 和 `replay` 不受限。会话只有两种结束：绑定的 task `run` 成功，或 `debug close --blocked "原因和证据"`（把 task 标成 blocked，发回执）；不带 `--blocked` 的 `close` 被拒绝。
+7. **回执检查**（可选，Claude Code 的 Stop hook）：`src/hooks/stop-receipt.mjs` 看本轮（最后一条用户消息之后）工具输出里出现过的回执，最终回复没引用任何一个就拦一次，让 agent 补上；本轮用过 `tabbot learn` / `debug` 却没有任何回执（既没 run 通过也没 `close --blocked`）也拦一次；都没有的轮次不管。注册方法：在 `~/.claude/settings.json` 里加 `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"node ~/.tabbot/src/hooks/stop-receipt.mjs"}]}]}}`。别的 harness 靠 `SKILL.md` 的约定。
 
 ## 3. 进程与分层
 
@@ -69,9 +77,9 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 
 ## 5. 页面脚本
 
-- `common.js`：命名空间 `window.__tcr`、限流的 `post`、前台判断、元素描述与快照、稳定的元素引用 `@e12`、DOM 变化计数、原始 `fetch`。
+- `common.js`：命名空间 `window.__tcr`、限流的 `post`、前台判断、元素描述与页面快照（只给录制用）、DOM 变化计数、原始 `fetch`。
 - `recorder.js`（录制）：只录三种请求——HTML 文档、XHR、fetch（不录 WebSocket、`sendBeacon`、Worker）；用户输入（点击、输入长度、特殊键、滚动）；导航；页面快照；主文档渲染后的 DOM。响应体不设策略上限，不读事件流，读到 16MiB 就停并标 `truncated`。后台页面只计数。每个请求带 `ms`（耗时）和 `at`（请求开始时离文档开始的毫秒数，holder 据此判断请求是不是在页面刚加载的那几秒里发的）。
-- `executor.js`（执行）：`window.__tcr.exec` 下的 `act`（click / fill / select / check / press / scroll，全是 DOM 事件）、`snapshot`、`text`、`replay`、`waitFor`、`query`（声明式取数）、`eval`。`act` 的目标可以是 `@e12` 引用或持久定位 `loc`（CSS、`{role,name}`、`{text}`，可加 `nth`，元素没出现会等到超时），成功后返回元素的持久定位。点击先滚到视图中央并聚焦，再发 pointer / mouse 序列和 `click`；`fill` 用原生 `value` setter 加 `input`、`change` 事件；等页面稳定：没有在途请求且 DOM 静默 400ms，最多 4 秒。不支持：文件选择框、iframe 里的元素、`closed shadow root`。
+- `executor.js`（执行）：`window.__tcr.exec` 下的 `act`（按持久定位 click / fill / select / check / press / scroll，全是 DOM 事件，task 用）、`pointer`（按屏幕坐标 click / type / key / scroll，探索用，返回点中元素的持久定位）、`text`、`replay`、`waitFor`、`query`（声明式取数）、`eval`。`act` 的目标是持久定位 `loc`（CSS、`{role,name}`、`{text}`，可加 `nth`，元素没出现会等到超时），成功后返回元素的持久定位。点击先滚到视图中央并聚焦，再发 pointer / mouse 序列和 `click`；`fill` 用原生 `value` setter 加 `input`、`change` 事件；等页面稳定：没有在途请求且 DOM 静默 400ms，最多 4 秒。不支持：文件选择框、iframe 里的元素、`closed shadow root`。
 - **录制与执行解耦**：录制如实反映浏览器状态，无论是谁造成的；执行只管执行，两者之间没有共享状态。来源只看 `isTrusted`：真是 `user`，假是 `page`；agent 窗口里发生的一切由 holder 按标签页所在窗口（`AgentWindows.winOf`）记为 `agent`，并写进该窗口自己的时间线文件，不混进“用户做了什么”。用户的时间线是交接的上下文。
 
 ## 6. 日志（journal）
@@ -84,7 +92,7 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 - **因果与阶段**（`journal/ingest.ts`）：`cause` 是同一标签页里请求**开始时**之前 2 秒内最近一次用户动作或 agent 命令，`causeDt` 是相隔毫秒；`phase` 是 `load`（文档或单页路由开始后 4 秒内、期间没有新动作）、`action`、`idle`。这些是启发式，原始 `nav` 行和时间都在，读者可以自己重算。
 - **两层保留**（`journal/retention.ts`，额度见 `utils/constants.ts` 的 `LOG_LIMITS`，总计 2GB）：轻量层（时间线、请求文件）总计 500MB、每站点 150MB；重量层（响应体、文档、快照）总计 1.5GB、每站点 600MB。重量层超了，从最旧的段开始只删没受保护的重量层文件，时间线和请求文件保留；轻量层超了才删整段。单个站点超了只动它自己，总量超了先动占用最多的站点，当前段永远不动。段在重量层写满 64MB 或开满一天时换。每个接口最近 5 次成功请求是**样本**，它们的请求文件和响应体受保护（每站点样本合计 100MB），整段被删时 `endpoints.json` 里对应样本标 `available: false`。按本机实测（约 260MB/天）完整响应体能留约 6 天，时间线能留一个多月。
 - **接口聚合**（`journal/endpoints.ts`）：写入一个请求就增量更新这个站点的 `endpoints.json`（节流 2 秒原子写，重启时读回）：次数、`userTriggered` / `agentTriggered` / `onLoad` / `idle`、`lastCause`、变量、响应结构、`replayable`（原始请求还在不在内存里）、样本、`task`（读该站点 `tasks/` 的 `@endpoint`）。不排序、不下结论，只给信号。接口名由 `digest.ts` 的 `endpointOf` 算：GraphQL 取操作名，其它路径把长数字、哈希、uuid 换成 `:id`，同一路径上请求体里的 `operationName` / `action` / `method` 之类的字符串字段拼在后面（`/graphql#FavoriteTweet`），否则 POST `/graphql`、POST `/rpc` 会把所有操作并成一个接口。
-- **交接材料**（`journal/material.ts`）：`delegate` 时导出到 `debug/<窗口号>/material/`，只含一个站点，行和文件逐字复制（硬链接，不行就复制），按窗口分文件；仍开着的其他 debug 窗口整个排除（它们正在试错）；以目标接口的样本为锚点（样本、触发它们的动作、同一标签页前 60 秒的行），再加用户窗口最近 30 分钟；`doc`、`snap` 行不导出，响应体只给锚点请求的；`manifest.json` 写明包含和排除了哪些窗口、数量和缺口，不假装完整。
+- **交接材料**（`journal/material.ts`）：`learn` 时导出到 `debug/<窗口号>/material/`，只含一个站点，行和文件逐字复制（硬链接，不行就复制），按窗口分文件；仍开着的其他学习会话整个排除（它们正在试错）；以目标接口的样本为锚点（样本、触发它们的动作、同一标签页前 60 秒的行），再加用户窗口最近 30 分钟；`doc`、`snap` 行不导出，响应体只给锚点请求的；`manifest.json` 写明包含和排除了哪些窗口、数量和缺口，不假装完整。
 - **过滤**（`filter.ts`）：`@ghostery/adblocker` 规则加第一方埋点启发式（只对非 GET）标 `noise`，默认不看；失败的请求只留小于 4KB 的响应体；只存同站的响应体。
 - **脱敏**（`sanitize.ts`）：带单词边界的正则（`token`、`secret`、`password`、`csrf`、`jwt`、`auth` 等）加严格的 JWT 判断，只作用于请求头名、URL 查询参数名、JSON 的 key；响应体正文原样写盘。秘密换成别名 `⟨secret_<12 位十六进制>:<形状>⟩`：盐 + 真值的 HMAC（盐在 `~/.tabbot/alias-salt`，0600），同一个秘密永远是同一个别名。**别名 → 真值的对照表只在 holder 内存里**。
 - **录制的缺口**（会在材料的 `manifest.json` 里提示）：后台标签页的请求只有计数；WebSocket、`sendBeacon`、Worker、事件流不记录；响应超过 16MiB 被截断；请求体超过 64KB 不存内容。
@@ -93,15 +101,15 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 
 ## 7. agent 窗口与 task
 
-- **agent 窗口**（`run/window.ts`）分两种：**run 窗口**（key 为 `run`）主 agent 长期持有，只执行 task，不能调试；**debug 窗口**（key 为 `debug-xxxx`，登记在 `run/debug-windows.ts`）一个 subagent 一个，派出时开、收回时关。一个 key 一个窗口，所以几个 subagent 并行时各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。窗口的第一个标签页是扩展的 anchor 页（标题 `tabbot agent`）。其余标签页按 origin（协议加主机加端口，只在执行层用：保证请求和页面同源）池化：`acquire(origin, key)` 复用同站点空闲标签页，没有就开 `origin/robots.txt`（很轻，页面脚本就位）；用完还回去，空闲 5 分钟关闭；debug 窗口收回时整个窗口关掉。key 到窗口的映射只在内存里：holder 重启（或扩展链路重连）一切归零，留下的窗口都是孤儿，第一次用窗口时全部关掉。用户关了窗口会自动重开（run 和 debug 一样）。run 窗口不并发：`run` 和 `compose` 同一个 key 一次只跑一个。
-- **RunHost**（`run/host.ts`）：goto、request、act、waitFor、text、snapshot、query、eval，每个都写一行 `cmd` 记录。`request` 默认继承 holder 内存里同站点最近一个带身份头（authorization、csrf、x-*）的原始请求的请求头；内存里没有（holder 重启过、页面还没发过请求）时，自动打开该站点首页让页面自己发请求，每个站点只试一次，仍没有再按需报错。
+- **agent 窗口**（`run/window.ts`）分两种：**run 窗口**（key 为 `run`）长期持有，只执行 task，不能调试；**debug 窗口**（key 为 `debug-xxxx`，登记在 `run/debug-windows.ts`）一个学习会话一个，开会话时开、收回时关。一个 key 一个窗口，所以 run 窗口和学习会话的页面各在自己窗口的前台（浏览器不渲染后台标签页）。窗口的第一个标签页是扩展的 anchor 页（标题 `tabbot agent`）。其余标签页按 origin（协议加主机加端口，只在执行层用：保证请求和页面同源）池化：`acquire(origin, key)` 复用同站点空闲标签页，没有就开 `origin/robots.txt`（很轻，页面脚本就位）；用完还回去，空闲 5 分钟关闭；debug 窗口收回时整个窗口关掉。key 到窗口的映射只在内存里：holder 重启（或扩展链路重连）一切归零，留下的窗口都是孤儿，第一次用窗口时全部关掉。用户关了窗口会自动重开（run 和 debug 一样）。run 窗口不并发：`run` 和 `compose` 同一个 key 一次只跑一个。
+- **RunHost**（`run/host.ts`）：goto、request、act、pointer、screenshot、waitFor、text、query、eval，每个都写一行 `cmd` 记录。`request` 默认继承 holder 内存里同站点最近一个带身份头（authorization、csrf、x-*）的原始请求的请求头；内存里没有（holder 重启过、页面还没发过请求）时，自动打开该站点首页让页面自己发请求，每个站点只试一次，仍没有再按需报错。
 - **TaskRunner**（`run/runner.ts`）：task 脚本在 worker 线程里运行（`task-lib/index.js` 同步到 `~/.tabbot/lib`），SDK 的每个函数是向 holder 发一个操作；同一个 key 一次只跑一个，不同 key 可以同时跑；整体超时 115 秒（`@timeout` 可改）；`tabbot.task()` 嵌套调用共用页面状态；运行历史在 `~/.tabbot/run/<task>/`。
 - task 是 `~/.tabbot/sites/<站点>/tasks/<名字>.js`，从 `../../../lib/index.js` 引用 SDK；task 名全局唯一，`tabbot run <名字>` 在所有站点的 `tasks/` 里找。文件头 `@summary`、`@status: draft|verified`、`@endpoint 方法 接口名`、`@param 名字? 说明`、`@timeout`、`@note`（经验：签名、风控、踩过的坑，一行一条）。参数一律具名 `--名字 值`，缺必填或传了没声明的参数直接报错。
 
 ### 重放（debug replay）
 
 - **原始请求只在 holder 内存里**（`journal/raw.ts`）：页面里发的每个同站请求的方法、地址、请求头、请求体，上限 50MB、单条 64KB，先丢最旧的；**绝不落盘**。
-- `tabbot debug --window <号> replay <编号> [--set ...] [--yes]`：在 debug 窗口绑定的站点里按编号找请求文件（文件名开头的数字）→ 用文件里的 `tab` 和 `rid` 取内存里的原始内容 → 把 `--set` 里的别名换回真值 → `applySets`（`journal/replay-core.ts`）→ 在 subagent 的 agent 窗口里和原请求同 origin 的标签页用原始 `fetch` 发出（带登录态，不会被录制端当成页面自己发的）→ 响应脱敏后写成新的请求文件（`requestType: replay`，带 `replayOf`）和一行时间线，记在这个 debug 窗口自己的文件里。
+- `tabbot debug replay <编号> [--set ...] [--yes]`（开着几个会话时加 `--window <号>`）：在学习会话绑定的站点里按编号找请求文件（文件名开头的数字）→ 用文件里的 `tab` 和 `rid` 取内存里的原始内容 → 把 `--set` 里的别名换回真值 → `applySets`（`journal/replay-core.ts`）→ 在 subagent 的 agent 窗口里和原请求同 origin 的标签页用原始 `fetch` 发出（带登录态，不会被录制端当成页面自己发的）→ 响应脱敏后写成新的请求文件（`requestType: replay`，带 `replayOf`）和一行时间线，记在这个 debug 窗口自己的文件里。
 - **`--set`**：`名字=值` 改查询参数；`名字.路径=值` 改查询参数里 JSON 的字段（GraphQL 的 GET 请求 `variables.cursor=xxx`，翻页用）；`header.名字=值` 改请求头；`body.路径=值` 改 JSON 或表单请求体；`body=内容` 整个换掉。非 GET 要 `--yes`；浏览器自己管的请求头去掉。
 - 在响应体里找页面上看到的值是 `rg`，还原请求就是读请求文件；`journal/replay.ts` 的 `templateFromRequestFile` 给出风险提示（签名类参数、非 GET）。
 
@@ -132,9 +140,9 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 | 升级后旧 daemon 还在跑 | `tabbot daemon restart` |
 | `run` 报“没有可继承的请求头” | 已经自动打开过该站点首页仍没有带身份头的请求：这个站点的接口可能不需要（去掉 `inherit`），或要让用户在 Chrome 里做一次触发该接口的操作 |
 | `run` 在 agent 窗口里一直不动 | 窗口被用户关了会自动重开；同一 key 里另一个 task 在跑会等 30 秒再失败 |
-| `debug` 报“主 agent 没有调试权限” | 这是设计：用 `tabbot delegate` 派 subagent；debug 窗口失效（holder 重启）也由主 agent 重新派 |
-| `debug snapshot`、`act` 报“页面里没有 TabBot 的脚本” | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
-| `replay` 报“原始内容已经不在 holder 的内存里”或“别名已失效” | holder 重启过或太旧被清掉；`debug open` 加 `act` 在 debug 窗口里触发一次这个操作（或让用户做一次），用新的编号重试 |
+| `debug` 报“没有学习会话” | 这是设计：调试只能在学习会话里，先 `tabbot learn …`；会话失效（holder 重启）也重新 learn |
+| `debug click`、`type`、`key`、`scroll` 报“页面里没有 TabBot 的脚本” | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
+| `replay` 报“原始内容已经不在 holder 的内存里”或“别名已失效” | holder 重启过或太旧被清掉；`debug open` 加 `screenshot`、`click` 在 debug 窗口里触发一次这个操作（或让用户做一次），用新的编号重试 |
 | 日志里没有某个站点的事件 | 后台标签页只记请求数；站点目录名是页面的 host（去 `www.`），如 `app.example.com` 不在 `example.com` 下；先看 `tabbot doctor` 里 `extension` 项 |
 | 磁盘上 `~/.tabbot/sites` 太大 | 按额度自动淘汰（`tabbot status` 看占用）；要手动清就删 `~/.tabbot/sites/<站点>/log`，别删 `tasks/` |
 
@@ -144,8 +152,7 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 ## 11. 未做的事
 
 - 并行调试时窗口被其它窗口完全遮住：Chrome 可能停掉 `requestAnimationFrame` 和 `IntersectionObserver`（和 X 时间线不加载同类）。请求版 task 不受影响，只有 DOM 兜底的受影响。需要在真实有头 Chrome 里实测，无头环境测不了；实测结果决定窗口怎么摆（露出一角、并排小窗）。
-- 用 Claude Code 的 PreToolUse hook 对非 subagent 调用的 `tabbot debug*` 硬拒绝：要先确认 hook 输入里能区分主 agent 和 subagent；目前只靠 debug 窗口号校验。
-- 回执（`run` 返回回执编号，Stop hook 检查最终回复引用了它）。
+- 回执检查只有 Claude Code 的 Stop hook 一种实现，且要用户自己注册；别的 harness 靠 `SKILL.md` 约定。回执只能证明引用了某次 `run`，证明不了 task 写得对。
 - 签名类请求头（如知乎 `x-zse-96`）的重放：现在是原样带旧签名，多数站点不拒绝；被拒时改用 DOM。
 - 响应数据太大时怎么给 agent；重放响应“只取某个 JSON 字段”。
 - adblock 规则缓存到磁盘（现在每次 daemon 启动都联网下载）。
