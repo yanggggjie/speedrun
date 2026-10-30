@@ -136,13 +136,13 @@ export class RunHost {
     }
   }
 
-  private async goto(s: Session, a: { url: string; timeout?: number }): Promise<{ url: string; title: string }> {
+  private async goto(s: Session, a: { url: string; timeout?: number; description?: string }): Promise<{ url: string; title: string }> {
     let url: URL;
     try { url = new URL(a.url.includes("://") ? a.url : `https://${a.url}`); if (!/^https?:$/.test(url.protocol)) throw new Error("协议"); } catch { throw new Error(`不是有效的网址：${a.url}`); }
     const tab = await this.bind(s, url.origin);
     await this.d.win.activate(tab);
     const safe = this.d.ingest.sanitizer.url(url.href);
-    return this.log(tab, "goto", safe.bareUrl, { bareUrl: safe.bareUrl, query: safe.query }, async () => {
+    return this.log(tab, "goto", safe.bareUrl, { bareUrl: safe.bareUrl, query: safe.query, ...(a.description ? { description: a.description } : {}) }, async () => {
       const res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as { url: string; title: string; loaded?: boolean };
       this.d.win.moved(tab, originOf(res.url || url.href));
       s.origin = originOf(res.url || url.href);
@@ -205,7 +205,7 @@ export class RunHost {
     const cmd = { ...a };
     const at = a.x !== undefined && a.y !== undefined ? `(${a.x},${a.y})` : "";
     const target = a.loc !== undefined ? JSON.stringify(a.loc).slice(0, 60) : at || (a.key ?? a.to ?? "");
-    const base = { kind: a.kind, ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(at ? { x: a.x, y: a.y } : {}), ...(a.key ? { key: a.key } : {}), ...(a.dy !== undefined ? { dy: a.dy } : {}), ...(a.to ? { to: a.to } : {}), ...(a.checked !== undefined ? { checked: a.checked } : {}) };
+    const base = { kind: a.kind, ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(at ? { x: a.x, y: a.y } : {}), ...(a.key ? { key: a.key } : {}), ...(a.dy !== undefined ? { dy: a.dy } : {}), ...(a.to ? { to: a.to } : {}), ...(a.checked !== undefined ? { checked: a.checked } : {}), ...(a.description ? { description: a.description } : {}) };
     return this.log(tab, a.kind, target, base, async () => {
       let res: any;
       try { res = await withTimeout(this.callTab(tab, fn, [cmd]), (a.timeout ?? 10_000) + 5_000, "页面操作"); }

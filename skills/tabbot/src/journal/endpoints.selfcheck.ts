@@ -1,4 +1,4 @@
-// 接口聚合：按 phase 统计用户触发 / 加载期 / 其它、样本受保护、task 覆盖标记、重启后读回、不含 token 真值；
+// 接口聚合：按 phase 统计动作引发 / 加载期 / 其它（只有 agent 窗口的记录）、样本受保护、task 覆盖标记、重启后读回、不含 token 真值；
 // 接口名：同一路径上请求体里的 operationName / action 把不同操作拆开；站点按页面 host。
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -43,15 +43,15 @@ function observe(endpoint: string, phase: Phase, over: { win?: string; status?: 
   fs.mkdirSync(path.join(dir, SITE, "log", "000001"), { recursive: true });
   fs.writeFileSync(path.join(dir, SITE, "log", rel), "{}");
   fs.writeFileSync(path.join(dir, SITE, "log", `${rel.slice(0, -5)}.response.json`), "{}");
-  const row: Row = { seq: s, t: s * 1000, win: over.win ?? "user", src: "page", tab: 5, type: "request", requestType: "fetch", method, url: "https://x.com/a", status: over.status ?? 200, endpoint, phase, file: rel };
+  const row: Row = { seq: s, t: s * 1000, win: over.win ?? "debug-ab12", src: "agent", tab: 5, type: "request", requestType: "fetch", method, url: "https://x.com/a", status: over.status ?? 200, endpoint, phase, file: rel };
   const file = { seq: s, win: row.win, endpoint, requestType: "fetch", rid: over.rid, method, url: { bareUrl: "https://x.com/a", query: over.query ?? {} }, headers: {}, requestBody: over.body, status: row.status, responseBodyPath: `${rel.slice(0, -5)}.response.json`, startedAt: 0, endedAt: 0 } as RequestFile;
   const input: ObserveInput = { site: SITE, row, file, relFile: rel, text: over.text, label: over.label };
   index.observe(input);
   return input;
 }
 
-// 点赞：用户点了 3 次（动作引发）
-for (let i = 0; i < 3; i++) observe("POST graphql FavoriteTweet", "action", { label: "user click button[Like]", body: { variables: { tweet_id: "1" } }, text: "{\"data\":{\"favorite_tweet\":\"Done\"}}", rid: "d:9" });
+// 点赞：在学习会话里点了 3 次（动作引发）
+for (let i = 0; i < 3; i++) observe("POST graphql FavoriteTweet", "action", { label: "agent cmd click button[Like]", body: { variables: { tweet_id: "1" } }, text: "{\"data\":{\"favorite_tweet\":\"Done\"}}", rid: "d:9" });
 // 时间线：页面加载期发了 2 次、轮询 4 次；agent 的动作引发 1 次
 for (let i = 0; i < 2; i++) observe("GET graphql HomeTimeline", "load", { query: { variables: "{\"count\":20,\"cursor\":\"c\"}" }, text: "{\"data\":{\"home\":{\"a\":1,\"b\":2}}}" });
 const homeQuery = { variables: "{\"count\":20,\"cursor\":\"c\"}" };
@@ -60,19 +60,19 @@ observe("GET graphql HomeTimeline", "action", { win: "debug-ab12", label: "agent
 // 失败的请求计数，但不当样本
 const failed = observe("GET graphql HomeTimeline", "idle", { status: 500, query: homeQuery });
 // 重放不算接口的使用情况
-const replay = observe("POST graphql FavoriteTweet", "action", { label: "user click button[Like]", body: { variables: { tweet_id: "1" } }, text: "{\"data\":{\"favorite_tweet\":\"Done\"}}", rid: "d:9" });
+const replay = observe("POST graphql FavoriteTweet", "action", { label: "agent cmd click button[Like]", body: { variables: { tweet_id: "1" } }, text: "{\"data\":{\"favorite_tweet\":\"Done\"}}", rid: "d:9" });
 index.observe({ ...replay, row: { ...replay.row, requestType: "replay" } });
 
 let snap = index.snapshot(SITE);
 const like = snap.endpoints.find((e) => e.key === "POST graphql FavoriteTweet")!;
 const home = snap.endpoints.find((e) => e.key === "GET graphql HomeTimeline")!;
-assert.equal(like.userTriggered, 4, "用户动作引发的次数（含上面多观察的那一次，不含重放）");
+assert.equal(like.actionTriggered, 4, "动作引发的次数（含上面多观察的那一次，不含重放）");
 assert.equal(like.onLoad, 0);
-assert.equal(like.lastCause, "user click button[Like]");
+assert.equal(like.lastCause, "agent cmd click button[Like]");
 assert.deepEqual(like.variables, ["tweet_id"]);
 assert.equal(like.shape, "data.favorite_tweet");
 assert.equal(like.replayable, true, "原始请求还在内存里");
-assert.equal(home.onLoad, 2); assert.equal(home.idle, 5); assert.equal(home.agentTriggered, 1); assert.equal(home.userTriggered, 0);
+assert.equal(home.onLoad, 2); assert.equal(home.idle, 5); assert.equal(home.actionTriggered, 1);
 assert.equal(home.count, 8);
 assert.deepEqual(home.variables, ["variables.count", "variables.cursor"]);
 assert.match(home.shape!, /^data\.home\.\{a,b\}$/);
@@ -107,7 +107,29 @@ const back = reborn.snapshot(SITE).endpoints.find((e) => e.key === "GET graphql 
 assert.equal(back.count, 8);
 assert.equal(back.samples.length, SAMPLES_PER_ENDPOINT);
 assert.equal(back.replayable, false);
-reborn.observe({ ...observe("GET graphql HomeTimeline", "idle"), row: { seq: 999, t: 1, win: "user", src: "page", tab: 5, type: "request", method: "GET", endpoint: "GET graphql HomeTimeline", phase: "idle", status: 200, file: "000001/000999_GET_x.json" } });
+reborn.observe({ ...observe("GET graphql HomeTimeline", "idle"), row: { seq: 999, t: 1, win: "run", src: "agent", tab: 5, type: "request", method: "GET", endpoint: "GET graphql HomeTimeline", phase: "idle", status: 200, file: "000001/000999_GET_x.json" } });
 assert.equal(reborn.snapshot(SITE).endpoints.find((e) => e.key === "GET graphql HomeTimeline")!.count, 9, "读回后接着计数");
+// 旧版本的文件：userTriggered（用户窗口的）丢掉，agentTriggered 变成 actionTriggered
+fs.mkdirSync(path.join(dir, "old.com"), { recursive: true });
+fs.writeFileSync(path.join(dir, "old.com", "endpoints.json"), JSON.stringify({ site: "old.com", updatedAt: 1, endpoints: [{ key: "GET /a", method: "GET", host: "old.com", name: "/a", count: 9, firstSeq: 1, lastSeq: 9, userTriggered: 7, agentTriggered: 2, onLoad: 0, idle: 0, variables: [], samples: [], replayable: false, task: null }] }), { flag: "w" });
+const old = new EndpointIndex({ dir, coverage: () => new Map() }).snapshot("old.com").endpoints[0]! as unknown as Record<string, unknown>;
+assert.equal(old.actionTriggered, 2); assert.equal(old.userTriggered, undefined); assert.equal(old.agentTriggered, undefined);
+
+// description：动作带的一句业务含义，只收成功的请求，同一句只留一份，最多 5 句（新的在前）；describe 只记到已有的接口
+const descIndex = new EndpointIndex({ dir: path.join(dir, "d"), coverage: () => new Map() });
+const obsD = (status: number, text: string, phase: Phase = "action") => {
+  const base = observe("GET /api/item", phase, { status });
+  descIndex.observe({ ...base, row: { ...base.row, status }, description: { text, from: "click" } });
+};
+obsD(500, "失败的不收");
+for (let i = 0; i < 7; i++) obsD(200, `第 ${i} 句`);
+obsD(200, "第 6 句");
+obsD(200, "轮询不收", "idle");
+const item = descIndex.snapshot(SITE).endpoints.find((e) => e.key === "GET /api/item")!;
+assert.deepEqual(item.descriptions!.map((d) => d.text), ["第 6 句", "第 5 句", "第 4 句", "第 3 句", "第 2 句"]);
+assert.equal(item.descriptions![0]!.from, "click");
+assert.equal(descIndex.describe(SITE, "GET /api/item", { text: "查一个条目", from: "run" }), true);
+assert.equal(descIndex.snapshot(SITE).endpoints.find((e) => e.key === "GET /api/item")!.descriptions![0]!.from, "run");
+assert.equal(descIndex.describe(SITE, "GET /api/nope", { text: "x", from: "run" }), false, "没有的接口不记");
 
 console.log("endpoints.selfcheck ok");

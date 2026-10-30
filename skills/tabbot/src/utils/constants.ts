@@ -47,6 +47,9 @@ export const ENDPOINTS_FLUSH_MS = 2_000;
 
 /** 每次 task 运行的输入与输出，每个 task 保留最近 RUN_HISTORY_KEEP 份，只用于排查。 */
 export const RUN_DIR = path.join(TABBOT_HOME, "run");
+/** 成功的 compose 代码存在这里（按内容去重、带 description），给 agent 用 rg 找、直接带参数再跑。 */
+export const COMPOSE_DIR = path.join(TABBOT_HOME, "compose");
+export const COMPOSE_KEEP = 200;
 export const RUN_HISTORY_KEEP = 20;
 /** 整个 task 默认最长运行时间；文件头 `@timeout <秒>` 可改。 */
 export const TASK_TIMEOUT_MS = 115_000;
@@ -54,5 +57,5 @@ export const TASK_TIMEOUT_MS = 115_000;
 export const STEP_TIMEOUT_MS = 60_000;
 /** 另一个 task 在跑时，新的 task 最多等这么久再失败。 */
 export const RUN_BUSY_WAIT_MS = 30_000;
-/** tabbot agent 窗口里空闲的标签页保留多久再关掉。 */
-export const AGENT_TAB_IDLE_MS = 5 * 60_000;
+/** tabbot agent 窗口里空闲的标签页保留多久再关掉。只录 agent 窗口，请求头只能从这些页面继承，留久一点少重开。 */
+export const AGENT_TAB_IDLE_MS = 30 * 60_000;

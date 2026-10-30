@@ -20,7 +20,7 @@ const SECRET = "sess_9f8e7d6c5b4a39281716";
 function ingestWith(dir: string, key: string | undefined, msgs: PageMsg[]): RequestFile[] {
   const log = new SiteLog({ dir });
   log.open();
-  new Ingestor(log, { aliasKey: key }).handleBatch(msgs);
+  new Ingestor(log, { aliasKey: key, winOf: () => "run" }).handleBatch(msgs);
   log.close();
   return log.readRows(SITE, { limit: 100 }).filter((r) => r.type === "request").map((r) => JSON.parse(fs.readFileSync(log.abs(SITE, r.file!), "utf8")) as RequestFile);
 }

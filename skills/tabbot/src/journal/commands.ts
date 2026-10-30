@@ -9,22 +9,24 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { USAGE, handshakeStatusFromError, formatErrorStdout, formatHandshakeStdout } from "../protocol.ts";
-import { LOG_LIMITS, MB } from "../utils/constants.ts";
+import { COMPOSE_DIR, LOG_LIMITS, MB } from "../utils/constants.ts";
 import { DEBUG_MAX_OPS, type DebugWindow, type DebugWindows } from "../run/debug-windows.ts";
 import { Session, type RunHost } from "../run/host.ts";
 import { makeLearnGuide } from "../run/learn-guide.ts";
 import type { TaskRunner } from "../run/runner.ts";
-import { blockTask, draftTasks, findTask, parseCliParams, taskSummary, tasksDirOf } from "../run/tasks.ts";
+import { blockTask, draftTasks, findTask, parseCliParams, saveCompose, taskSummary, tasksDirOf } from "../run/tasks.ts";
 import type { AgentWindows } from "../run/window.ts";
 import { normalizeSite } from "./digest.ts";
 import type { EndpointIndex } from "./endpoints.ts";
 import { causedRequests, describeRequest, stepLine } from "./explore.ts";
-import type { Ingestor } from "./ingest.ts";
+import { OTHER_SITE, type Ingestor } from "./ingest.ts";
 import { exportMaterial } from "./material.ts";
 import type { RawStore } from "./raw.ts";
 import { applySets, isSafeMethod, replayHeaders, UNREPLAYABLE_BODY } from "./replay-core.ts";
 import { summarizeBody, templateFromRequestFile } from "./replay.ts";
 import type { SiteLog } from "./sitelog.ts";
+import type { Row } from "./types.ts";
+import { siteOfUrl } from "../utils/url.ts";
 
 export type TabInfo = { tabId: number; windowId: number; active: boolean; url: string; title: string; status: string; anchor?: boolean };
 
@@ -45,6 +47,8 @@ export interface Ctx {
   log: SiteLog;
   index: EndpointIndex;
   daemon(): { extension: boolean; pid: number };
+  /** 成功的 compose 存在这里（不给就是 ~/.tabbot/compose）。 */
+  composeDir?: string;
 }
 
 class Output {
@@ -79,6 +83,11 @@ export function parseFlags(args: string[], bool: string[] = []): Flags | { error
 }
 
 /** 已经没有的命令：日志和 task 现在是文件，给出去哪里读，免得 agent 按老习惯一直试。 */
+/** 动作在新标签页里打开了页面时，最多等这么久收集新页面的请求。 */
+const NEW_TAB_WAIT_MS = 5_000;
+/** 打开起点后等这么久再收集加载期的请求。 */
+const LOAD_SETTLE_MS = 1_500;
+
 const REMOVED = new Set(["log", "sql", "req", "context", "api", "task", "replay", "open", "snapshot", "act", "delegate"]);
 
 /** 执行一条命令。argv 是 `tabbot` 后面的全部参数。 */
@@ -153,24 +162,43 @@ function takeWindowFlag(args: string[]): { windowId: string | undefined; rest: s
   return { windowId, rest };
 }
 
+/** 取出 `--description "…"`（也认 `--description=…`），其余参数原样返回。 */
+export function takeDescription(args: string[]): { description: string | undefined; rest: string[] } {
+  let description: string | undefined;
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--description") description = args[++i];
+    else if (a.startsWith("--description=")) description = a.slice(14);
+    else rest.push(a);
+  }
+  return { description: description?.trim() || undefined, rest };
+}
+
+/** 关键命令都要带 --description：一句话用用户的话说这一步要做什么。TabBot 把它存进时间线和 endpoints.json，当成接口的业务含义。 */
+export const DESCRIPTION_HINT = '要带 --description "一句话，用用户的话说这一步要做什么"（业务含义，如"点开变更单里的 MR"，不是"click 410 421"）；它会存下来，成为这个接口、task、组合的业务知识';
+const NEEDS_DESCRIPTION = new Set(["open", "click", "type", "key", "scroll", "replay"]);
+
 /** debug 子命令的入口：只能在学习会话里（开着一个会话可以不写 --window；run 窗口不能调试）。 */
 async function debugCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
   const { windowId, rest } = takeWindowFlag(args);
   const w = ctx.debugWindows.use(windowId);
   if ("error" in w) return out.fail(w.error);
-  const [sub, ...subArgs] = rest;
+  const [sub, ...subArgs0] = rest;
+  const { description, rest: subArgs } = takeDescription(subArgs0);
   let sess = ctx.sessions.get(w.id);
   if (!sess) { sess = new Session(w.id); ctx.sessions.set(w.id, sess); }
   out.line(`[调试] 学习会话 ${w.id}（${w.ops}/${DEBUG_MAX_OPS}），站点 ${w.site}，目标 task：${w.task}`);
+  if (sub && NEEDS_DESCRIPTION.has(sub) && !description) { w.ops--; return out.fail(`debug ${sub} ${DESCRIPTION_HINT}`); }
   if (sub === "open" || sub === "click" || sub === "type" || sub === "key" || sub === "scroll") {
     const locked = lockReason(ctx, w);
     if (locked) { w.ops--; return out.fail(locked); } // 被拒绝的动作不占操作次数
   }
   switch (sub) {
-    case "open": return openCommand(subArgs, ctx, out, sess);
+    case "open": return openCommand(subArgs, ctx, out, sess, description!);
     case "screenshot": return screenshotCommand(ctx, out, sess, w);
-    case "click": case "type": case "key": case "scroll": return pointerCommand(sub, subArgs, ctx, out, sess, w);
-    case "replay": return replayCommand(subArgs, ctx, out, w);
+    case "click": case "type": case "key": case "scroll": return pointerCommand(sub, subArgs, ctx, out, sess, w, description!);
+    case "replay": return replayCommand(subArgs, ctx, out, w, description!);
     case "close": return closeCommand(subArgs, ctx, out, w);
     default: return out.fail("用法：tabbot debug --window <窗口号> open|screenshot|click|type|key|scroll|replay|close ...");
   }
@@ -187,14 +215,14 @@ async function closeCommand(args: string[], ctx: Ctx, out: Output, w: DebugWindo
   const receipt = issueReceipt(ctx, { mode: "学不会", task: w.task, status: "blocked", window: w.id });
   await releaseDebugWindow(ctx, w.id);
   out.line(JSON.stringify({ mode: "学不会", receipt, status: "blocked", task: w.task, file, note: reason }, null, 2));
-  out.line("学习会话已收回（工作区已删除）。这件事已经确认学不会：最终回复里说明卡在哪、做过什么（尤其真发过的写操作）；需要的话请用户在 Chrome 里示范一次。");
+  out.line("学习会话已收回（工作区已删除）。这件事已经确认学不会：最终回复里说明卡在哪、做过什么（尤其真发过的写操作）。");
 }
 
-async function openCommand(args: string[], ctx: Ctx, out: Output, sess: Session): Promise<void> {
+async function openCommand(args: string[], ctx: Ctx, out: Output, sess: Session, description: string): Promise<void> {
   const url = args[0];
   if (!url) return out.fail("用法：tabbot debug --window <窗口号> open <网址>（在你自己的 agent 窗口里打开，不打扰用户）");
   await ctx.ensureExtension();
-  const res = (await ctx.host.op(sess, "goto", { url })) as { url: string; title: string };
+  const res = (await ctx.host.op(sess, "goto", { url, description })) as { url: string; title: string };
   out.line(`✓ 已在 agent 窗口打开 ${res.url} "${res.title}"（debug screenshot 截图看页面）`);
 }
 
@@ -247,14 +275,16 @@ export function parsePointer(kind: string, args: string[]): { cmd: PointerCmd } 
   }
 }
 
-async function pointerCommand(kind: string, args: string[], ctx: Ctx, out: Output, sess: Session, w: DebugWindow): Promise<void> {
+async function pointerCommand(kind: string, args: string[], ctx: Ctx, out: Output, sess: Session, w: DebugWindow, description: string): Promise<void> {
   const parsed = parsePointer(kind, args);
   if ("error" in parsed) return out.fail(parsed.error);
   await ctx.ensureExtension();
   requireExplore(sess);
   ctx.ingest.flush();
   const before = ctx.log.lastSeq();
-  const res = (await ctx.host.op(sess, "pointer", { ...parsed.cmd, settle: true })) as { navigated?: boolean; url?: string; title?: string; loc?: unknown; scrollY?: number; settle?: { settled: boolean; waitedMs: number } };
+  const winId = ctx.win.windowIdOf?.(w.id);
+  const tabsBefore = winId === undefined ? undefined : new Set((await ctx.tabs()).filter((t) => t.windowId === winId).map((t) => t.tabId));
+  const res = (await ctx.host.op(sess, "pointer", { ...parsed.cmd, settle: true, description })) as { navigated?: boolean; url?: string; title?: string; loc?: unknown; scrollY?: number; settle?: { settled: boolean; waitedMs: number } };
   const lines = [`✓ ${kind}${res.loc ? ` 元素的持久定位（写 task 用这个）${JSON.stringify(res.loc)}` : ""}${res.scrollY !== undefined ? `，滚动位置 ${res.scrollY}` : ""}${res.settle ? (res.settle.settled ? `（页面已稳定，等了 ${(res.settle.waitedMs / 1000).toFixed(1)}s）` : "（等了很久页面还在变化，没有稳定）") : ""}`];
   if (res.navigated) lines.push(`页面已跳转：${res.url ?? ""} "${res.title ?? ""}"`);
   else if (res.url) lines.push(`页面：${res.url} "${res.title ?? ""}"`);
@@ -262,15 +292,28 @@ async function pointerCommand(kind: string, args: string[], ctx: Ctx, out: Outpu
   // 这一步引发的请求（含 GET，写明有没有响应体）：有请求就转去学请求，并锁定后续动作，直到 task 草稿被更新
   await new Promise((r) => setTimeout(r, 100));
   ctx.ingest.flush();
-  const rows = ctx.log.readRows(w.site, { wins: [w.id], sinceSeq: before, limit: 200 });
-  const caused = causedRequests(rows, new Map(ctx.index.snapshot(w.site).endpoints.map((e) => [e.key, e])));
+  // 点开了新标签页（target=_blank）：新页面要加载一会儿，等它的请求到了再列（最多几秒，请求停了就不等）
+  if (tabsBefore && (await ctx.tabs()).some((t) => t.windowId === winId && !tabsBefore.has(t.tabId))) {
+    lines.push("这一步在新标签页里打开了页面。");
+    let last = -1;
+    for (const t0 = Date.now(); Date.now() - t0 < NEW_TAB_WAIT_MS;) {
+      await new Promise((r) => setTimeout(r, 400));
+      ctx.ingest.flush();
+      const now = ctx.log.lastSeq();
+      if (now === last && ctx.ingest.sitesSince(w.id, before).some((x) => x !== w.site && x !== OTHER_SITE)) break;
+      last = now;
+    }
+  }
   const step = stepLine(parsed.cmd, res.loc);
   if (step) lines.push(`可贴进 task：${step}`);
+  // 页面跳到了别的站点（或在新标签页打开了别的站点）：请求记在那个站点下，也要列出来（跨站点的关系就是在这一刻发现的）
+  const landed = res.url ? normalizeSite(siteOfUrl(res.url)) : "";
+  const others = [...new Set([...(landed && landed !== w.site ? [landed] : []), ...ctx.ingest.sitesSince(w.id, before).filter((s) => s !== w.site && s !== OTHER_SITE)])];
+  for (const o of others) lines.push(`页面跳到了 ${o}（另一个站点），这一步的请求记在那边：${ctx.log.logDir(o)}/`);
+  const parts = [listCaused(ctx, w.site, w.id, before, description), ...others.map((o) => listCaused(ctx, o, w.id, before, description))];
+  const caused = parts.flatMap((p) => p.rows);
   if (caused.length) {
-    const shown = caused.slice(-5).map((r) => {
-      const found = ctx.log.readRequestFile(w.site, r.seq);
-      return describeRequest(r, found?.file, ctx.log.findRequestFile(w.site, r.seq)?.abs);
-    });
+    const shown = parts.flatMap((p) => p.lines);
     lines.push(`这一步引发了请求${caused.length > shown.length ? `（共 ${caused.length} 个，列最近 ${shown.length} 个）` : ""}：\n  ${shown.map((s) => s.line).join("\n  ")}`);
     lines.push(shown.some((s) => !s.readable)
       ? "有请求读不了响应体（流式、二进制或没存）：network 这条路可能走不通，先 debug replay 试一下；不行就把这一步写成 DOM 步骤。"
@@ -279,6 +322,14 @@ async function pointerCommand(kind: string, args: string[], ctx: Ctx, out: Outpu
     lines.push(`已锁定：先更新 task 草稿 ${path.join(tasksDirOf(ctx.log.dir, w.site), `${w.task}.js`)}，才能继续 open / click / type / key / scroll（screenshot 和 replay 不受限）。`);
   }
   out.line(lines.join("\n"));
+}
+
+/** 这个会话窗口在 before 之后、在 site 下引发的请求，以及最近 5 个的一行描述（带接口以前的 description，不含这一步刚写的 current）。 */
+function listCaused(ctx: Ctx, site: string, win: string, before: number, current?: string): { rows: Row[]; lines: { line: string; readable: boolean }[] } {
+  const stats = new Map(ctx.index.snapshot(site).endpoints.map((e) => [e.key, e]));
+  const rows = causedRequests(ctx.log.readRows(site, { wins: [win], sinceSeq: before, limit: 200 }), stats);
+  const lines = rows.slice(-5).map((r) => describeRequest(r, ctx.log.readRequestFile(site, r.seq)?.file, ctx.log.findRequestFile(site, r.seq)?.abs, r.endpoint ? stats.get(r.endpoint)?.descriptions?.find((d) => d.text !== current)?.text : undefined));
+  return { rows, lines };
 }
 
 /** 引发请求后的锁定：task 草稿在锁定之后被改过才解锁。草稿还没写过也算没改。返回拒绝的原因，没锁返回 undefined。 */
@@ -295,8 +346,10 @@ export function lockReason(ctx: Pick<Ctx, "log">, w: DebugWindow): string | unde
 
 /** tabbot run <task> [--参数 值] [--dry] [--window 窗口号]：执行。用户拿到的结果必须来自这里。不带 --window 在 run 窗口里跑。 */
 async function runTaskCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
-  const [name, ...rest0] = args;
-  if (!name) return out.fail(`用法：tabbot run <task 名> [--参数 值 ...] [--dry]（task 在 ${ctx.log.dir}/<站点>/tasks/ 下，ls 看有哪些）`);
+  const { description, rest: args1 } = takeDescription(args);
+  const [name, ...rest0] = args1;
+  if (!name) return out.fail(`用法：tabbot run <task 名> --description "…" [--参数 值 ...] [--dry]（task 在 ${ctx.log.dir}/<站点>/tasks/ 下，ls 看有哪些）`);
+  if (!description) return out.fail(`tabbot run ${DESCRIPTION_HINT}`);
   let dry = false;
   const rest: string[] = [];
   const { windowId, rest: rest1 } = takeWindowFlag(rest0);
@@ -310,6 +363,11 @@ async function runTaskCommand(args: string[], ctx: Ctx, out: Output): Promise<vo
   await ctx.ensureExtension();
   const outcome = await ctx.runner.runTask(name, parsed.params, undefined, { key: dbg?.id, dry });
   if (outcome.status !== "success") out.code = 1;
+  // 真跑成功：这句话记成 task 覆盖的接口的业务含义
+  if (outcome.status === "success" && !dry) {
+    const found = findTask(ctx.log.dir, name);
+    if (found) for (const ep of taskSummary(found.file).endpoints) ctx.index.describe(found.site, ep, { text: description, from: "run" });
+  }
   // 学习会话里把它绑定的那份 task 真跑通了：会话收回
   if (dbg && outcome.status === "success" && !dry && name === dbg.task) await releaseDebugWindow(ctx, dbg.id);
   const receipt = issueReceipt(ctx, { mode: dry ? "试运行" : "执行", task: name, status: outcome.status, ...(dbg ? { window: dbg.id } : {}) });
@@ -323,27 +381,56 @@ function issueReceipt(ctx: Pick<Ctx, "log">, info: { mode: string; task: string;
   return id;
 }
 
-/** tabbot compose '<代码>'：只组合 task（task(名字, 参数)），不碰页面。 */
+/**
+ * tabbot compose --description "…" <文件 | '代码'> [--参数 值] [--timeout 秒]：只组合 task（task(名字, 参数)），不碰页面。
+ * 参数以 tabbot.params.名字 读到。成功的代码由 TabBot 存进 ~/.tabbot/compose/（带 description、用到的 task 和参数），下次 rg 能找到、直接拿文件带参数跑。
+ */
 async function composeCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
+  const usage = `用法：tabbot compose --description "这段回答什么问题" <文件 | 'const a = await task("名字", { 参数: tabbot.params.x }); return a;'> [--参数 值 ...] [--timeout 秒，默认 115]（compose 里只能组合 task）`;
+  const { description, rest: rest0 } = takeDescription(args);
   let timeoutSec = 115;
-  let rest = args;
-  if (args[0] === "--timeout") {
-    timeoutSec = Number(args[1]);
-    if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) return out.fail("--timeout 需要正数（秒）");
-    rest = args.slice(2);
+  const positional: string[] = [], flags: string[] = [];
+  for (let i = 0; i < rest0.length; i++) {
+    const a = rest0[i]!;
+    if (a === "--timeout") { timeoutSec = Number(rest0[++i]); continue; }
+    if (a.startsWith("--")) { flags.push(a); if (!a.includes("=") && rest0[i + 1] !== undefined) flags.push(rest0[++i]!); continue; }
+    positional.push(a);
   }
-  const code = rest.join(" ").trim();
-  if (!code) return out.fail("用法：tabbot compose [--timeout 秒，默认 115] 'const a = await task(\"名字\", { 参数: 值 }); return a;'（compose 里只能组合 task）");
+  if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) return out.fail("--timeout 需要正数（秒）");
+  const given = positional.join(" ").trim();
+  if (!given) return out.fail(usage);
+  if (!description) return out.fail(`tabbot compose ${DESCRIPTION_HINT}`);
+  const parsed = parseCliParams(flags);
+  if ("error" in parsed) return out.fail(parsed.error);
+  let code = given;
+  if (positional.length === 1 && !/[\s;(]/.test(given)) {
+    try { code = fs.readFileSync(given, "utf8"); } catch { return out.fail(`读不到文件 ${given}（代码要用引号括起来，文件要写对路径）`); }
+  }
   await ctx.ensureExtension();
-  const outcome = await ctx.runner.runCompose(code, undefined, timeoutSec * 1000);
+  const outcome = await ctx.runner.runCompose(code, undefined, timeoutSec * 1000, parsed.params);
   if (outcome.status !== "success") out.code = 1;
   const receipt = issueReceipt(ctx, { mode: "执行", task: "(compose)", status: outcome.status });
   out.line(JSON.stringify({ mode: "执行", receipt, ...outcome }, null, 2));
+  if (outcome.status === "success") {
+    const saved = saveCompose(ctx.composeDir ?? COMPOSE_DIR, code, description);
+    out.line(`这段已存为 ${saved.file}（下次：tabbot compose --description "…" ${saved.file} --参数 值）${saved.params.length ? "" : "\n提示：变化的值写成 tabbot.params.名字 ?? 默认值，下次直接换参数复用，不用改代码。"}`);
+  }
+}
+
+/** --url 的值：http(s) 链接原样用；`tab123` 或 `123` 是用户的标签页号（tabbot tabs 列出的），只取它的地址，不碰那个标签页。 */
+async function resolveStartUrl(ctx: Ctx, given: string): Promise<{ url: string } | { error: string }> {
+  const m = /^(?:tab)?(\d+)$/i.exec(given.trim());
+  if (!m) return siteOfUrl(given) ? { url: given.trim() } : { error: `--url 要是 http(s) 链接，或 tabbot tabs 列出的标签页号（如 tab123），收到：${given}` };
+  await ctx.ensureExtension();
+  const tab = (await ctx.tabs()).find((t) => t.tabId === Number(m[1]) && !t.anchor && !ctx.win.isAgentTab(t.tabId));
+  if (!tab) return { error: `没有标签页 ${given}：先 tabbot tabs 看用户的标签页，按标题、地址对出要的那个` };
+  return siteOfUrl(tab.url) ? { url: tab.url } : { error: `标签页 ${given} 不是 http(s) 页面：${tab.url}` };
 }
 
 /**
- * tabbot learn <task 名> --site <站点> (--endpoint "方法 接口名" | --find "要的那一个数据或动作") [--note "补充说明"] [--fix]：
- * 开一个学习会话学会一个请求：开一个 debug 窗口，导出冻结的交接材料，输出给自己的学习指引。
+ * tabbot learn <task 名> [--site <站点>] [--url <链接|tab 号>] (--endpoint "方法 接口名" | --find "要的那一个数据或动作") [--note "补充说明"] [--fix]：
+ * 开一个学习会话学会一个请求：开一个 debug 窗口，导出冻结的交接材料，在会话窗口里打开起点（--url，没有就是站点首页），
+ * 输出学习指引和加载期的请求。只录 agent 自己的窗口：用户的页面要重新在会话窗口里打开才能看到它的请求。
  * 粒度固定是一个请求；入口二选一：知道接口名用 --endpoint，只知道要什么用 --find（自己找到那个请求）。
  * 业务目标、批量、聚合都不在这里，学完之后用 task 循环和 compose 完成。
  */
@@ -352,17 +439,20 @@ async function learnCommand(args: string[], ctx: Ctx, out: Output): Promise<void
   if ("error" in flags) return out.fail(flags.error);
   const name = flags.rest[0];
   const note = flags.values.get("note") ?? "";
-  const usage = '用法：tabbot learn <task 名，小写字母数字和 -> --site <站点> (--endpoint "方法 接口名" | --find "要的那一个数据或动作") [--note "补充说明"] [--fix]（一次只学一个请求；接口名照抄 endpoints.json 的 key）';
+  const usage = '用法：tabbot learn <task 名，小写字母数字和 -> [--site <站点>] [--url <链接|tab 号>] (--endpoint "方法 接口名" | --find "要的那一个数据或动作") [--note "补充说明"] [--fix]（一次只学一个请求；接口名照抄 endpoints.json 的 key；--url 是起点页面，用户说"我的某某页面"时用 tabbot tabs 对出标签页号）';
   if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name)) return out.fail(usage);
-  const site = normalizeSite(flags.values.get("site") ?? "");
-  if (!site) return out.fail(`需要 --site <站点>（页面的 host，如 x.com、docs.google.com）。${usage}`);
+  const urlFlag = flags.values.get("url");
+  const start = urlFlag ? await resolveStartUrl(ctx, urlFlag) : undefined;
+  if (start && "error" in start) return out.fail(start.error);
+  const site = normalizeSite(flags.values.get("site") ?? (start ? siteOfUrl(start.url) : ""));
+  if (!site) return out.fail(`需要 --site <站点>（页面的 host，如 x.com、docs.google.com），或 --url。${usage}`);
   const fix = flags.bools.has("fix");
   const found = findTask(ctx.log.dir, name);
   const siteKey = ctx.log.siteKey(site);
   if (found && !fix) {
     const status = taskSummary(found.file).status;
     return out.fail(status === "blocked"
-      ? `task ${name} 是学不会的记录（@status: blocked，原因见 ${found.file} 的 @note）：不要再探索，请用户在 Chrome 里示范一次；有新证据（站点变了、用户示范过）才用 --fix 重开`
+      ? `task ${name} 是学不会的记录（@status: blocked，原因见 ${found.file} 的 @note）：不要再探索，向用户说明卡在哪；有新证据（站点改版、换了入口）才用 --fix 重开`
       : status === "draft"
         ? `task ${name} 是上次没完成的草稿（@status: draft，${found.file}）：用 --fix 接着做`
         : `task ${name} 已存在：直接 tabbot run，或坏了用 --fix 开会话修`);
@@ -395,6 +485,30 @@ async function learnCommand(args: string[], ctx: Ctx, out: Output): Promise<void
   const lines: string[] = [];
   if (endpoint && !stat) lines.push(`⚠ ${site} 的 endpoints.json 里没有接口「${endpoint}」（写法是 \`方法 接口名\`，和 endpoints.json 的 key 一致）：材料里没有它的样本，要自己在页面上触发出来。接口名写错的话，改用 --find。`);
   out.line(`${lines.length ? `${lines.join("\n")}\n\n` : ""}${makeLearnGuide(t, { siteDir: ctx.log.siteDir(site), tasksDir, workDir, materialDir, logDir: ctx.log.logDir(site), libDir: path.join(path.dirname(ctx.log.dir), "lib"), manifest, endpoint, find, note, stat, existing: found?.file })}`);
+  out.line(`\n${await openStart(ctx, t, start?.url ?? `https://${site}/`)}`);
+}
+
+/** 在会话窗口里打开起点页面，列出加载期的请求（不锁定）。打不开不影响会话：agent 自己 debug open。 */
+async function openStart(ctx: Ctx, w: DebugWindow, url: string): Promise<string> {
+  let sess = ctx.sessions.get(w.id);
+  if (!sess) { sess = new Session(w.id); ctx.sessions.set(w.id, sess); }
+  try {
+    await ctx.ensureExtension();
+    ctx.ingest.flush();
+    const before = ctx.log.lastSeq();
+    const res = (await ctx.host.op(sess, "goto", { url })) as { url: string; title: string };
+    await new Promise((r) => setTimeout(r, LOAD_SETTLE_MS));
+    ctx.ingest.flush();
+    const stats = new Map(ctx.index.snapshot(w.site).endpoints.map((e) => [e.key, e]));
+    const caused = causedRequests(ctx.log.readRows(w.site, { wins: [w.id], sinceSeq: before, limit: 500 }), stats);
+    const shown = caused.slice(0, 15).map((r) => describeRequest(r, ctx.log.readRequestFile(w.site, r.seq)?.file, ctx.log.findRequestFile(w.site, r.seq)?.abs, r.endpoint ? stats.get(r.endpoint)?.descriptions?.[0]?.text : undefined).line);
+    return [
+      `# 起点：已在会话窗口打开 ${res.url} "${res.title}"（debug screenshot 截图看页面）`,
+      caused.length ? `加载期的请求（共 ${caused.length} 个${caused.length > shown.length ? `，列前 ${shown.length} 个` : ""}）：\n  ${shown.join("\n  ")}` : "加载期没有录到请求（页面可能还在加载，截图看看；或者数据在页面里，用 DOM 取）。",
+    ].join("\n");
+  } catch (e) {
+    return `# 起点：没能在会话窗口打开 ${url}（${e instanceof Error ? e.message : String(e)}）：自己 tabbot debug open <网址>`;
+  }
 }
 
 // ---- 重放 ----
@@ -416,7 +530,7 @@ export function parseReplayArgs(args: string[]): { seq: number; sets: string[]; 
   return { seq, sets, yes };
 }
 
-type ReplayResult = { ok?: boolean; error?: string; method?: string; status?: number; size?: number; ms?: number; truncated?: boolean; summary?: string; preview?: string; bodyFile?: string; replaySeq?: number; requestFile?: string; warnings?: string[] };
+type ReplayResult = { endpoint?: string; ok?: boolean; error?: string; method?: string; status?: number; size?: number; ms?: number; truncated?: boolean; summary?: string; preview?: string; bodyFile?: string; replaySeq?: number; requestFile?: string; warnings?: string[] };
 
 /**
  * 重放日志里的一个请求：原始内容（含 token 真值）在 holder 的内存里，这里应用 --set（值里可以写别名），
@@ -452,7 +566,7 @@ export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[];
     }
     const rec = ctx.ingest.recordReplay(tab, ts, { ...common, status: res.status, ct: res.ct, size: res.size, text: res.text, ms: res.ms, reqBody: req.body ?? undefined });
     return {
-      ok: true, status: res.status, size: res.size, ms: res.ms, truncated: res.truncated === true, replaySeq: rec.seq,
+      ok: true, status: res.status, size: res.size, ms: res.ms, truncated: res.truncated === true, replaySeq: rec.seq, endpoint: rec.endpoint,
       bodyFile: rec.bodyFile ? ctx.log.abs(w.site, rec.bodyFile) : undefined, requestFile: ctx.log.findRequestFile(w.site, rec.seq)?.abs,
       method: req.method, summary: summarizeBody(rec.preview, res.ct ?? ""), preview: rec.preview.slice(0, 1500), warnings: base.warnings,
     };
@@ -461,7 +575,7 @@ export async function runReplay(ctx: Ctx, params: { seq: number; sets: string[];
   }
 }
 
-async function replayCommand(args: string[], ctx: Ctx, out: Output, w: DebugWindow): Promise<void> {
+async function replayCommand(args: string[], ctx: Ctx, out: Output, w: DebugWindow, description: string): Promise<void> {
   const p = parseReplayArgs(args);
   if ("error" in p) return out.fail(p.error);
   await ctx.ensureExtension();
@@ -469,6 +583,7 @@ async function replayCommand(args: string[], ctx: Ctx, out: Output, w: DebugWind
   if (res.ok === false) { out.code = 1; return out.line(`✗ 重放 #${p.seq}：${res.error ?? "失败"}`); }
   const bad = (res.status ?? 0) >= 400;
   if (bad) out.code = 1;
+  if (res.endpoint && (res.status ?? 0) >= 200 && (res.status ?? 0) < 300) ctx.index.describe(w.site, res.endpoint, { text: description, from: "replay" });
   const kb = (res.size ?? 0) >= 1024 ? `${((res.size ?? 0) / 1024).toFixed(1)}KB` : `${res.size ?? 0}B`;
   const lines = [`${bad ? "✗" : "✓"} 重放 #${p.seq}${p.sets.length ? `（改了 ${p.sets.map((x) => x.split("=")[0]).join(", ")}）` : ""}：${res.method} → ${res.status}，${kb}，${res.ms}ms；${res.summary ?? ""}`];
   if (bad) lines.push(res.status === 401 || res.status === 403 ? "服务器拒绝了：登录态过期、需要签名，或这个请求依赖页面上一步的状态。改用 tabbot debug open + act 在页面上做。" : "服务器返回了错误，先看下面的响应内容再决定。");

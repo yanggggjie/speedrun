@@ -9,8 +9,8 @@ import type { RequestFile, Row } from "./types.ts";
  * 可以直接用 rg / node / Python 读。原则：
  * - 只含一个站点；
  * - 行和文件逐字复制（硬链接，不行就复制），不改写、不汇总；
- * - 按窗口分文件；仍开着的其他 debug 窗口（它们正在试错）整个排除，已收回的 debug 窗口和 user、run 照常包含；
- * - 以目标接口的样本为锚点（样本、触发它的动作、同一标签页前一分钟的行），不是固定时间窗；再加用户窗口最近一段时间的行；
+ * - 只有 agent 窗口的记录（只录 agent 自己的窗口）；按窗口分文件；仍开着的其他 debug 窗口（它们正在试错）整个排除，已收回的 debug 窗口和 run 照常包含；
+ * - 以目标接口的样本为锚点（样本、触发它的动作、同一标签页前一分钟的行），不是固定时间窗；
  * - manifest.json 写明包含和排除了什么、有哪些缺口，不假装完整。
  */
 export const LOOKBACK_MS = 30 * 60_000;
@@ -29,7 +29,7 @@ export type MaterialOptions = {
   site: string;
   /** 导出到哪个目录（会先清空）。 */
   dir: string;
-  /** 目标接口，`方法 接口名`；不给就取用户窗口最近的非 GET 请求。 */
+  /** 目标接口，`方法 接口名`；不给就取最近由动作引发的非 GET 请求。 */
   endpoint?: string;
   /** 仍开着的 debug 窗口（它们的行不导出）。 */
   excludeWins?: Iterable<string>;
@@ -76,10 +76,10 @@ export function exportMaterial(log: SiteLog, index: EndpointIndex | undefined, o
   const all = log.readRows(opts.site, { wins: included, limit: 50_000 });
   const bySeq = new Map(all.map((r) => [r.seq, r]));
 
-  // 锚点：目标接口最近的成功请求；没指定接口就取用户窗口最近一段时间里动作引发的非 GET 请求
+  // 锚点：目标接口最近的成功请求；没指定接口就取最近一段时间里动作引发的非 GET 请求
   const anchors: Row[] = opts.endpoint
     ? all.filter((r) => r.type === "request" && r.endpoint === opts.endpoint && r.requestType !== "replay" && isOk(r.status)).slice(-MAX_SAMPLES)
-    : all.filter((r) => r.type === "request" && r.win === "user" && !r.noise && r.phase === "action" && r.method !== "GET" && r.t >= now - lookback).slice(-50);
+    : all.filter((r) => r.type === "request" && !r.noise && r.requestType !== "replay" && r.phase === "action" && r.method !== "GET" && r.t >= now - lookback).slice(-50);
 
   const keep = new Set<number>();
   const addChain = (row: Row): void => {
@@ -90,7 +90,6 @@ export function exportMaterial(log: SiteLog, index: EndpointIndex | undefined, o
     addChain(a);
     for (const r of all) if (r.tab === a.tab && r.win === a.win && r.t >= a.t - BEFORE_MS && r.t <= a.t) keep.add(r.seq);
   }
-  for (const r of all) if (r.win === "user" && r.t >= now - lookback) keep.add(r.seq);
   // --fix 的线索：最近 run 窗口里这个接口失败的请求（task 坏了，就是它们）
   if (opts.endpoint) for (const r of all.filter((x) => x.type === "request" && x.endpoint === opts.endpoint && x.win === "run" && !isOk(x.status) && x.t >= now - lookback).slice(-3)) addChain(r);
 
@@ -129,19 +128,16 @@ export function exportMaterial(log: SiteLog, index: EndpointIndex | undefined, o
 
   // 缺口
   const warnings: string[] = [];
-  if (all.length === 0) warnings.push("这个站点还没有任何记录（用户没在 Chrome 里访问过，或日志已被清理）：需要自己 debug open 加 act 去触发");
+  if (all.length === 0) warnings.push("agent 还没在这个站点做过事（或日志已被清理）：看起点页面加载期的请求，或在会话窗口里自己触发");
   const fromSeq = chosen.length ? chosen[0]!.seq : 0, toSeq = chosen.length ? chosen[chosen.length - 1]!.seq : 0;
-  const lo = chosen.length ? Math.min(...chosen.map((r) => r.t)) : 0, hi = chosen.length ? Math.max(...chosen.map((r) => r.t)) : 0;
-  const bg = all.filter((r) => r.type === "bg" && r.t >= lo && r.t <= hi).reduce((n, r) => n + (r.count ?? 0), 0);
-  if (bg > 0) warnings.push(`后台标签页在此期间有 ${bg} 个请求只有计数，没有内容（bg 行）`);
   if (truncated > 0) warnings.push(`${truncated} 个响应被截断（truncated），见请求文件`);
   if (missing > 0) warnings.push(`${missing} 个文件已被日志淘汰，没能导出`);
   if (opts.endpoint) {
     if (anchors.length === 0) warnings.push(`没有找到目标接口 ${opts.endpoint} 的成功请求样本`);
     else if (anchors.length < 3) warnings.push(`目标接口只有 ${anchors.length} 个样本`);
     const stat = index?.snapshot(opts.site).endpoints.find((e) => e.key === opts.endpoint);
-    if (stat && !stat.replayable) warnings.push("目标接口最近一次请求的原始内容已不在内存（holder 重启过，或页面之后没再发过）：replayable 为 false，需要自己 debug open 加 screenshot、click 触发一次再重放，或请用户在 Chrome 里做一次");
-  } else if (anchors.length === 0) warnings.push("用户窗口最近没有动作引发的非 GET 请求");
+    if (stat && !stat.replayable) warnings.push("目标接口最近一次请求的原始内容已不在内存（holder 重启过，或页面之后没再发过）：replayable 为 false，需要在会话窗口里触发一次再重放");
+  } else if (anchors.length === 0) warnings.push("最近没有动作引发的非 GET 请求");
 
   const manifest: Manifest = {
     site: opts.site, createdAt: now, ...(opts.endpoint ? { endpoint: opts.endpoint } : {}), fromSeq, toSeq,

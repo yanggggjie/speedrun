@@ -10,9 +10,12 @@
 //   activateTab { tabId }              把标签页切到所在窗口的前台（后台标签页浏览器不渲染）
 //   closeTab { tabId } | closeWindow { windowId }
 //   screenshot { tabId }               截图：把标签页切到前台，截可见区域，缩到视口的 CSS 像素尺寸（截图上的坐标就是页面坐标），返回 { data(base64), mime, w, h }
-// 扩展 → holder：{ type: "hello", abi, ... } | { type: "page", tab, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化和关闭）
+// 扩展 → holder：{ type: "hello", abi, ... } | { type: "page", tab, win, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化和关闭；win 是标签页所在的浏览器窗口）
+//
+// 只录 agent 自己的窗口：一个窗口里有 anchor 页（标题 tabbot agent）就是 agent 窗口。页面脚本加载时经 bridge 问一次，
+// 不是 agent 窗口就不再上报任何东西；用户窗口里的页面消息、地址变化也不转给 holder（holder 另外还会丢弃，双保险）。
 
-const ABI = 3;
+const ABI = 5;
 const HOST = "com.tabbot.connect";
 const RETRY_MAX_MS = 30_000;
 const KEEPALIVE_MINUTES = 0.5;
@@ -30,6 +33,21 @@ function postToHost(message) {
 
 const isWeb = (url) => typeof url === "string" && /^https?:/i.test(url);
 
+// 窗口是不是 agent 窗口（有 anchor 页）。窗口的类型不会变，结果按窗口缓存，窗口关掉时清掉。
+const agentWin = new Map();
+async function isAgentWindow(windowId) {
+  if (windowId == null || windowId < 0) return false;
+  if (agentWin.has(windowId)) return agentWin.get(windowId);
+  let yes = false;
+  try { yes = (await chrome.tabs.query({ windowId, url: ANCHOR_URL })).length > 0; } catch { /* 窗口已经没了 */ }
+  if (yes) agentWin.set(windowId, true);
+  return yes; // 否：不缓存（agent 窗口刚建出来、anchor 页还没登记时，下一次再问）
+}
+chrome.windows.onRemoved.addListener((id) => agentWin.delete(id));
+async function isAgentTab(tabId) {
+  try { return await isAgentWindow((await chrome.tabs.get(tabId)).windowId); } catch { return false; }
+}
+
 async function connect() {
   if (port) return;
   try {
@@ -46,10 +64,10 @@ async function connect() {
   void injectExisting();
 }
 
-// 内容脚本只在新加载的页面里生效；已经打开的页面补注入一次（脚本自己防重复）
+// 内容脚本只在新加载的页面里生效；已经打开的 agent 窗口页面补注入一次（脚本自己防重复）。用户窗口不碰。
 async function injectExisting() {
   for (const tab of await chrome.tabs.query({})) {
-    if (tab.id == null || !isWeb(tab.url)) continue;
+    if (tab.id == null || !isWeb(tab.url) || !(await isAgentWindow(tab.windowId))) continue;
     try {
       const [probe] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => !!window.__tcr });
       if (probe?.result) continue;
@@ -108,6 +126,7 @@ const view = (tab) => ({ tabId: tab.id, windowId: tab.windowId, active: tab.acti
 async function runOp(name, args) {
   switch (name) {
     case "call": {
+      if (!(await isAgentTab(args.tabId))) throw new Error("只能在 tabbot agent 窗口里操作页面");
       const [res] = await chrome.scripting.executeScript({
         target: { tabId: args.tabId, frameIds: [args.frameId ?? 0] }, world: "MAIN",
         func: async (fn, fnArgs) => {
@@ -180,16 +199,20 @@ async function runOp(name, args) {
   }
 }
 
-// 页面脚本经 bridge 发来的消息：补上 tab、frame，原样转给 holder。页面自己的脚本也能发，所以只当观察记录。
-chrome.runtime.onMessage.addListener((m, sender) => {
-  if (!m || m.__tcrl !== 1 || sender.id !== chrome.runtime.id || !sender.tab) return;
-  postToHost({ type: "page", tab: sender.tab.id, frame: sender.frameId ?? 0, top: m.top, page: m.page, msg: m.msg ?? {} });
+// bridge 问"这个标签页录不录"：只有 agent 窗口录。
+// 页面脚本经 bridge 发来的消息：只转 agent 窗口的，补上 tab、frame。页面自己的脚本也能发，所以只当观察记录。
+chrome.runtime.onMessage.addListener((m, sender, reply) => {
+  if (!m || sender.id !== chrome.runtime.id || !sender.tab) return;
+  if (m.__tcrl === 2) { void isAgentWindow(sender.tab.windowId).then((on) => reply({ on })); return true; }
+  if (m.__tcrl !== 1) return;
+  const tab = sender.tab;
+  void isAgentWindow(tab.windowId).then((on) => { if (on) postToHost({ type: "page", tab: tab.id, win: tab.windowId, frame: sender.frameId ?? 0, top: m.top, page: m.page, msg: m.msg ?? {} }); });
 });
 
-// 标签页的地址变化和关闭：holder 记进日志
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+// 标签页的地址变化和关闭：只转 agent 窗口的，holder 记进日志
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url == null || !isWeb(changeInfo.url)) return;
-  postToHost({ type: "page", tab: tabId, frame: 0, msg: { k: "tab", ev: "url", t: Date.now(), url: changeInfo.url } });
+  void isAgentWindow(tab?.windowId).then((on) => { if (on) postToHost({ type: "page", tab: tabId, win: tab?.windowId, frame: 0, msg: { k: "tab", ev: "url", t: Date.now(), url: changeInfo.url } }); });
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   postToHost({ type: "page", tab: tabId, frame: 0, msg: { k: "tab", ev: "closed", t: Date.now(), url: "" } });

@@ -7,11 +7,11 @@ import type { RequestFile, Row } from "./types.ts";
 /** 静态资源不算“引发了请求”：脚本、样式、图片、字体。 */
 const STATIC = /\.(?:m?js|css|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|map|mp4|webm)(?:$|\?)/i;
 
-export type PeriodicStat = { count: number; idle: number; userTriggered: number };
+export type PeriodicStat = { count: number; idle: number; actionTriggered: number };
 
-/** 周期性接口（轮询、心跳）：多数调用是 idle，用户动作从没引发过。它们落在动作后两秒内也不算这一步引发的。 */
+/** 周期性接口（轮询、心跳）：多数调用是 idle，落在动作后两秒内的只是碰巧（远少于 idle）。它们出现在动作之后也不算这一步引发的。 */
 export function isPeriodic(stat: PeriodicStat | undefined): boolean {
-  return !!stat && stat.idle >= 3 && stat.idle * 2 >= stat.count && stat.userTriggered === 0;
+  return !!stat && stat.idle >= 3 && stat.idle * 2 >= stat.count && stat.actionTriggered * 4 <= stat.idle;
 }
 
 /** 从这一步之后新增的时间线行里挑出引发的请求：非噪声、非重放、非 idle、非静态资源、非周期性接口。 */
@@ -21,12 +21,12 @@ export function causedRequests(rows: Row[], stats: ReadonlyMap<string, PeriodicS
     && !STATIC.test(r.url ?? "") && !isPeriodic(r.endpoint ? stats.get(r.endpoint) : undefined));
 }
 
-/** 一个请求的一行描述：编号、方法、地址、状态、内容类型、有没有响应体（没有就写原因）、请求文件。 */
-export function describeRequest(r: Pick<Row, "seq" | "method" | "url" | "status">, file: RequestFile | undefined, abs: string | undefined): { line: string; readable: boolean } {
+/** 一个请求的一行描述：编号、方法、地址、状态、内容类型、有没有响应体（没有就写原因）、请求文件；known 是这个接口以前记下的业务含义（description）。 */
+export function describeRequest(r: Pick<Row, "seq" | "method" | "url" | "status">, file: RequestFile | undefined, abs: string | undefined, known?: string): { line: string; readable: boolean } {
   const ct = file?.responseHeaders?.["content-type"]?.split(";")[0]?.trim() || "未知类型";
   const readable = !!file?.responseBodyPath;
   const body = readable ? "有响应体" : `无响应体（${file?.bodyOmitted ?? "没存"}）`;
-  return { line: `#${r.seq} ${r.method ?? "?"} ${r.url ?? ""} → ${r.status ?? "?"} ${ct}，${body}，请求文件 ${abs ?? "（未找到）"}`, readable };
+  return { line: `#${r.seq} ${r.method ?? "?"} ${r.url ?? ""} → ${r.status ?? "?"} ${ct}，${body}${known ? `（以前：${known}）` : ""}，请求文件 ${abs ?? "（未找到）"}`, readable };
 }
 
 type StepCmd = { kind: string; text?: string; key?: string; dx?: number; dy?: number; to?: string };

@@ -57,7 +57,7 @@ export class TaskRunner {
     const found = findTask(this.paths.sitesDir, name);
     if (!found) return { status: "failure", error: `task 不存在：${name}（task 都在 ${this.paths.sitesDir}/<站点>/tasks/ 下，ls 看有哪些）` };
     const file = found.file;
-    if (taskSummary(file).status === "blocked") return { status: "failure", error: `[${name}] 是学不会的记录（@status: blocked，原因见 ${file} 的 @note）：不要再探索，请用户在 Chrome 里示范一次这个操作`, ...(nested ? { failedTask: name } : {}) };
+    if (taskSummary(file).status === "blocked") return { status: "failure", error: `[${name}] 是学不会的记录（@status: blocked，原因见 ${file} 的 @note）：不要再探索，向用户说明卡在哪`, ...(nested ? { failedTask: name } : {}) };
     if (nested && taskSummary(file).status === "draft") return { status: "failure", error: `[${name}] 是草稿（@status: draft），compose 里不允许调用；请先单独 run 并验证为 verified`, failedTask: name };
     const problem = checkParams(file, params);
     if (problem) return { status: "failure", error: `[${name}] ${problem}`, ...(nested ? { failedTask: name } : {}) };
@@ -89,7 +89,7 @@ export class TaskRunner {
   }
 
   /** compose：代码只能 task(名字, 参数) 组合 task，任何页面操作都被 host 拒绝。 */
-  async runCompose(code: string, key = MAIN_KEY, timeoutMs = 115_000): Promise<Outcome> {
+  async runCompose(code: string, key = MAIN_KEY, timeoutMs = 115_000, params: Record<string, string> = {}): Promise<Outcome> {
     await this.lock(key);
     const session = new Session(key);
     session.composeOnly = true;
@@ -105,8 +105,8 @@ export class TaskRunner {
       "",
     ].join("\n"), "utf8");
     try {
-      const out = await this.work(file, {}, timeoutMs, session);
-      writeRunHistory(this.paths.runDir, "compose", { code, output: out }, RUN_HISTORY_KEEP);
+      const out = await this.work(file, params, timeoutMs, session);
+      writeRunHistory(this.paths.runDir, "compose", { code, params, output: out }, RUN_HISTORY_KEEP);
       return out;
     } finally {
       fs.rmSync(file, { force: true });

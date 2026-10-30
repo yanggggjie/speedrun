@@ -3,6 +3,8 @@
  * 这里没有命令逻辑：参数原样交给 holder（journal/commands.ts），打印它返回的文本，用它返回的退出码。
  * 只有 doctor 和 daemon restart 留在这里，因为它们要诊断或重启一个可能已经不在的 holder。
  */
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { restartDaemon, runOnHolder } from "./session.ts";
 import { handleDoctor } from "./doctor.ts";
 import { USAGE, formatErrorStdout } from "../protocol.ts";
@@ -31,7 +33,9 @@ async function main(argv: string[]): Promise<void> {
   if (!cmd) return fail(USAGE);
   if (cmd === "doctor") return handleDoctor(argv.includes("--json"));
   if (cmd === "daemon") return sub === "restart" ? daemonRestart() : fail(USAGE);
-  const { stdout, code } = await runOnHolder(argv);
+  // holder 的工作目录不是你的：compose 的文件参数按这里的当前目录换成绝对路径
+  const args = cmd === "compose" ? argv.map((a, i) => (i > 0 && !a.startsWith("-") && !path.isAbsolute(a) && !/[\s;(]/.test(a) && fs.existsSync(a) ? path.resolve(a) : a)) : argv;
+  const { stdout, code } = await runOnHolder(args);
   console.log(stdout);
   process.exitCode = code;
 }

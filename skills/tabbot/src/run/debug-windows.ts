@@ -40,7 +40,7 @@ export class DebugWindows {
     const w = this.map.get(id);
     if (!w) return { error: `${id} 不是学习会话，或已失效（holder 重启过？）：重新 tabbot learn` };
     if (w.done) return { error: `学习会话 ${id} 已经收回（task ${w.task} 已验证或已放弃）` };
-    if (w.ops >= DEBUG_MAX_OPS) return { error: `学习会话 ${id} 的调试操作用完了（${DEBUG_MAX_OPS} 次）：告诉用户卡在哪、需要用户做什么（登录、示范一次），或 tabbot debug close 放弃` };
+    if (w.ops >= DEBUG_MAX_OPS) return { error: `学习会话 ${id} 的调试操作用完了（${DEBUG_MAX_OPS} 次）：需要登录就请用户在 Chrome 里登录；否则 tabbot debug close --blocked "原因和证据"` };
     w.ops++;
     w.lastActive = Date.now();
     return w;

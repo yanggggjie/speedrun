@@ -61,6 +61,7 @@ function warnCatch(label: string): (error: unknown) => void { return (error) => 
 link.on("page", (m) => {
   const inner = (m.msg ?? {}) as Record<string, unknown>;
   const msg = { ...inner, k: String(inner.k ?? ""), t: typeof inner.t === "number" ? inner.t : Date.now(), tab: Number(m.tab), frame: Number(m.frame ?? 0), top: m.top === true, page: typeof m.page === "string" ? m.page : undefined } as PageMsg;
+  win.adopt(msg.tab, typeof m.win === "number" ? m.win : undefined); // 页面在 agent 窗口里自己开的标签页也属于那个窗口
   lastActivity = Date.now();
   ingest?.push(msg);
 });

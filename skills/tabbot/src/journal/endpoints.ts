@@ -8,25 +8,29 @@ import type { RequestFile, Row } from "./types.ts";
 
 /**
  * 接口聚合：每个站点一个 <站点>/endpoints.json，写入时增量维护（不用每次重读日志）。
- * 给 agent 判断"这个站点有哪些接口、哪些还没有 task、哪个像用户刚才的显式操作"。不排序、不替 agent 下结论，只给信号：
- * userTriggered（用户的动作引发的次数）、onLoad（页面加载期自动发的次数）、idle（轮询等）、lastCause（最近一次是什么动作触发的）。
+ * 只由 agent 窗口（学习会话、run）的记录累积，给 agent 判断"这个站点学过、跑过哪些接口，哪些还没有 task"。不排序、不替 agent 下结论，只给信号：
+ * actionTriggered（动作引发的次数）、onLoad（页面加载期自动发的次数）、idle（轮询等）、lastCause（最近一次是什么动作触发的）。
  * 每个接口最近几次成功请求登记成样本，样本的请求文件和响应体在日志淘汰时受保护。
  */
 export const SAMPLES_PER_ENDPOINT = 5;
 const SHAPE_TEXT_MAX = 2 * 1024 * 1024;
 
 export type Sample = { seq: number; file: string; body?: string; t: number; size: number };
+/** agent 用 --description 写下的一句业务含义：引发它的动作、重放它、跑覆盖它的 task 时写的。 */
+export type Description = { text: string; from: string; t: number };
+export const DESCRIPTIONS_PER_ENDPOINT = 5;
 export type EndpointStat = {
   key: string; method: string; host: string; name: string;
   count: number; firstSeq: number; lastSeq: number; lastStatus?: number;
-  userTriggered: number; agentTriggered: number; onLoad: number; idle: number; lastCause?: string;
+  actionTriggered: number; onLoad: number; idle: number; lastCause?: string;
+  descriptions?: Description[];
   variables: string[]; shape?: string; samples: Sample[];
   lastTab?: number; lastRid?: string;
 };
 export type EndpointJson = Omit<EndpointStat, "samples" | "lastTab" | "lastRid"> & { replayable: boolean; samples: Array<Omit<Sample, "size"> & { available: boolean }>; task: string | null };
 export type EndpointsFile = { site: string; updatedAt: number; endpoints: EndpointJson[] };
 
-export type ObserveInput = { site: string; row: Row; file: RequestFile; relFile: string; text?: string; label?: string };
+export type ObserveInput = { site: string; row: Row; file: RequestFile; relFile: string; text?: string; label?: string; description?: { text: string; from: string } };
 export type IndexOptions = {
   dir?: string;
   raw?: RawStore;
@@ -70,8 +74,9 @@ export class EndpointIndex {
     try {
       const data = JSON.parse(fs.readFileSync(this.file(site), "utf8")) as EndpointsFile;
       for (const e of data.endpoints ?? []) {
-        const { replayable: _r, task: _t, samples, ...rest } = e;
-        map.set(e.key, { ...rest, samples: (samples ?? []).map((s) => ({ seq: s.seq, file: s.file, body: s.body, t: s.t, size: this.sizeOf(site, s.file, s.body) })) });
+        // 旧版本的文件还有 userTriggered（用户窗口的，不再要）和 agentTriggered：只留 agent 的计数
+        const { replayable: _r, task: _t, samples, userTriggered: _u, agentTriggered, ...rest } = e as EndpointJson & { userTriggered?: number; agentTriggered?: number };
+        map.set(e.key, { ...rest, actionTriggered: rest.actionTriggered ?? agentTriggered ?? 0, samples: (samples ?? []).map((s) => ({ seq: s.seq, file: s.file, body: s.body, t: s.t, size: this.sizeOf(site, s.file, s.body) })) });
       }
     } catch { /* 第一次，或文件坏了：从空开始 */ }
     this.sites.set(key, map);
@@ -94,7 +99,7 @@ export class EndpointIndex {
       let host = "";
       try { host = new URL(file.url.bareUrl).hostname; } catch { /* 地址不合法 */ }
       const sp = row.endpoint.indexOf(" ");
-      e = { key: row.endpoint, method: row.endpoint.slice(0, sp), host, name: row.endpoint.slice(sp + 1), count: 0, firstSeq: row.seq, lastSeq: row.seq, userTriggered: 0, agentTriggered: 0, onLoad: 0, idle: 0, variables: [], samples: [] };
+      e = { key: row.endpoint, method: row.endpoint.slice(0, sp), host, name: row.endpoint.slice(sp + 1), count: 0, firstSeq: row.seq, lastSeq: row.seq, actionTriggered: 0, onLoad: 0, idle: 0, variables: [], samples: [] };
       map.set(row.endpoint, e);
     }
     e.count++;
@@ -107,17 +112,27 @@ export class EndpointIndex {
       e.lastRid = file.rid;
     }
     if (row.phase === "load") e.onLoad++;
-    else if (row.phase === "action") { if (row.win === "user") e.userTriggered++; else e.agentTriggered++; if (input.label) e.lastCause = input.label; }
+    else if (row.phase === "action") { e.actionTriggered++; if (input.label) e.lastCause = input.label; }
     else e.idle++;
     if (typeof row.status === "number" && row.status >= 200 && row.status < 300) {
       if (input.text !== undefined && input.text.length <= SHAPE_TEXT_MAX && row.seq >= e.lastSeq) {
         try { e.shape = shapeOf(JSON.parse(input.text)); } catch { /* 不是 JSON */ }
       }
+      if (input.description && (row.phase === "action" || row.phase === "load")) addDescription(e, { ...input.description, t: row.t });
       e.samples.push({ seq: row.seq, file: relFile, body: file.responseBodyPath, t: row.t, size: this.sizeOf(site, relFile, file.responseBodyPath) });
       if (e.samples.length > SAMPLES_PER_ENDPOINT) e.samples.shift();
       this.trimSamples(map);
     }
     this.touch(site);
+  }
+
+  /** 记一句业务含义到已有的接口上（重放、run 成功时用）；接口还不在聚合里就不记。返回记没记上。 */
+  describe(site: string, key: string, d: { text: string; from: string; t?: number }): boolean {
+    const e = this.load(site).get(key);
+    if (!e || !d.text.trim()) return false;
+    addDescription(e, { text: d.text, from: d.from, t: d.t ?? this.now() });
+    this.touch(site);
+    return true;
   }
 
   /** 样本合计超过额度时，从最旧的样本开始放弃保护（放弃的文件之后可被正常淘汰）。 */
@@ -177,4 +192,11 @@ export class EndpointIndex {
       } catch { /* 下一次再写 */ }
     }
   }
+}
+
+/** 同一句只留一份（新的在前），最多 DESCRIPTIONS_PER_ENDPOINT 句。 */
+function addDescription(e: EndpointStat, d: Description): void {
+  const text = d.text.trim().slice(0, 200);
+  if (!text) return;
+  e.descriptions = [{ ...d, text }, ...(e.descriptions ?? []).filter((x) => x.text !== text)].slice(0, DESCRIPTIONS_PER_ENDPOINT);
 }

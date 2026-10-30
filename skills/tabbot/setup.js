@@ -26,6 +26,12 @@ const DEPS_MARKER = path.join("node_modules", "tldts", "dist", "cjs", "index.js"
 mirrorPayload(HERE, HOME_DIR);
 console.log(`TabBot 源码镜像 → ${HOME_DIR}`);
 for (const [from, to] of retireLegacyData(HOME_DIR)) console.log(`旧版本的 ${path.join(HOME_DIR, from)} 已改名为 ${path.join(HOME_DIR, to)}（没有读取、没有转换；不需要时自己删除）`);
+// 现在只录 agent 自己的窗口；旧版本录下的用户窗口日志不读也不删，只提示一句
+try {
+  const sitesDir = path.join(HOME_DIR, "sites");
+  const hasUserLog = fs.readdirSync(sitesDir).some((site) => { try { return fs.readdirSync(path.join(sitesDir, site, "log")).some((seg) => fs.existsSync(path.join(sitesDir, site, "log", seg, "timeline.user.jsonl"))); } catch { return false; } });
+  if (hasUserLog) console.log(`TabBot 现在只录 agent 自己的窗口；旧版本录下的你自己窗口的日志还在 ${sitesDir}/*/log，不需要时可以删除（tasks/ 别删）`);
+} catch { /* 还没有 sites 目录 */ }
 
 const lock = path.join(DEST, "package-lock.json");
 if (!fs.existsSync(lock)) {

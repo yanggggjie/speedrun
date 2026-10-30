@@ -22,6 +22,8 @@ export class AgentWindows {
   private readonly windows = new Map<string, number>();
   private readonly owned = new Map<number, Owned>();
   private readonly activeTab = new Map<string, number>();
+  /** 页面自己在 agent 窗口里开的标签页（target=_blank 链接、window.open）：不进池，但属于那个窗口，照常录。 */
+  private readonly adopted = new Map<number, string>();
   private readonly opening = new Map<string, Promise<number>>();
   private reaper: ReturnType<typeof setInterval> | undefined;
   /** 本次链路上已经清理过孤儿窗口。 */
@@ -33,10 +35,19 @@ export class AgentWindows {
     this.idleMs = idleMs;
   }
 
-  isAgentTab(tab: number): boolean { return this.owned.has(tab); }
+  isAgentTab(tab: number): boolean { return this.owned.has(tab) || this.adopted.has(tab); }
 
-  /** 标签页所在的窗口：run、debug-xxxx；不是 TabBot 开的就是用户自己的 user。 */
-  winOf(tab: number): string { return this.owned.get(tab)?.key ?? "user"; }
+  /** 标签页所在的窗口：run、debug-xxxx；不在任何 agent 窗口里的就是用户自己的 user。 */
+  winOf(tab: number): string { return this.owned.get(tab)?.key ?? this.adopted.get(tab) ?? "user"; }
+
+  /** key 对应的浏览器窗口号（还没开就是 undefined）。 */
+  windowIdOf(key: string): number | undefined { return this.windows.get(key); }
+
+  /** 扩展报来的页面消息带着标签页所在的浏览器窗口：是 agent 窗口、标签页又不是 TabBot 开的，就记为属于那个窗口。 */
+  adopt(tab: number, windowId: number | undefined): void {
+    if (windowId === undefined || this.owned.has(tab) || this.adopted.has(tab)) return;
+    for (const [key, id] of this.windows) if (id === windowId) { this.adopted.set(tab, key); if (this.adopted.size > 2_000) this.adopted.delete(this.adopted.keys().next().value!); return; }
+  }
 
   private async list(): Promise<Tab[]> { return ((await this.link.request("tabs")) as { tabs: Tab[] }).tabs; }
 
@@ -122,6 +133,7 @@ export class AgentWindows {
     this.windows.delete(key);
     this.activeTab.delete(key);
     for (const [id, e] of this.owned) if (e.key === key) this.owned.delete(id);
+    for (const [id, k] of this.adopted) if (k === key) this.adopted.delete(id);
     if (windowId !== undefined) await this.link.request("closeWindow", { windowId }).catch(() => {});
   }
 

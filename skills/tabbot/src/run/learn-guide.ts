@@ -32,14 +32,14 @@ export function makeLearnGuide(t: DebugWindow, info: LearnInfo): string {
   const own = `${info.logDir}/*/timeline.${t.id}.jsonl`;
   const warnings = info.manifest.warnings.length ? info.manifest.warnings.map((w) => `  - ${w}`).join("\n") : "  （无）";
   const stat = !info.stat ? "" : `
-  - 在日志里出现 ${info.stat.count} 次（用户动作引发 ${info.stat.userTriggered} 次，页面加载期 ${info.stat.onLoad} 次，其余 ${info.stat.idle} 次），最近一次 #${info.stat.lastSeq} ${info.stat.lastStatus ?? ""}，最近的触发动作：${info.stat.lastCause ?? "无"}
+  - 在日志里出现 ${info.stat.count} 次（动作引发 ${info.stat.actionTriggered} 次，页面加载期 ${info.stat.onLoad} 次，其余 ${info.stat.idle} 次），最近一次 #${info.stat.lastSeq} ${info.stat.lastStatus ?? ""}，最近的触发动作：${info.stat.lastCause ?? "无"}
   - 变量：${info.stat.variables.join(", ") || "无"}；响应结构：${info.stat.shape ?? "未知"}；原始请求${info.stat.replayable ? "还在内存里，可以直接重放" : "已不在内存里（replayable 为 false），要自己触发一次才能重放"}`;
   return `学习会话已开：这次只学会一个请求，写成一份 task。
 
 # 目标
 ${info.endpoint
   ? `学会请求 ${info.endpoint}：弄清它的入参（哪些是变量）、怎么判断成功、响应里有什么，写成一份可重复执行的 task。`
-  : `找到并学会「${info.find}」背后的那一个请求，写成一份可重复执行的 task。不知道是哪个接口：先在材料和 endpoints.json 里找（用户做过的话，userTriggered 大于 0 且 onLoad 为 0 的、lastCause 对得上的最像；也可以 rg 响应体里页面上看到的值），材料里没有再在自己的 agent 窗口里把它触发出来。找到后弄清入参（哪些是变量）、怎么判断成功、响应里有什么。`}${info.note ? `\n- 补充：${info.note}` : ""}
+  : `找到并学会「${info.find}」背后的那一个请求，写成一份可重复执行的 task。不知道是哪个接口：先看本输出末尾起点页面的加载期请求，再看 endpoints.json（之前的学习会话和 run 留下的；actionTriggered 大于 0、lastCause 对得上的最像；也可以 rg 响应体里页面上看到的值），都没有就在会话窗口里把它触发出来。找到后弄清入参（哪些是变量）、怎么判断成功、响应里有什么。`}${info.note ? `\n- 补充：${info.note}` : ""}
 - 只学这一个请求：${info.endpoint ? "" : "最终只写一个 @endpoint；如果发现要靠好几个请求才能拿到这个结果，先学主要的这一个，其余记下来，学完再 tabbot learn 开下一个。"}不要在 task 里遍历、聚合、整理成业务报告，也不要替用户决定业务口径（要选的做成参数）。批量和业务组合在学完之后用 task 循环和 compose 完成。
 - task 名：${t.task}${t.fix ? `（已存在，要接着做或修好它：${info.existing ?? taskFile}）` : ""}
 - 站点：${t.site}（页面要登录就停下来，请用户在 Chrome 里登录，不要自己登录）
@@ -56,10 +56,10 @@ ${info.endpoint
 - 交接材料（开会话时导出的，冻结的）：${info.materialDir}/
   - manifest.json：里面有什么、缺什么。**先读它。** 当前的缺口：
 ${warnings}
-  - timeline.<窗口>.jsonl：一行一条，type 是 request / action / nav / cmd / tab / bg；win 是窗口（user 是用户自己，run 是 run 窗口，debug-… 是别的学习会话留下的历史）；request 行的 cause 是引发它的动作的 seq，causeDt 是相隔毫秒，phase 是 load（页面刚加载）/ action（动作引发）/ idle（轮询等）。
+  - timeline.<窗口>.jsonl：一行一条，type 是 request / action / nav / cmd / tab；win 是窗口（run 是 run 窗口，debug-… 是之前的学习会话；只录 agent 自己的窗口，没有用户窗口的记录）；request 行的 cause 是引发它的动作的 seq，causeDt 是相隔毫秒，phase 是 load（页面刚加载）/ action（动作引发）/ idle（轮询等）。
   - <段>/<编号>_<方法>_<地址>.json：一个请求的完整元数据（url.query 和 requestBody 已解析成对象，秘密是 ⟨secret_…⟩ 别名）；.response.json 是响应体（只给了锚点请求的）。
 - 这个站点的接口清单：${info.siteDir}/endpoints.json（每个接口的次数、阶段统计、变量、响应结构、样本、被哪个 task 覆盖）。
-- 全部日志（会随时间增长，包含用户此刻的操作，和这次无关的别去读）：${info.logDir}/<段>/。
+- 全部日志（agent 窗口的历史，会随时间增长，和这次无关的别去读）：${info.logDir}/<段>/。
 - 这个会话里你做过什么：cat ${own}
 - 工作区：${info.workDir}/（草稿放这里）。已有的 task：${info.tasksDir}/。
 
@@ -68,9 +68,10 @@ ${warnings}
 - **network**（默认）：用请求本身，task 里用 \`request(page, …)\` 直接发这个请求。
 - **dom**（兜底，也是正当的结果）：请求读不了响应体（流式、二进制）、必须由页面脚本带签名发出、或页面上有数据却没有可用的请求时，task 做页面操作并用 \`text\` / \`query\` 取数据；用 \`${dbg} close --blocked\` 之前先试过它。
 
+0. 起点页面已经在会话窗口里打开（本输出末尾列了它加载期的请求）；那是用户给的页面重新加载的样子。页面状态不在网址里（弹窗、筛选、展开的某一项）就自己点到那个状态。
 1. 读 manifest.json，再读目标接口的请求文件：方法、地址、请求体里哪些是变量、响应长什么样。**有请求就用请求。**
-2. 请求能直接重放：\`${dbg} replay <编号> --set 名字=值\`（编号是请求文件名开头的数字）。非 GET 的请求要 --yes，并且先问过用户。原始请求不在内存里时（replayable 为 false）：自己在页面上触发一次，它就进内存了，再用新的编号重放。
-3. 要动页面：\`${dbg} open <网址>\` 打开，\`${dbg} screenshot\` 截图（存成文件，用读图片的方式看它），再按图上的坐标操作：\`${dbg} click <x> <y>\`、\`${dbg} type "文字"\`（先 click 输入框）、\`${dbg} key Enter\`、\`${dbg} scroll down [像素] [x y]\`。没有页面结构、没有元素编号，只靠看图。**每个动作的输出写明这一步引发了哪些请求**（含 GET，内容类型，有没有响应体）**和一行可贴进 task 的代码**。**引发请求后会锁定**：先把它写进 task 草稿 ${taskFile}（读不了响应体就把这一步写成 DOM 步骤），才能继续 open / click / type / key / scroll；replay 和 screenshot 不受限。没引发请求的动作，把那一行贴进草稿，不要空翻。
+2. 请求能直接重放：\`${dbg} replay <编号> --set 名字=值 --description "…"\`（编号是请求文件名开头的数字）。非 GET 的请求要 --yes，并且先问过用户。原始请求不在内存里时（replayable 为 false）：自己在页面上触发一次，它就进内存了，再用新的编号重放。
+3. 要动页面：\`${dbg} open <网址>\` 打开，\`${dbg} screenshot\` 截图（存成文件，用读图片的方式看它），再按图上的坐标操作：\`${dbg} click <x> <y> --description "点开某某"\`、\`${dbg} type "文字" --description "…"\`（先 click 输入框）、\`${dbg} key Enter --description "…"\`、\`${dbg} scroll down [像素] [x y] --description "…"\`。动作、\`replay\`、\`run\` 都要带 \`--description\`：一句话用用户的话说这一步要做什么，它会存成这个接口的业务含义。没有页面结构、没有元素编号，只靠看图。**每个动作的输出写明这一步引发了哪些请求**（含 GET，内容类型，有没有响应体）**和一行可贴进 task 的代码**。**引发请求后会锁定**：先把它写进 task 草稿 ${taskFile}（读不了响应体就把这一步写成 DOM 步骤），才能继续 open / click / type / key / scroll；replay 和 screenshot 不受限。没引发请求的动作，把那一行贴进草稿，不要空翻。
 4. 写 task：直接写文件 ${taskFile}（一份 task 只覆盖一个请求${info.endpoint ? `，就是 ${info.endpoint}` : "，就是你找到的那一个"}）。文件头：
 
 \`\`\`javascript
@@ -83,13 +84,13 @@ ${warnings}
  */
 \`\`\`
 
-5. 会话只有两种结束。跑通：\`tabbot run ${t.task} --参数 值 --window ${t.id}\`（有副作用且想先看看会发什么：加 \`--dry\`），跑通一次自动变成 verified，会话随之收回。确认学不会：\`${dbg} close --blocked "原因和证据"\`（试过哪些请求编号、做过几次动作、为什么 network 和 DOM 都不行），task 标成 blocked，之后不再探索；最终回复说明卡在哪，需要时请用户示范一次。两种结束都有回执，最终回复要引用。
+5. 会话只有两种结束。跑通：\`tabbot run ${t.task} --description "…" --参数 值 --window ${t.id}\`（有副作用且想先看看会发什么：加 \`--dry\`），跑通一次自动变成 verified，会话随之收回。确认学不会：\`${dbg} close --blocked "原因和证据"\`（试过哪些请求编号、做过几次动作、为什么 network 和 DOM 都不行），task 标成 blocked，之后不再探索；最终回复说明卡在哪。用户只在页面要登录时登录，其余全靠你自己探索。两种结束都有回执，最终回复要引用。
 6. 学完以后：用这份 task（以及别的 task，用 tabbot compose 组合）去完成用户真正要的事，结果来自 tabbot run。
 
 # 写 task 的规则
 - SDK：\`import { tabbot, goto, request, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../../../lib/index.js"\`（路径相对 ${info.tasksDir}/，SDK 在 ${info.libDir}/），入口 \`await tabbot.run(async ({ page }) => { ... })\`，返回值就是结果。
-- \`request(page, {url, method?, headers?, json?})\` 默认继承页面自己最近发出的请求头（token 真值只在 holder 内存里）；内存里没有可继承的头时会自动打开站点首页让页面自己发请求。
-- 参数用 \`tabbot.params.名字\`（字符串）；变化的值（id、关键词、页码）都做成参数。
+- \`request(page, {url, method?, headers?, json?})\` 默认继承 agent 窗口里同站点页面最近发出的请求头（token 真值只在 holder 内存里）；内存里没有可继承的头时会自动打开站点首页让页面自己发请求。
+- 参数用 \`tabbot.params.名字 ?? 默认值\`（字符串）；变化的值（id、关键词、页码）都做成参数；返回字段用页面上的词命名。
 - 成功判断：检查 HTTP 状态码和业务码；结果必须对应本次参数；有副作用的先读状态，已满足返回 already；返回被操作对象的稳定 id。
 - 定位用 \`{role,name}\` 或 CSS；\`query(page, {css, fields})\` 取数；\`evaluate\` 是兜底（严格 CSP 的页面会被拒）。
 - 一次调用只发这一个请求一次：翻页、批量、多个对象都做成参数，由 task 循环调用（tabbot compose），task 里不写循环。

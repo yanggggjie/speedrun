@@ -1,14 +1,14 @@
 /**
- * 事件来源：user 是真人输入（isTrusted 为真），page 是页面里的脚本触发的请求和导航，
- * agent 是 TabBot 自己发出的动作和重放；run 与 debug 窗口里发生的一切都记为 agent。
+ * 事件来源：只录 agent 的窗口，所以几乎都是 agent（TabBot 的动作、重放，以及 agent 窗口里页面脚本触发的请求和导航）；
+ * user 只在有人在 agent 窗口里真的动了一下时出现（isTrusted 为真）。page 是旧版本留下的行。
  */
 export type Src = "user" | "agent" | "page";
-/** request 是 fetch / XHR / 重放，action 是页面里的输入事件，cmd 是 agent 的命令记录，doc 是主文档渲染后的 HTML，snap 是页面快照，bg 是后台标签页的请求计数。 */
-export type RowType = "request" | "action" | "nav" | "doc" | "snap" | "cmd" | "tab" | "bg";
+/** request 是 fetch / XHR / 重放，action 是页面里的输入事件，cmd 是 agent 的命令记录，doc 是主文档渲染后的 HTML，snap 是页面快照。 */
+export type RowType = "request" | "action" | "nav" | "doc" | "snap" | "cmd" | "tab";
 /** 请求发生的阶段：load 是页面刚加载（或单页应用刚路由）的那几秒，action 是动作引发的，idle 是轮询、后台自发。 */
 export type Phase = "load" | "action" | "idle";
 
-/** 窗口：用户自己的、run 窗口、学习会话的 debug 窗口（debug-xxxx）。 */
+/** 不是 agent 窗口的标签页（用户自己的）：它的一切都不录。agent 的窗口是 run 和学习会话的 debug-xxxx。 */
 export const USER_WIN = "user";
 
 /** timeline.<窗口>.jsonl 里的一行。字段名沿用 yodo 的录制材料（type / actionType / requestType / selector / role / name）。 */
@@ -27,6 +27,8 @@ export type Row = {
   /** action / cmd：click、input、scroll、key、goto、request……；target 是元素的简短描述，如 button[Like]。 */
   actionType?: string;
   target?: string;
+  /** cmd：agent 用 --description 写的这一步要做什么（用户的话，业务含义）。这一步引发的请求经 cause 指向这一行。 */
+  description?: string;
   role?: string;
   name?: string;
   selector?: string;
@@ -52,7 +54,7 @@ export type Row = {
   causeDt?: number;
   phase?: Phase;
   replayOf?: number;
-  /** nav / tab：load、pushState、popstate…；bg：后台标签页发出的请求数。 */
+  /** nav / tab：load、pushState、popstate…；count：旧版本的 bg 行留下的请求数。 */
   via?: string;
   count?: number;
   /** 指向请求文件、文档或快照，路径相对站点的 log/ 目录：`<段>/<文件名>`。 */

@@ -1,5 +1,5 @@
 // 页面里（MAIN world）的录制：fetch / XHR 的请求与响应、主文档的渲染结果、用户输入、导航、页面快照。
-// 只如实上报浏览器里发生的事，不管是谁造成的；不改变页面行为。来源只看 isTrusted（真的是人，假的不是人）。
+// 只在 tabbot agent 窗口里上报（common.js 的 T.post 按扩展的回答放行）；只如实上报发生的事，不改变页面行为。来源只看 isTrusted。
 // 不录 WebSocket、sendBeacon、Worker 里的请求。
 (() => {
   const T = window.__tcr;
@@ -12,12 +12,6 @@
   const TEXTY = /json|text|xml|javascript|html|x-www-form|graphql/i;
   const SENSITIVE_HEADER = /^(cookie|set-cookie)$/i; // 页面脚本看不到 cookie；其余请求头的真值也交给 holder（只在内存里用来重放）
   const post = T.post;
-
-  // ---- 后台页面只计数，不读响应体 ----
-  let bg = 0;
-  const flushBg = () => { if (bg) { post({ k: "bg", n: bg }); bg = 0; } };
-  setInterval(flushBg, 30000);
-  addEventListener("pagehide", flushBg);
 
   // ---- 同站的粗判断（只决定读不读响应体，最终判断在 holder）----
   const SLD = /^(com|co|org|net|gov|edu|ac)$/;
@@ -67,7 +61,7 @@
       else if (r && method !== "GET" && method !== "HEAD") reqBody = "[Request body not read]";
     } catch {}
     const p = prevFetch.apply(this, arguments);
-    if (!fg) { bg++; return p; }
+    if (!fg || !T.recording()) return p;
     p.then(async (res) => {
       const rec = { k: "net", via: "fetch", id, rid: docId + ":" + id, url, finalUrl: res.url, method, reqHeaders, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0), at: Math.round(t0) };
       try {
@@ -103,8 +97,7 @@
   XMLHttpRequest.prototype.send = function (b) {
     const t = this.__t;
     if (t) {
-      if (!T.foreground()) bg++;
-      else {
+      if (T.foreground() && T.recording()) {
         t.reqBody = bodyStr(b);
         const t0 = performance.now();
         this.addEventListener("loadend", () => {

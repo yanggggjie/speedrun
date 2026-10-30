@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { LIB_DIR, TASK_TIMEOUT_MS } from "../utils/constants.ts";
+import { COMPOSE_KEEP, LIB_DIR, TASK_TIMEOUT_MS } from "../utils/constants.ts";
 import { siteDirName } from "../utils/url.ts";
 
 export interface TaskSummary {
@@ -136,6 +137,39 @@ export function writeRunHistory(runDir: string, name: string, entry: unknown, ke
   fs.writeFileSync(file, JSON.stringify(entry, null, 2), "utf8");
   const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
   for (const old of files.slice(0, Math.max(0, files.length - keep))) fs.rmSync(path.join(dir, old), { force: true });
+}
+
+/** 去掉 saveCompose 写的头（拿存下的文件再跑时，代码原文不变，哈希也不变）。 */
+export function stripComposeHead(code: string): string {
+  return code.replace(/^\s*\/\/[^\n]*\n\/\*\*\n(?: \* @(?:description|uses|params|ok) [^\n]*\n)+ \*\/\n/, "");
+}
+
+/**
+ * 存一段跑成功的 compose：~/.tabbot/compose/<代码哈希前 12 位>.js。同样的代码只存一份，再次成功时累加 description（最多 5 句，新的在前）和次数。
+ * 头由 TabBot 填：@description、@uses（代码里 task("名字") 调用的）、@params（代码里读的 tabbot.params.名字）、@ok（成功次数和最近时间）；下面是代码原文。
+ * 只留最近 keep 个（按修改时间）。
+ */
+export function saveCompose(dir: string, code: string, description: string, keep = COMPOSE_KEEP, now = Date.now()): { file: string; uses: string[]; params: string[] } {
+  const body = stripComposeHead(code).trim();
+  const file = path.join(dir, `${createHash("sha256").update(body).digest("hex").slice(0, 12)}.js`);
+  const uses = [...new Set([...body.matchAll(/\btask\(\s*["'`]([a-z0-9][a-z0-9-]*)["'`]/g)].map((m) => m[1]!))];
+  const params = [...new Set([...body.matchAll(/\btabbot\.params\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]!))];
+  let descriptions: string[] = [], ok = 0;
+  try {
+    const old = fs.readFileSync(file, "utf8");
+    descriptions = [...old.matchAll(/^ \* @description (.+)$/gm)].map((m) => m[1]!);
+    ok = Number(/^ \* @ok (\d+)/m.exec(old)?.[1] ?? 0);
+  } catch { /* 第一次 */ }
+  const text = description.replace(/\s+/g, " ").trim().slice(0, 200);
+  descriptions = [text, ...descriptions.filter((d) => d !== text)].slice(0, 5);
+  const d = new Date(now), pad = (n: number): string => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; // 本地时间
+  const head = [`// ${descriptions[0]}`, "/**", ...descriptions.map((d) => ` * @description ${d}`), ` * @uses ${uses.join(", ") || "（无）"}`, ` * @params ${params.join(", ") || "（无）"}`, ` * @ok ${ok + 1} 次，最近 ${stamp}`, " */"];
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, `${head.join("\n")}\n${body}\n`, { mode: 0o600 });
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".js")).map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs })).sort((a, b) => b.t - a.t);
+  for (const { f } of files.slice(keep)) fs.rmSync(path.join(dir, f), { force: true });
+  return { file, uses, params };
 }
 
 /** 把 src/task-lib 同步到 ~/.tabbot/lib：task 脚本（sites/<站点>/tasks/）从 ../../../lib/index.js 引用 SDK，holder 每次启动都覆盖，保证和代码一致。 */

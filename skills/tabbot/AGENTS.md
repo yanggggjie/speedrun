@@ -27,7 +27,7 @@ TabBot 完全以原始源码分发：`skills/tabbot/` 整个目录（源码、`s
 
 ### 2.1.1 调试触发：用 Claude in Chrome
 
-在真实 Chrome 里调试时，用 Claude in Chrome 触发页面操作（导航、点击、滚动、输入），TabBot 的常驻录制同时记录，再读 `~/.tabbot/sites/<站点>/` 下的文件检查结果（`endpoints.json`、`log/*/timeline.*.jsonl`、请求文件，格式见 `SKILL.md` 第 3 节）。流程：本地安装 → 在 `chrome://extensions` 加载或刷新 `~/.tabbot/src/chrome-extension` → 用 Claude in Chrome 在测试 tab 里操作 → 读日志。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `user`，写进 `timeline.user.jsonl`；它在后台标签页里加载的页面按设计不会被完整记录（后台只计数）。
+TabBot 只录 agent 自己的窗口（学习会话和 run 窗口），Claude in Chrome 在用户窗口里的操作不会被录。在真实 Chrome 里调试录制：`tabbot learn … --url <链接|tab 号>` 开学习会话，用 `tabbot debug` 在会话窗口里操作，再读 `~/.tabbot/sites/<站点>/` 下的文件检查结果（`endpoints.json`、`log/*/timeline.<窗口号>.jsonl`、请求文件，格式见 `SKILL.md` 第 3 节）。Claude in Chrome 用来在用户窗口里浏览，确认这些操作**不**产生任何记录，以及开出被 `--url tab号` 引用的页面。流程：本地安装 → 在 `chrome://extensions` 加载或刷新 `~/.tabbot/src/chrome-extension` → 开学习会话操作 → 读日志。
 
 ### 2.2 检查与测试
 
@@ -53,8 +53,8 @@ npm run verify:pack
 **不再模拟扩展**：没有假扩展、没有桩 `chrome.*`、没有起 Chrome for Testing 的端到端脚本。改了扩展、页面脚本、agent 窗口、task 运行时之后，用真实的 Chrome 验证：
 
 1. `node skills/tabbot/setup.js` 重装到 `~/.tabbot`；改了 `background.js`、`manifest.json`、`page/` 下的页面脚本要在 `chrome://extensions` 里刷新 TabBot；只改了 holder、CLI、`src/run/` 的 `tabbot daemon restart` 即可。`tabbot doctor` 的 `extension-abi` 提示扩展是否太旧。
-2. 用 Claude in Chrome 在真实页面里触发行为（导航、点击、滚动、输入），TabBot 的常驻录制同时记录；再读 `~/.tabbot/sites/<站点>/` 下的文件检查：站点目录名是页面的 host（去 `www.`）、`timeline.user.jsonl`、请求文件、`endpoints.json` 里的 `phase` 统计要和实际操作相符。Claude in Chrome 发出的输入 `isTrusted` 为真，会被记成 `user`。至少在三个站点上试：一个公共站点、一个 GraphQL 站点、一个公司内部多子域站点。
-3. 走一遍学习会话：`tabbot learn <task 名> --site <站点> --endpoint …`（或 `--find …`），确认输出的学习指引里材料、纪律、做法齐全，读了 `material/manifest.json`，在自己的会话窗口里调试（截图加坐标，没有页面结构），写出 `sites/<站点>/tasks/<名>.js`，`tabbot run … --window <号>` 跑通后会话收回；`log/*/timeline.<窗口号>.jsonl` 里是它做的一切；`run` 输出里有回执。同时开两个会话（同一站点、不同 task），确认第二个的材料排除了第一个的行，且不写 `--window` 时 `debug` 会报“开着 2 个学习会话”。重启 holder，确认会话清空、编号继续递增、`endpoints.json` 读回。再验证：一步动作引发请求后，下一个 `open` / `click` / `type` / `key` / `scroll` 被拒绝（`screenshot`、`replay` 不受限），改了 `sites/<站点>/tasks/<名>.js` 后解锁；周期性接口（如 claude.ai 的 `ReportViewing`）不触发锁；`debug close` 不带 `--blocked` 被拒，带上后 task 变成 `@status: blocked` 且 `learn` 不再重开。可选：把 `src/hooks/stop-receipt.mjs` 注册成 Stop hook，确认跑过 `tabbot run` 却没引用回执、或用过 `learn`/`debug` 却没有任何回执时会被拦一次。
+2. 只录 agent 窗口：用 Claude in Chrome 在用户窗口里浏览、点击几个站点，`~/.tabbot/sites` 下不产生任何新行和新文件。再用学习会话（`learn --url`）在会话窗口里触发行为，读 `~/.tabbot/sites/<站点>/` 下的文件检查：站点目录名是页面的 host（去 `www.`）、`timeline.<窗口号>.jsonl`、请求文件、`endpoints.json` 里的 `phase` 统计要和实际操作相符。至少在三个站点上试：一个公共站点、一个 GraphQL 站点、一个公司内部多子域站点。
+3. 走一遍学习会话：`tabbot learn <task 名> --url <链接|tab 号> --endpoint …`（或 `--find …`；`tab 号` 用 `tabbot tabs` 按标题对出来），确认会话窗口打开了起点、输出里有起点加载期的请求，学习指引里材料、纪律、做法齐全、没有"示范"，读了 `material/manifest.json`，在自己的会话窗口里调试（截图加坐标，没有页面结构），写出 `sites/<站点>/tasks/<名>.js`，`tabbot run … --description "…" --window <号>` 跑通后会话收回（`debug` 动作、`replay`、`run`、`compose` 都要带 `--description`）；`log/*/timeline.<窗口号>.jsonl` 里是它做的一切；`run` 输出里有回执。同时开两个会话（同一站点、不同 task），确认第二个的材料排除了第一个的行，且不写 `--window` 时 `debug` 会报“开着 2 个学习会话”。重启 holder，确认会话清空、编号继续递增、`endpoints.json` 读回。再验证：一步动作引发请求后，下一个 `open` / `click` / `type` / `key` / `scroll` 被拒绝（`screenshot`、`replay` 不受限），改了 `sites/<站点>/tasks/<名>.js` 后解锁；周期性接口（如 claude.ai 的 `ReportViewing`）不触发锁；`debug close` 不带 `--blocked` 被拒，带上后 task 变成 `@status: blocked` 且 `learn` 不再重开。再验证：动作的 `--description` 进了时间线，并出现在它引发的请求所在接口的 `endpoints.json` 的 `descriptions` 里；页面跳到别的站点时输出写明并列出那边的请求；用几个 task 写一段带 `tabbot.params` 的 compose 跑通，`~/.tabbot/compose/` 里出现文件，`rg` 能用 description 里的词命中，拿这个文件带别的参数再跑一次，还是同一个文件、`@description` 多一句。可选：把 `src/hooks/stop-receipt.mjs` 注册成 Stop hook，确认跑过 `tabbot run` 却没引用回执、或用过 `learn`/`debug` 却没有任何回执时会被拦一次。
 4. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露“等页面加载完”这类问题）：量 `tabbot debug … open`、`tabbot run` 的耗时。
 
 日常 Chrome 里测试时日志含登录态内容，在 `~/.tabbot/sites`；测完删除该目录（旧版本留下的 `journal.old`、`task.old` 同理）。

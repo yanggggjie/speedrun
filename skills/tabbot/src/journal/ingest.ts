@@ -14,6 +14,8 @@ export type PageMsg = { k: string; t: number; tab: number; frame?: number; top?:
 
 /** 人的事件或 agent 的命令之后这段时间内开始的请求，记为它引发的。 */
 const CAUSE_MS = 2_000;
+/** 页面在 agent 窗口里新开的标签页（点了 target=_blank 的链接）：它的请求算这个窗口这么久之内最近一条命令引发的。 */
+const NEW_TAB_MS = 10_000;
 /** 页面（文档或单页应用路由）刚开始的这几秒里发出的请求，阶段记为 load。 */
 const LOAD_MS = 4_000;
 const FLUSH_MS = 100;
@@ -40,7 +42,7 @@ export type IngestOptions = {
   engine?: () => FiltersEngine | undefined;
   aliasKey?: string;
   raw?: RawStore;
-  /** 标签页所在的窗口：user、run、debug-xxxx。agent 窗口里的页面事件记为 agent 的（不是用户做的）。 */
+  /** 标签页所在的窗口：run、debug-xxxx 是 agent 的窗口；不是 agent 窗口的（user）一律不记。不给就当作都不是。 */
   winOf?: (tab: number) => string;
   /** 接口聚合：每写一个请求就通知它。 */
   index?: EndpointIndex;
@@ -48,7 +50,7 @@ export type IngestOptions = {
 
 /** beginCmd 返回的句柄：编号已经预留，行在 endCmd 时才写。 */
 export type CmdRef = { seq: number; site: string; win: string; tab: number; ts: number; verb: string; target: string; detail?: Record<string, unknown> };
-type LastAction = { seq: number; ts: number; label: string };
+type LastAction = { seq: number; ts: number; label: string; description?: string; verb?: string; inherited?: boolean };
 
 export class Ingestor {
   readonly sanitizer: Sanitizer;
@@ -60,6 +62,10 @@ export class Ingestor {
   private readonly tabSite = new Map<number, string>();
   private readonly lastAction = new Map<number, LastAction>();
   private readonly lastNav = new Map<number, number>();
+  /** 每个窗口最近往哪些站点写过行（站点 → 最新编号）：动作后页面跳到别的站点、或在新标签页打开别的站点时，用它找到那边的请求。 */
+  private readonly winSites = new Map<string, Map<string, number>>();
+  /** 每个窗口最近一条命令：新开的标签页还没有自己的命令时，用它当引发者。 */
+  private readonly lastCmdOfWin = new Map<string, LastAction>();
   private queue: PageMsg[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -70,6 +76,17 @@ export class Ingestor {
     this.raw = options.raw;
     this.winOf = options.winOf ?? (() => USER_WIN);
     this.index = options.index;
+  }
+
+  /** 这个窗口在编号 seq 之后写过行的站点。 */
+  sitesSince(win: string, seq: number): string[] {
+    return [...(this.winSites.get(win) ?? new Map<string, number>())].filter(([, s]) => s > seq).map(([site]) => site);
+  }
+
+  private noteSite(win: string, site: string, seq: number): void {
+    let m = this.winSites.get(win);
+    if (!m) { m = new Map(); this.winSites.set(win, m); trimMap(this.winSites); }
+    m.set(site, seq);
   }
 
   /** 这个标签页最近所在的站点（页面脚本报上来的）。 */
@@ -105,16 +122,20 @@ export class Ingestor {
     const seq = this.log.reserve();
     if (site) { this.tabSite.set(tab, site); trimMap(this.tabSite); }
     const ref: CmdRef = { seq, site: site ?? this.tabSite.get(tab) ?? OTHER_SITE, win: this.winOf(tab), tab, ts, verb, target, detail };
-    this.lastAction.set(tab, { seq, ts, label: `agent cmd ${verb} ${target}`.trim() });
+    const description = typeof detail?.description === "string" ? detail.description : undefined;
+    const act: LastAction = { seq, ts, label: `agent cmd ${verb} ${target}`.trim(), ...(description ? { description, verb } : {}) };
+    this.lastAction.set(tab, act);
+    this.lastCmdOfWin.set(this.winOf(tab), act);
     trimMap(this.lastAction);
     return ref;
   }
 
   /** 命令做完：写这一行，带上元素描述和结果。 */
   endCmd(ref: CmdRef, fields: { target?: string; size?: number; detail?: Record<string, unknown> }): void {
-    const { ok, error, ...rest } = { ...(fields.detail ?? ref.detail ?? {}) } as Record<string, unknown>;
+    const { ok, error, description, ...rest } = { ...(fields.detail ?? ref.detail ?? {}) } as Record<string, unknown>;
     const row: Row = {
       seq: ref.seq, t: ref.ts, win: ref.win, src: "agent", tab: ref.tab, type: "cmd", actionType: ref.verb, target: fields.target ?? ref.target,
+      ...(typeof description === "string" && description ? { description } : {}),
       ...(fields.size !== undefined ? { size: fields.size } : {}),
       ...(typeof ok === "boolean" ? { ok } : {}), ...(typeof error === "string" ? { error } : {}),
       ...(Object.keys(rest).length ? { detail: rest } : {}),
@@ -158,6 +179,8 @@ export class Ingestor {
   // ---- 页面消息 ----
 
   private handle(msg: PageMsg): void {
+    // 只录 agent 自己的窗口：用户窗口里的一切不写日志、不进原始请求内存表、不进接口聚合（扩展是旧版本、照常发来时也一样）
+    if (this.winOf(msg.tab) === USER_WIN) return;
     const page = msg.page ? parseUrl(msg.page).bareUrl : undefined;
     const pageSite = siteOfUrl(msg.page);
     if (pageSite) { this.tabSite.set(msg.tab, pageSite); trimMap(this.tabSite); }
@@ -174,7 +197,6 @@ export class Ingestor {
       }
       case "snap": return this.snap(msg, page);
       case "doc": return this.doc(msg, page);
-      case "bg": return void this.emit(pageSite, msg, { type: "bg", src: "page", count: num(msg.n), ...(page ? { page } : {}) });
       case "tab": {
         const site = siteOfUrl(str(msg.url)) || pageSite;
         return void this.emit(site, msg, { type: "tab", src: "page", via: str(msg.ev) ?? "tab", url: this.bare(str(msg.url) ?? "") });
@@ -186,12 +208,14 @@ export class Ingestor {
 
   private siteFor(site: string | undefined, tab: number): string { return site || this.tabSite.get(tab) || OTHER_SITE; }
 
-  /** 写一行：编号、窗口、来源在这里补上。agent 窗口里页面脚本触发的一切记为 agent 的。 */
+  /** 写一行：编号、窗口、来源在这里补上。只有 agent 窗口的行会走到这里，页面脚本触发的一切记为 agent 的。 */
   private emit(site: string | undefined, msg: PageMsg, row: Partial<Row> & Pick<Row, "type" | "src">): number {
     const win = this.winOf(msg.tab);
-    const src: Src = row.src === "page" && win !== USER_WIN ? "agent" : row.src;
+    const src: Src = row.src === "page" ? "agent" : row.src;
     const seq = this.log.reserve();
-    this.log.append(this.siteFor(site, msg.tab), { ...row, seq, t: msg.t, win, src, tab: msg.tab, ...(msg.frame ? { frame: msg.frame } : {}) } as Row);
+    const at = this.siteFor(site, msg.tab);
+    this.log.append(at, { ...row, seq, t: msg.t, win, src, tab: msg.tab, ...(msg.frame ? { frame: msg.frame } : {}) } as Row);
+    this.noteSite(win, at, seq);
     return seq;
   }
 
@@ -217,7 +241,7 @@ export class Ingestor {
     const reqStart = msg.t - ms;
     const site = this.siteFor(siteOfUrl(rawPage), msg.tab);
     const win = this.winOf(msg.tab);
-    const src: Src = win !== USER_WIN ? "agent" : "page";
+    const src: Src = "agent";
     const reason = noiseReason({ url: rawUrl, method, status, via, page: rawPage }, this.engine());
     const noise = reason !== null;
     const rawBody = str(msg.body);
@@ -233,9 +257,9 @@ export class Ingestor {
     const stem = requestStem(seq, method, url.bareUrl);
 
     // 因果与阶段
-    const last = this.lastAction.get(msg.tab);
+    const last = this.lastAction.get(msg.tab) ?? this.openedBy(msg.tab, win, reqStart);
     const causeDt = last ? reqStart - last.ts : undefined;
-    const cause = last && causeDt !== undefined && causeDt >= 0 && causeDt <= CAUSE_MS ? last : undefined;
+    const cause = last && causeDt !== undefined && causeDt >= 0 && causeDt <= (last.inherited ? NEW_TAB_MS : CAUSE_MS) ? last : undefined;
     const phase = this.phaseOf(msg.tab, reqStart, num(msg.at));
 
     // 原始请求（含 token 真值）只放内存，重放用；只存同站的、非噪声的
@@ -282,12 +306,23 @@ export class Ingestor {
       endpoint, ...(noise ? { noise: 1 as const } : {}), ...(cause ? { cause: cause.seq, causeDt } : {}), phase, file: rel,
     };
     this.log.append(site, row);
-    if (!noise) this.index?.observe({ site, row, file, relFile: rel, text, label: cause?.label });
+    this.noteSite(win, site, seq);
+    if (!noise) this.index?.observe({ site, row, file, relFile: rel, text, label: cause?.label, ...(cause?.description ? { description: { text: cause.description, from: cause.verb ?? "cmd" } } : {}) });
+  }
+
+  /** 标签页还没有自己的命令（页面新开的）：窗口最近一条命令在 NEW_TAB_MS 之内，就当它是引发者，并记给这个标签页。 */
+  private openedBy(tab: number, win: string, at: number): LastAction | undefined {
+    const cmd = this.lastCmdOfWin.get(win);
+    if (!cmd || at - cmd.ts < 0 || at - cmd.ts > NEW_TAB_MS) return undefined;
+    const act = { ...cmd, inherited: true };
+    this.lastAction.set(tab, act);
+    trimMap(this.lastAction);
+    return act;
   }
 
   private input(msg: PageMsg, page: string | undefined): void {
     const type = str(msg.type) ?? "";
-    // 来源只看 isTrusted：真的是人，假的是页面里的脚本（包括 agent 的 DOM 事件，观察端分不出也不去分）
+    // 来源只看 isTrusted：真的是人在 agent 窗口里动了一下（记为 user），假的是页面脚本或 agent 的 DOM 事件（记为 agent）
     const src: Src = msg.trusted === true ? "user" : "page";
     const t = (msg.target ?? {}) as { tag?: string; role?: string; text?: string; sel?: string };
     const key = str(msg.key);
@@ -300,7 +335,7 @@ export class Ingestor {
     };
     const seq = this.emit(siteOfUrl(str(msg.page)), msg, row);
     if (src === "user" && type !== "scroll") {
-      this.lastAction.set(msg.tab, { seq, ts: msg.t, label: actionLabel({ ...row, seq, t: msg.t, win: USER_WIN, tab: msg.tab } as Row) });
+      this.lastAction.set(msg.tab, { seq, ts: msg.t, label: actionLabel({ ...row, seq, t: msg.t, win: this.winOf(msg.tab), tab: msg.tab } as Row) });
       trimMap(this.lastAction);
     }
   }
@@ -312,7 +347,7 @@ export class Ingestor {
     const seq = this.log.reserve();
     const rel = this.log.putBody(site, `${String(seq).padStart(6, "0")}.snap.json`, text, hashText(text));
     const win = this.winOf(msg.tab);
-    this.log.append(site, { seq, t: msg.t, win, src: win !== USER_WIN ? "agent" : "page", tab: msg.tab, type: "snap", actionType: str(s.why) ?? "snap", target: `"${String(s.title ?? "").slice(0, 40)}" ${s.interactiveVisible ?? 0}/${s.interactiveTotal ?? 0}`, size: text.length, ...(page ? { page } : {}), file: rel });
+    this.log.append(site, { seq, t: msg.t, win, src: "agent", tab: msg.tab, type: "snap", actionType: str(s.why) ?? "snap", target: `"${String(s.title ?? "").slice(0, 40)}" ${s.interactiveVisible ?? 0}/${s.interactiveTotal ?? 0}`, size: text.length, ...(page ? { page } : {}), file: rel });
   }
 
   /** 主文档渲染后的 HTML，原样存（内容相同的只存一份）。 */
@@ -324,6 +359,6 @@ export class Ingestor {
     const seq = this.log.reserve();
     const rel = this.log.putBody(site, `${String(seq).padStart(6, "0")}.doc.html`, html, hashText(html));
     const win = this.winOf(msg.tab);
-    this.log.append(site, { seq, t: msg.t, win, src: win !== USER_WIN ? "agent" : "page", tab: msg.tab, type: "doc", url: this.sanitizer.url(url).bareUrl, size: html.length, ...(page ? { page } : {}), file: rel });
+    this.log.append(site, { seq, t: msg.t, win, src: "agent", tab: msg.tab, type: "doc", url: this.sanitizer.url(url).bareUrl, size: html.length, ...(page ? { page } : {}), file: rel });
   }
 }
