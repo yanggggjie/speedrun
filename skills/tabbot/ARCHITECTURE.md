@@ -47,7 +47,7 @@ tabbot learn <名> --url <链接|tab 号> (--find … | --endpoint …)
 - **run 窗口**（key 为 `run`）：长期持有，只执行 task，**不能调试**。`tabbot run` / `compose` 在这里跑。
 - **学习会话**（debug 窗口，key 为 `debug-xxxx`）：agent 学一个请求时用 `tabbot learn` 开一个，绑定一份 task 名；会话里才能 `tabbot debug open|screenshot|click|type|key|scroll|replay|close --blocked`，**包括真正发起有副作用的操作**（学习需要真的发一次才知道成败；先 `--dry` 看会发什么，问过用户再真发，只做学习必需的最少次数，批量留给 task 循环）。产出是一份 task；task `run` 成功会话就收回。
 
-**为什么还留着学习会话**（合并掉 subagent 之后，调试不能变成随手做的事）：
+**为什么要有学习会话**（调试不能变成随手做的事）：
 1. 速度：调试慢，按 task 执行只要毫秒。调试有头有尾（开会话、有操作上限、空闲回收、task 验证通过就收回），才不会一直调试、永远用不上 task。
 2. 目标：agent 要把结果交给用户，容易倾向于“先把眼前的做出来”，task 就被省掉。所以用户的结果必须来自 `tabbot run`，每次 `run` / `compose` 发一个**回执**（`RC-xxxxxxxx`，写进 `sites/.receipts.jsonl`），最终回复必须引用它。
 3. 上下文：试错、响应原文、截图都在会话里产生；读响应体用 `rg`、`node -e` 取字段，不整段读进来，截图只在需要时截。

@@ -48,6 +48,8 @@ export function mirrorPayload(payloadAbs: string, homeAbs: string): void {
       fs.copyFileSync(from, to);
     }
   }
+  // 新版本删掉的文档（如 TROUBLESHOOTING.md）不留在本机：顶层的 .md 只保留 payload 里有的。数据目录和文件不动
+  for (const name of fs.readdirSync(homeAbs)) if (name.endsWith(".md") && !fs.existsSync(path.join(payloadAbs, name))) safeRemove(path.join(homeAbs, name));
 }
 
 /** 第一个没被占用的名字：<base>.old、<base>.old-2、<base>.old-3…… */

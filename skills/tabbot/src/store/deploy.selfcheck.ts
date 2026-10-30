@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { retireLegacyData } from "./deploy.ts";
+import { mirrorPayload, retireLegacyData } from "./deploy.ts";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "tc-deploy-"));
 process.on("exit", () => fs.rmSync(home, { recursive: true, force: true }));
@@ -32,5 +32,15 @@ fs.writeFileSync(path.join(home, "journal", "alias-salt"), "salt-other");
 assert.deepEqual(retireLegacyData(home), [["journal", "journal.old-2"]]);
 assert.equal(fs.readFileSync(path.join(home, "alias-salt"), "utf8"), "salt-123", "已有的新盐不被覆盖");
 assert.ok(fs.existsSync(path.join(home, "journal.old", "seg-000001", "events.db")));
+
+// 镜像：新版本删掉的顶层文档不留在本机；数据（sites、task.old 等）不动
+const payload = fs.mkdtempSync(path.join(os.tmpdir(), "tc-payload-"));
+process.on("exit", () => fs.rmSync(payload, { recursive: true, force: true }));
+fs.writeFileSync(path.join(payload, "SKILL.md"), "新");
+fs.writeFileSync(path.join(home, "TROUBLESHOOTING.md"), "旧版本的文档");
+mirrorPayload(payload, home);
+assert.equal(fs.readFileSync(path.join(home, "SKILL.md"), "utf8"), "新");
+assert.ok(!fs.existsSync(path.join(home, "TROUBLESHOOTING.md")), "旧文档删掉");
+assert.ok(fs.existsSync(path.join(home, "sites", "x.com", "keep.txt")) && fs.existsSync(path.join(home, "task.old", "a.js")), "数据不动");
 
 console.log("deploy selfcheck ok");
