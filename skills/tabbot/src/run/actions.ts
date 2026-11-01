@@ -246,7 +246,7 @@ export const LAYOUT = "windows-1";
 
 /**
  * 升级到按窗口存日志的布局，只做一次（看 sites/.layout）：旧日志不兼容，直接删掉。
- * - 删 sites/<站点>/log/、sites/<站点>/debug/、sites/.compose，以及 ~/.tabbot/run/（旧的运行历史）、journal.old、task.old；
+ * - 删 sites/<站点>/log/、sites/<站点>/debug/、sites/.compose，以及 ~/.tabbot/run/（旧的运行历史）、更早版本的 journal、task（和改名后的 .old）；
  * - endpoints.json 保留接口统计和 descriptions（业务知识），清空指向旧日志的 samples；
  * - 删完后既没有接口、也没有 actions/*.js 的站点目录整个删掉（广告、嵌入页面留下的）；
  * - ~/.tabbot/actions/*.js（跨站点的组合）挪进 ~/.tabbot/compose/。
@@ -255,7 +255,7 @@ export function upgradeLayout(home: string): boolean {
   const sitesDir = path.join(home, "sites");
   const marker = path.join(sitesDir, ".layout");
   try { if (fs.readFileSync(marker, "utf8").trim() === LAYOUT) return false; } catch { /* 还没升级过 */ }
-  for (const old of ["run", "journal.old", "task.old", path.join("sites", ".compose")]) fs.rmSync(path.join(home, old), { recursive: true, force: true });
+  for (const old of ["run", "journal", "task", "journal.old", "task.old", path.join("sites", ".compose")]) fs.rmSync(path.join(home, old), { recursive: true, force: true });
   for (const site of siteDirs(sitesDir)) {
     const dir = path.join(sitesDir, site);
     for (const sub of ["log", "debug", "journal.old", "task.old"]) fs.rmSync(path.join(dir, sub), { recursive: true, force: true });

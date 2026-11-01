@@ -1,12 +1,12 @@
 // tabbot bootstrap：把本 skill 目录整个镜像到 ~/.tabbot（src、scripts、文档），再在 ~/.tabbot/src 里 npm install，然后建数据目录。
-// 日志和 action 在 .tabbot/sites（跨站点的组合在 .tabbot/actions），本脚本永不碰；旧版本的 journal、task 目录改名为 journal.old、task.old 保留（不读取、不转换）。
+// 日志在 .tabbot/learn-windows、run-windows，action 在 .tabbot/sites、compose，本脚本永不碰；旧版本的数据由 holder 启动时的布局升级处理（run/actions.ts 的 upgradeLayout）。
 // 用法：node <此 skill 目录>/setup.js
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mirrorPayload, retireLegacyData } from "./src/store/deploy.ts";
+import { mirrorPayload } from "./src/store/deploy.ts";
 import { writeVersion } from "./src/store/version.ts";
 import { restartDaemon, tryPing } from "./src/cli/session.ts";
 import { writeShim, BIN_DIR } from "./src/cli/shim.ts";
@@ -25,14 +25,6 @@ const DEPS_MARKER = path.join("node_modules", "tldts", "dist", "cjs", "index.js"
 
 mirrorPayload(HERE, HOME_DIR);
 console.log(`TabBot 源码镜像 → ${HOME_DIR}`);
-for (const [from, to] of retireLegacyData(HOME_DIR)) console.log(`旧版本的 ${path.join(HOME_DIR, from)} 已改名为 ${path.join(HOME_DIR, to)}（没有读取、没有转换；不需要时自己删除）`);
-// 现在只录 agent 自己的窗口；旧版本录下的用户窗口日志不读也不删，只提示一句
-try {
-  const sitesDir = path.join(HOME_DIR, "sites");
-  const hasUserLog = fs.readdirSync(sitesDir).some((site) => { try { return fs.readdirSync(path.join(sitesDir, site, "log")).some((seg) => fs.existsSync(path.join(sitesDir, site, "log", seg, "timeline.user.jsonl"))); } catch { return false; } });
-  if (hasUserLog) console.log(`TabBot 现在只录 agent 自己的窗口；旧版本录下的你自己窗口的日志还在 ${sitesDir}/*/log，不需要时可以删除（actions/ 别删）`);
-} catch { /* 还没有 sites 目录 */ }
-
 const lock = path.join(DEST, "package-lock.json");
 if (!fs.existsSync(lock)) {
   console.error(`缺少 ${lock}，无法安装依赖`);

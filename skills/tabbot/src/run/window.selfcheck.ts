@@ -12,14 +12,14 @@ const link = {
   },
 };
 const win = new AgentWindows(link as never);
-const tab = await win.acquire("https://a.com", "debug-1");
-assert.equal(win.winOf(tab), "debug-1");
-win.adopt(555, 7); // 学习会话窗口里点链接新开的标签页
-assert.equal(win.winOf(555), "debug-1"); assert.ok(win.isAgentTab(555));
+const tab = await win.acquire("https://a.com", "a.com-20261101-120000");
+assert.equal(win.winOf(tab), "a.com-20261101-120000");
+win.adopt(555, 7); // 学习窗口里点链接新开的标签页
+assert.equal(win.winOf(555), "a.com-20261101-120000"); assert.ok(win.isAgentTab(555));
 win.adopt(556, 99); // 用户自己的窗口
 assert.equal(win.winOf(556), "user");
 win.adopt(557, undefined); // 旧扩展不带窗口号
 assert.equal(win.winOf(557), "user");
-await win.dispose("debug-1");
+await win.dispose("a.com-20261101-120000");
 assert.equal(win.winOf(555), "user", "窗口收回后不再算");
 console.log("window.selfcheck ok");

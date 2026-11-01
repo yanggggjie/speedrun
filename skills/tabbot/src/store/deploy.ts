@@ -51,32 +51,3 @@ export function mirrorPayload(payloadAbs: string, homeAbs: string): void {
   // 新版本删掉的文档（如 TROUBLESHOOTING.md）不留在本机：顶层的 .md 只保留 payload 里有的。数据目录和文件不动
   for (const name of fs.readdirSync(homeAbs)) if (name.endsWith(".md") && !fs.existsSync(path.join(payloadAbs, name))) safeRemove(path.join(homeAbs, name));
 }
-
-/** 第一个没被占用的名字：<base>.old、<base>.old-2、<base>.old-3…… */
-function freeOldName(homeAbs: string, base: string): string {
-  let name = `${base}.old`;
-  for (let i = 2; fs.existsSync(path.join(homeAbs, name)); i++) name = `${base}.old-${i}`;
-  return name;
-}
-
-/**
- * 旧版本的本机数据（journal、task）改名保留：不读取、不转换，由用户自己决定何时删除。
- * 旧的脱敏盐复制到新位置，之后写下的别名和旧日志里的保持一致。返回改了名的 [原名, 新名]。
- */
-export function retireLegacyData(homeAbs: string): Array<[string, string]> {
-  const moved: Array<[string, string]> = [];
-  const oldSalt = path.join(homeAbs, "journal", "alias-salt");
-  const newSalt = path.join(homeAbs, "alias-salt");
-  if (fs.existsSync(oldSalt) && !fs.existsSync(newSalt)) {
-    fs.writeFileSync(newSalt, fs.readFileSync(oldSalt), { mode: 0o600 });
-    fs.chmodSync(newSalt, 0o600);
-  }
-  for (const base of ["journal", "task"]) {
-    const from = path.join(homeAbs, base);
-    if (!fs.existsSync(from)) continue;
-    const to = freeOldName(homeAbs, base);
-    fs.renameSync(from, path.join(homeAbs, to));
-    moved.push([base, to]);
-  }
-  return moved;
-}

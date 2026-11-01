@@ -1,5 +1,5 @@
 // request 的 inherit：内存里没有可继承的头时，自动打开站点首页让页面自己发请求，只试一次；有了就直接抄。
-// 试运行打印给 agent 的内容要脱敏（token 不能出现在输出里），原文只留给 verify --dry 比对。用最小的假依赖。
+// 试运行打印给 agent 的内容要脱敏（token 不能出现在输出里）。用最小的假依赖。
 import assert from "node:assert/strict";
 import { RunHost, Session } from "./host.ts";
 import { RawStore } from "../journal/raw.ts";

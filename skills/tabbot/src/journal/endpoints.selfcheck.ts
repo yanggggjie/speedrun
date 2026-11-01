@@ -53,7 +53,7 @@ function observe(endpoint: string, phase: Phase, over: { win?: string; status?: 
   return input;
 }
 
-// 点赞：在学习会话里点了 3 次（动作引发）
+// 点赞：在学习窗口里点了 3 次（动作引发）
 for (let i = 0; i < 3; i++) observe("POST graphql FavoriteTweet", "cmd", { label: "agent cmd click button[Like]", body: { variables: { tweet_id: "1" } }, text: "{\"data\":{\"favorite_tweet\":\"Done\"}}", rid: "d:9" });
 // 时间线：页面加载期发了 2 次、轮询 4 次；agent 的动作引发 1 次
 for (let i = 0; i < 2; i++) observe("GET graphql HomeTimeline", "load", { query: { variables: "{\"count\":20,\"cursor\":\"c\"}" }, text: "{\"data\":{\"home\":{\"a\":1,\"b\":2}}}" });

@@ -75,10 +75,6 @@ try {
   const keep = path.join(HOME, ".tabbot", "sites", "x.com", "keep.txt");
   fs.mkdirSync(path.dirname(keep), { recursive: true });
   fs.writeFileSync(keep, "用户的日志\n");
-  // 旧版本的 journal 目录：升级时改名保留，不读取不转换
-  const legacy = path.join(HOME, ".tabbot", "journal", "old.txt");
-  fs.mkdirSync(path.dirname(legacy), { recursive: true });
-  fs.writeFileSync(legacy, "旧日志\n");
 
   const setup = spawnSync(process.execPath, [path.join(skillDir, "setup.js")], {
     env,
@@ -88,8 +84,6 @@ try {
   const dest = path.join(HOME, ".tabbot", "src");
   assert.ok(fs.existsSync(path.join(dest, "holder.ts")), "~/.tabbot/src 未建好");
   assert.equal(fs.readFileSync(keep, "utf8"), "用户的日志\n", "setup 不应动 ~/.tabbot/sites");
-  assert.equal(fs.readFileSync(path.join(HOME, ".tabbot", "journal.old", "old.txt"), "utf8"), "旧日志\n", "旧 journal 改名保留");
-  assert.ok(!fs.existsSync(path.join(HOME, ".tabbot", "journal")), "旧 journal 目录已改名");
   // ~/.tabbot 是 skill 目录的镜像：除 node_modules 和 .version（本机生成）外，每个文件内容都相同；自检、夹具、scripts、文档都在
   const listFiles = (dir, rel = "") => fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).flatMap((e) => {
     const r = path.join(rel, e.name);

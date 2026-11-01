@@ -154,8 +154,8 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 ## 8. 存储与安装
 
 - 用户数据：`~/.tabbot/learn-windows`、`~/.tabbot/run-windows`（日志）、`~/.tabbot/sites`（每个站点：`endpoints.json`、`actions/`；还有 `.seq`、`.receipts.jsonl`、`.layout`）、`~/.tabbot/compose`（跨站点和没起名字的组合）、`~/.tabbot/lib`（action SDK）、`~/.tabbot/alias-salt`；运行时状态 `~/.tabbot/session`；运行时代码 `~/.tabbot/src`。
-- `setup.js` 把 skill 目录镜像到 `~/.tabbot`、把旧版本的 `journal`、`task` 目录改名为 `journal.old`、`task.old`（不读取、不转换，旧盐复制到新位置）、安装依赖、写版本文件、注册 native host、生成 shim、让过期的 daemon 换成新代码、运行 `doctor`。分发是源码镜像：`~/.tabbot` 是 `skills/tabbot/` 的逐字节拷贝，只排除 `node_modules` 和 `.DS_Store`（`store/deploy.ts`）；顶层的 `src`、`scripts` 先清空再拷，本机数据目录镜像不碰。
-- **布局升级**（`run/actions.ts` 的 `upgradeLayout`，holder 启动时执行，看 `sites/.layout` 只做一次）：旧日志不兼容，直接删掉——`sites/<站点>/log/`、`sites/<站点>/debug/`、`~/.tabbot/run/`、`journal.old`、`task.old`；`endpoints.json` 保留接口统计和 `descriptions`，清空指向旧日志的 `samples`；删完后既没有接口、也没有 action 的站点目录整个删掉；`~/.tabbot/actions/*.js` 挪进 `~/.tabbot/compose/`。
+- `setup.js` 把 skill 目录镜像到 `~/.tabbot`、安装依赖、写版本文件、注册 native host、生成 shim、让过期的 daemon 换成新代码、运行 `doctor`。分发是源码镜像：`~/.tabbot` 是 `skills/tabbot/` 的逐字节拷贝，只排除 `node_modules` 和 `.DS_Store`（`store/deploy.ts`）；顶层的 `src`、`scripts` 先清空再拷，本机数据目录镜像不碰。
+- **布局升级**（`run/actions.ts` 的 `upgradeLayout`，holder 启动时执行，看 `sites/.layout` 只做一次）：旧日志不兼容，直接删掉——`sites/<站点>/log/`、`sites/<站点>/debug/`、`~/.tabbot/run/`、更早版本的 `journal`、`task`（和改名后的 `.old`）；`endpoints.json` 保留接口统计和 `descriptions`，清空指向旧日志的 `samples`；删完后既没有接口、也没有 action 的站点目录整个删掉；`~/.tabbot/actions/*.js` 挪进 `~/.tabbot/compose/`。
 - 版本：`~/.tabbot/src/.version` 写 `{ build }`（只算运行时文件，排除自检）；daemon 启动时记下 `build`，`ping` 返回它。换代码只在 `setup.js` 发现 `build` 不同和用户显式 `tabbot daemon restart` 时发生，没有命令会自动重启 daemon。
 - `tabbot doctor` 只读。
 
