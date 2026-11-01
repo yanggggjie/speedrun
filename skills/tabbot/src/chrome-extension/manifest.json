@@ -23,7 +23,8 @@
     "tabs",
     "nativeMessaging",
     "alarms",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "background": {
     "service_worker": "background.js",

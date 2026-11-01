@@ -6,7 +6,7 @@
   T.origFetch = window.fetch; // 原始 fetch：重放用它发请求，不会被录制端当成页面自己发的请求
 
   // ---- 发消息：经 bridge.js 交给扩展，再到 holder。限流，防止异常页面把日志刷爆 ----
-  // 只有 tabbot agent 窗口里的页面才上报：bridge 问过扩展之前先缓存（有上限，加载期的请求不能漏），
+  // 只有 TabBot 开的（以及被它们打开的）标签页才上报：bridge 问过扩展之前先缓存（有上限，加载期的请求不能漏），
   // 答"录"就发出缓存并放行，答"不录"（用户的窗口）就清空缓存，之后一条都不发。
   const PENDING_MAX = 500;
   let sent = 0, windowStart = Date.now(), gate = "ask", pending = [];

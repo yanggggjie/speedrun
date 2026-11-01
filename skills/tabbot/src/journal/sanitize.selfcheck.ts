@@ -40,4 +40,11 @@ assert.equal(s.resolve(`header ${aliased} end`), "header REALSECRET123 end");
 assert.equal(s.resolve("没有别名的文字"), "没有别名的文字");
 assert.throws(() => new Sanitizer("test-key").resolve(aliased), /已失效/, "新的实例（holder 重启后）没有对照表");
 
+// 连写的身份头名也要脱敏（知乎的 x-xsrftoken 曾经明文落盘）
+{
+  const sz = new Sanitizer("k");
+  const h = sz.headers({ "x-xsrftoken": "abcdef123456", csrftoken: "abcdef123456", "x-accesstoken": "abcdef123456", "content-type": "application/json" });
+  assert.match(h["x-xsrftoken"]!, /^⟨secret_/); assert.match(h.csrftoken!, /^⟨secret_/); assert.match(h["x-accesstoken"]!, /^⟨secret_/);
+  assert.equal(h["content-type"], "application/json");
+}
 console.log("sanitize.selfcheck ok");

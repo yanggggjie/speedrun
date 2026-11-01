@@ -1,12 +1,12 @@
 import type { FiltersEngine } from "@ghostery/adblocker";
 import { isSameSite, parseUrl, siteOfUrl } from "../utils/url.ts";
-import { actionLabel, endpointOf } from "./digest.ts";
+import { causeLabel, endpointOf } from "./digest.ts";
 import type { EndpointIndex } from "./endpoints.ts";
 import { noiseReason, shouldStoreBody } from "./filter.ts";
 import type { RawStore } from "./raw.ts";
-import { bodyExt, hashText, requestBodyValue, requestStem, responseText } from "./reqfile.ts";
+import { bodyExt, hashText, pageSlug, requestBodyValue, requestStem, responseText } from "./reqfile.ts";
 import { Sanitizer } from "./sanitize.ts";
-import type { SiteLog } from "./sitelog.ts";
+import type { WindowLog } from "./windowlog.ts";
 import { USER_WIN, type ParsedUrl, type Phase, type RequestFile, type Row, type Src } from "./types.ts";
 
 /** 扩展转来的一条页面消息：页面脚本产出，扩展补上 tab / frame / top / page。 */
@@ -19,7 +19,7 @@ const NEW_TAB_MS = 10_000;
 /** 页面（文档或单页应用路由）刚开始的这几秒里发出的请求，阶段记为 load。 */
 const LOAD_MS = 4_000;
 const FLUSH_MS = 100;
-/** 站点判断不出来的行（chrome:// 页面的命令记录等）放在这个目录里。 */
+/** 站点判断不出来的行（chrome:// 页面的命令记录等）的 site。 */
 export const OTHER_SITE = "_other";
 const MAX_TAB_STATE = 2_000;
 
@@ -42,9 +42,9 @@ export type IngestOptions = {
   engine?: () => FiltersEngine | undefined;
   aliasKey?: string;
   raw?: RawStore;
-  /** 标签页所在的窗口：run、debug-xxxx 是 agent 的窗口；不是 agent 窗口的（user）一律不记。不给就当作都不是。 */
+  /** 标签页所在的窗口：学习窗口的句柄、run 窗口的名字；不是 agent 窗口的（user）一律不记。不给就当作都不是。 */
   winOf?: (tab: number) => string;
-  /** 接口聚合：每写一个请求就通知它。 */
+  /** 接口聚合：学习窗口里每写一个请求就通知它（run 窗口的不进）。 */
   index?: EndpointIndex;
 };
 
@@ -54,7 +54,7 @@ type LastAction = { seq: number; ts: number; label: string; description?: string
 
 export class Ingestor {
   readonly sanitizer: Sanitizer;
-  private readonly log: SiteLog;
+  private readonly log: WindowLog;
   private readonly engine: () => FiltersEngine | undefined;
   private readonly raw: RawStore | undefined;
   private readonly winOf: (tab: number) => string;
@@ -62,31 +62,18 @@ export class Ingestor {
   private readonly tabSite = new Map<number, string>();
   private readonly lastAction = new Map<number, LastAction>();
   private readonly lastNav = new Map<number, number>();
-  /** 每个窗口最近往哪些站点写过行（站点 → 最新编号）：动作后页面跳到别的站点、或在新标签页打开别的站点时，用它找到那边的请求。 */
-  private readonly winSites = new Map<string, Map<string, number>>();
   /** 每个窗口最近一条命令：新开的标签页还没有自己的命令时，用它当引发者。 */
   private readonly lastCmdOfWin = new Map<string, LastAction>();
   private queue: PageMsg[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(log: SiteLog, options: IngestOptions = {}) {
+  constructor(log: WindowLog, options: IngestOptions = {}) {
     this.log = log;
     this.sanitizer = new Sanitizer(options.aliasKey ?? "");
     this.engine = options.engine ?? (() => undefined);
     this.raw = options.raw;
     this.winOf = options.winOf ?? (() => USER_WIN);
     this.index = options.index;
-  }
-
-  /** 这个窗口在编号 seq 之后写过行的站点。 */
-  sitesSince(win: string, seq: number): string[] {
-    return [...(this.winSites.get(win) ?? new Map<string, number>())].filter(([, s]) => s > seq).map(([site]) => site);
-  }
-
-  private noteSite(win: string, site: string, seq: number): void {
-    let m = this.winSites.get(win);
-    if (!m) { m = new Map(); this.winSites.set(win, m); trimMap(this.winSites); }
-    m.set(site, seq);
   }
 
   /** 这个标签页最近所在的站点（页面脚本报上来的）。 */
@@ -134,35 +121,37 @@ export class Ingestor {
   endCmd(ref: CmdRef, fields: { target?: string; size?: number; detail?: Record<string, unknown> }): void {
     const { ok, error, description, ...rest } = { ...(fields.detail ?? ref.detail ?? {}) } as Record<string, unknown>;
     const row: Row = {
-      seq: ref.seq, t: ref.ts, win: ref.win, src: "agent", tab: ref.tab, type: "cmd", actionType: ref.verb, target: fields.target ?? ref.target,
+      seq: ref.seq, t: ref.ts, win: ref.win, site: ref.site, src: "agent", tab: ref.tab, type: "cmd", kind: ref.verb, target: fields.target ?? ref.target,
       ...(typeof description === "string" && description ? { description } : {}),
       ...(fields.size !== undefined ? { size: fields.size } : {}),
       ...(typeof ok === "boolean" ? { ok } : {}), ...(typeof error === "string" ? { error } : {}),
       ...(Object.keys(rest).length ? { detail: rest } : {}),
     };
-    this.log.batch(() => this.log.append(ref.site, row));
+    if (!this.log.kindOf(ref.win)) return;
+    this.log.batch(() => this.log.append(row));
   }
 
   /**
    * 记一次重放：agent 的一个请求（requestType 为 replay），响应体存成文件；返回给 CLI 看的预览。
    * `rawUrl` 是实际发出的地址（含查询参数里的秘密），这里脱敏成别名再写日志。--set 的值可能是秘密，所以只记名字不记值。
    */
-  recordReplay(tab: number, ts: number, info: { site: string; page?: string; method: string; rawUrl: string; replayOf: number; setKeys: string[]; headers?: Record<string, string>; status?: number; ct?: string; size?: number; text?: string; ms?: number; error?: string; reqBody?: string }): { seq: number; bodyFile?: string; preview: string; endpoint: string } {
+  recordReplay(tab: number, ts: number, info: { site: string; page?: string; method: string; rawUrl: string; replayOf: number; setKeys: string[]; headers?: Record<string, string>; inheritedFrom?: string; status?: number; ct?: string; size?: number; text?: string; ms?: number; error?: string; reqBody?: string }): { seq: number; file: string; bodyFile?: string; preview: string; endpoint: string } {
     return this.log.batch(() => {
       const seq = this.log.reserve();
       const win = this.winOf(tab);
       const url = this.sanitizer.url(info.rawUrl);
       const body = requestBodyValue(this.sanitizer, info.reqBody, info.headers);
-      const endpoint = `${info.method} ${endpointOf(info.rawUrl, info.reqBody).name}`;
-      const stem = requestStem(seq, info.method, url.bareUrl);
+      const epName = endpointOf(info.rawUrl, info.reqBody).name;
+      const endpoint = `${info.method} ${epName}`;
+      const stem = requestStem(seq, info.method, epName);
       let preview = "";
       let responseBodyPath: string | undefined;
       if (info.text) {
         preview = responseText(this.sanitizer, info.text, info.ct);
-        responseBodyPath = this.log.putBody(info.site, `${stem}.response.${bodyExt(info.ct, preview)}`, preview, hashText(preview));
+        responseBodyPath = this.log.putBody(win, `${stem}.response.${bodyExt(info.ct, preview)}`, preview, hashText(preview));
       }
       const file: RequestFile = {
-        seq, win, endpoint, requestType: "replay", tab, replayOf: info.replayOf, set: info.setKeys,
+        seq, win, endpoint, requestType: "replay", tab, replayOf: info.replayOf, set: info.setKeys, ...(info.inheritedFrom ? { inheritedFrom: info.inheritedFrom } : {}),
         method: info.method, url, ...(info.page ? { frameUrl: this.sanitizer.url(info.page) } : {}), headers: {},
         ...(body.value !== undefined ? { requestBody: body.value } : {}), ...(body.truncated ? { requestBodyTruncated: true } : {}),
         ...(info.status !== undefined ? { status: info.status } : {}), ...(info.ct ? { responseHeaders: { "content-type": info.ct } } : {}),
@@ -170,9 +159,9 @@ export class Ingestor {
         ...(info.error ? { error: info.error } : {}),
         startedAt: ts, endedAt: ts + (info.ms ?? 0),
       };
-      const rel = this.log.putFile(info.site, `${stem}.json`, JSON.stringify(file, null, 2));
-      this.log.append(info.site, { seq, t: ts, win, src: "agent", tab, type: "request", requestType: "replay", method: info.method, url: url.bareUrl, endpoint, ...(info.status !== undefined ? { status: info.status } : {}), ...(info.size !== undefined ? { size: info.size } : {}), replayOf: info.replayOf, file: rel });
-      return { seq, bodyFile: responseBodyPath, preview, endpoint };
+      const rel = this.log.putFile(win, `${stem}.json`, JSON.stringify(file, null, 2));
+      this.log.append({ seq, t: ts, win, site: info.site, src: "agent", tab, type: "request", requestType: "replay", method: info.method, url: url.bareUrl, endpoint, ...(info.status !== undefined ? { status: info.status } : {}), ...(info.size !== undefined ? { size: info.size } : {}), replayOf: info.replayOf, file: rel });
+      return { seq, file: rel, bodyFile: responseBodyPath, preview, endpoint };
     });
   }
 
@@ -180,7 +169,8 @@ export class Ingestor {
 
   private handle(msg: PageMsg): void {
     // 只录 agent 自己的窗口：用户窗口里的一切不写日志、不进原始请求内存表、不进接口聚合（扩展是旧版本、照常发来时也一样）
-    if (this.winOf(msg.tab) === USER_WIN) return;
+    const win = this.winOf(msg.tab);
+    if (win === USER_WIN || !this.log.kindOf(win)) return;
     const page = msg.page ? parseUrl(msg.page).bareUrl : undefined;
     const pageSite = siteOfUrl(msg.page);
     if (pageSite) { this.tabSite.set(msg.tab, pageSite); trimMap(this.tabSite); }
@@ -214,8 +204,7 @@ export class Ingestor {
     const src: Src = row.src === "page" ? "agent" : row.src;
     const seq = this.log.reserve();
     const at = this.siteFor(site, msg.tab);
-    this.log.append(at, { ...row, seq, t: msg.t, win, src, tab: msg.tab, ...(msg.frame ? { frame: msg.frame } : {}) } as Row);
-    this.noteSite(win, at, seq);
+    this.log.append({ ...row, seq, t: msg.t, win, site: at, src, tab: msg.tab, ...(msg.frame ? { frame: msg.frame } : {}) } as Row);
     return seq;
   }
 
@@ -228,7 +217,7 @@ export class Ingestor {
     if (nav !== undefined) starts.push(nav);
     const start = Math.max(-Infinity, ...starts.filter((s) => s <= reqStart));
     if (Number.isFinite(start) && reqStart - start <= LOAD_MS && (!act || act.ts <= start)) return "load";
-    return act && reqStart - act.ts >= 0 && reqStart - act.ts <= CAUSE_MS ? "action" : "idle";
+    return act && reqStart - act.ts >= 0 && reqStart - act.ts <= CAUSE_MS ? "cmd" : "idle";
   }
 
   private net(msg: PageMsg, page: string | undefined): void {
@@ -253,8 +242,9 @@ export class Ingestor {
     const url: ParsedUrl = this.sanitizer.url(rawUrl);
     let bodyJson: unknown;
     if (rawReqBody && /^\s*[[{]/.test(rawReqBody)) { try { bodyJson = JSON.parse(rawReqBody); } catch { /* 不是 JSON */ } }
-    const endpoint = `${method} ${endpointOf(rawUrl, bodyJson).name}`;
-    const stem = requestStem(seq, method, url.bareUrl);
+    const epName = endpointOf(rawUrl, bodyJson).name;
+    const endpoint = `${method} ${epName}`;
+    const stem = requestStem(seq, method, epName);
 
     // 因果与阶段
     const last = this.lastAction.get(msg.tab) ?? this.openedBy(msg.tab, win, reqStart);
@@ -276,7 +266,7 @@ export class Ingestor {
     else if (!shouldStoreBody({ noise, url: rawUrl, page: rawPage, status, body: rawBody })) bodyOmitted = noise ? "noise" : !isSameSite(parseUrl(rawUrl), parseUrl(rawPage)) ? "cross-site" : "large-error";
     else {
       text = responseText(this.sanitizer, rawBody, ct);
-      responseBodyPath = this.log.putBody(site, `${stem}.response.${bodyExt(ct, text)}`, text, hashText(text));
+      responseBodyPath = this.log.putBody(win, `${stem}.response.${bodyExt(ct, text)}`, text, hashText(text));
     }
 
     // 请求头：页面脚本把 cookie 抹成了 [redacted]，原样保留，不要再给它起别名
@@ -299,15 +289,15 @@ export class Ingestor {
       ...(msg.truncated ? { truncated: true } : {}), ...(bodyOmitted ? { bodyOmitted } : {}), ...(str(msg.err) ? { error: str(msg.err) } : {}),
       startedAt: reqStart, endedAt: msg.t,
     };
-    const rel = this.log.putFile(site, `${stem}.json`, JSON.stringify(file, null, 2));
+    const rel = this.log.putFile(win, `${stem}.json`, JSON.stringify(file, null, 2));
     const row: Row = {
-      seq, t: msg.t, win, src, tab: msg.tab, ...(msg.frame ? { frame: msg.frame } : {}), type: "request", requestType: via, method, url: url.bareUrl,
+      seq, t: msg.t, win, site, src, tab: msg.tab, ...(msg.frame ? { frame: msg.frame } : {}), type: "request", requestType: via, method, url: url.bareUrl,
       ...(page ? { page } : {}), ...(status !== undefined ? { status } : {}), ...(num(msg.size) !== undefined || rawBody !== undefined ? { size: num(msg.size) ?? rawBody?.length } : {}),
       endpoint, ...(noise ? { noise: 1 as const } : {}), ...(cause ? { cause: cause.seq, causeDt } : {}), phase, file: rel,
     };
-    this.log.append(site, row);
-    this.noteSite(win, site, seq);
-    if (!noise) this.index?.observe({ site, row, file, relFile: rel, text, label: cause?.label, ...(cause?.description ? { description: { text: cause.description, from: cause.verb ?? "cmd" } } : {}) });
+    this.log.append(row);
+    // 接口聚合只由学习窗口累积；run 窗口的日志只给反查用
+    if (!noise && this.log.kindOf(win) === "learn") this.index?.observe({ site, row, file, ref: this.log.ref(win, rel), ...(responseBodyPath ? { bodyRef: this.log.ref(win, responseBodyPath) } : {}), text, label: cause?.label, ...(cause?.description ? { description: { text: cause.description, from: cause.verb ?? "cmd" } } : {}) });
   }
 
   /** 标签页还没有自己的命令（页面新开的）：窗口最近一条命令在 NEW_TAB_MS 之内，就当它是引发者，并记给这个标签页。 */
@@ -328,14 +318,14 @@ export class Ingestor {
     const key = str(msg.key);
     const label = type === "key" ? `${key ?? ""} ${targetText(msg.target)}`.trim() : targetText(msg.target);
     const row: Partial<Row> & Pick<Row, "type" | "src"> = {
-      type: "action", src, actionType: type, ...(label ? { target: label } : {}),
+      type: "input", src, kind: type, ...(label ? { target: label } : {}),
       ...((t.role || t.tag) ? { role: (t.role || t.tag)!.trim() } : {}), ...(t.text?.trim() ? { name: t.text.trim().slice(0, 80) } : {}), ...(t.sel ? { selector: t.sel } : {}),
       ...(key ? { key } : {}), ...(num(msg.dy) !== undefined ? { deltaY: num(msg.dy) } : {}), ...(num(msg.n) !== undefined ? { n: num(msg.n) } : {}),
       ...(page ? { page } : {}),
     };
     const seq = this.emit(siteOfUrl(str(msg.page)), msg, row);
     if (src === "user" && type !== "scroll") {
-      this.lastAction.set(msg.tab, { seq, ts: msg.t, label: actionLabel({ ...row, seq, t: msg.t, win: this.winOf(msg.tab), tab: msg.tab } as Row) });
+      this.lastAction.set(msg.tab, { seq, ts: msg.t, label: causeLabel({ ...row, seq, t: msg.t, win: this.winOf(msg.tab), tab: msg.tab } as Row) });
       trimMap(this.lastAction);
     }
   }
@@ -345,9 +335,9 @@ export class Ingestor {
     const s = (msg.snap ?? {}) as { title?: string; interactiveVisible?: number; interactiveTotal?: number; why?: string };
     const site = this.siteFor(siteOfUrl(str(msg.page)), msg.tab);
     const seq = this.log.reserve();
-    const rel = this.log.putBody(site, `${String(seq).padStart(6, "0")}.snap.json`, text, hashText(text));
     const win = this.winOf(msg.tab);
-    this.log.append(site, { seq, t: msg.t, win, src: "agent", tab: msg.tab, type: "snap", actionType: str(s.why) ?? "snap", target: `"${String(s.title ?? "").slice(0, 40)}" ${s.interactiveVisible ?? 0}/${s.interactiveTotal ?? 0}`, size: text.length, ...(page ? { page } : {}), file: rel });
+    const rel = this.log.putBody(win, `pages/${String(seq).padStart(6, "0")}-snap-${pageSlug(str(msg.page) ?? "")}.json`, text, hashText(text));
+    this.log.append({ seq, t: msg.t, win, site, src: "agent", tab: msg.tab, type: "snap", kind: str(s.why) ?? "snap", target: `"${String(s.title ?? "").slice(0, 40)}" ${s.interactiveVisible ?? 0}/${s.interactiveTotal ?? 0}`, size: text.length, ...(page ? { page } : {}), file: rel });
   }
 
   /** 主文档渲染后的 HTML，原样存（内容相同的只存一份）。 */
@@ -357,8 +347,8 @@ export class Ingestor {
     const url = str(msg.url) ?? "";
     const site = this.siteFor(siteOfUrl(url) || siteOfUrl(str(msg.page)), msg.tab);
     const seq = this.log.reserve();
-    const rel = this.log.putBody(site, `${String(seq).padStart(6, "0")}.doc.html`, html, hashText(html));
     const win = this.winOf(msg.tab);
-    this.log.append(site, { seq, t: msg.t, win, src: "agent", tab: msg.tab, type: "doc", url: this.sanitizer.url(url).bareUrl, size: html.length, ...(page ? { page } : {}), file: rel });
+    const rel = this.log.putBody(win, `pages/${String(seq).padStart(6, "0")}-doc-${pageSlug(url)}.html`, html, hashText(html));
+    this.log.append({ seq, t: msg.t, win, site, src: "agent", tab: msg.tab, type: "doc", url: this.sanitizer.url(url).bareUrl, size: html.length, ...(page ? { page } : {}), file: rel });
   }
 }

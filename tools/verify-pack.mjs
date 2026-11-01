@@ -56,7 +56,9 @@ try {
     "src/cli/shim.ts",
     "src/store/deploy.ts",
     "src/journal/ingest.ts",
-    "src/journal/sitelog.ts",
+    "src/journal/windowlog.ts",
+    "src/journal/auth.ts",
+    "src/run/learn-windows.ts",
     "src/chrome-extension/background.js",
     "src/chrome-extension/page/recorder.js",
     "src/chrome-extension/page/executor.js",
@@ -99,7 +101,7 @@ try {
     assert.ok(fs.existsSync(mirrored), `~/.tabbot 缺 ${rel}`);
     assert.ok(fs.readFileSync(mirrored).equals(fs.readFileSync(path.join(skillDir, rel))), `~/.tabbot/${rel} 与 skill 目录不同`);
   }
-  assert.ok(fs.existsSync(path.join(dest, "journal", "sitelog.selfcheck.ts")), "自检应随源码分发");
+  assert.ok(fs.existsSync(path.join(dest, "journal", "auth.selfcheck.ts")), "自检应随源码分发");
   const version = JSON.parse(fs.readFileSync(path.join(dest, ".version"), "utf8"));
   assert.match(version.build, /^[0-9a-f]{16}$/, ".version 缺 build");
   assert.ok(

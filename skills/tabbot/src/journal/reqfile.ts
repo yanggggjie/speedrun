@@ -16,9 +16,21 @@ export function slug(text: string, max = 60): string {
   return text.replace(/^https?:\/\//, "").replace(/[^A-Za-z0-9.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, max) || "x";
 }
 
-/** 001284_POST_x.com_i_api_graphql_FavoriteTweet：请求文件和响应体共用的前半截，编号在最前面，glob 和排序都靠它。 */
-export function requestStem(seq: number, method: string, bareUrl: string): string {
-  return `${String(seq).padStart(6, "0")}_${method.toUpperCase()}_${slug(bareUrl)}`;
+/** 接口名变成文件名里的一段：/api/v4/answers/:id/voters → api-v4-answers-_id-voters。 */
+export function endpointSlug(name: string): string {
+  return name.replace(/^\/+/, "").replace(/\//g, "-").replace(/:/g, "_").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[-_]+|[-_]+$/g, "").slice(0, 80) || "root";
+}
+
+/** 页面地址变成文件名里的一段：路径部分，首页是 index。 */
+export function pageSlug(url: string): string {
+  let p = "";
+  try { p = new URL(url).pathname; } catch { p = url; }
+  return endpointSlug(p) === "root" ? "index" : endpointSlug(p);
+}
+
+/** requests/001203-GET-api-v4-search_v3：请求文件和响应体共用的前半截（窗口内的相对路径），编号在最前面，glob 和排序都靠它，后面是方法和接口名。 */
+export function requestStem(seq: number, method: string, endpointName: string): string {
+  return `requests/${String(seq).padStart(6, "0")}-${method.toUpperCase()}-${endpointSlug(endpointName)}`;
 }
 
 export function bodyExt(ct: string | undefined | null, text: string): string {

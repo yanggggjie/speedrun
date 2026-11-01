@@ -1,5 +1,5 @@
 // tabbot bootstrap：把本 skill 目录整个镜像到 ~/.tabbot（src、scripts、文档），再在 ~/.tabbot/src 里 npm install，然后建数据目录。
-// 日志和 task 在 .tabbot/sites，本脚本永不碰；旧版本的 journal、task 目录改名为 journal.old、task.old 保留（不读取、不转换）。
+// 日志和 action 在 .tabbot/sites（跨站点的组合在 .tabbot/actions），本脚本永不碰；旧版本的 journal、task 目录改名为 journal.old、task.old 保留（不读取、不转换）。
 // 用法：node <此 skill 目录>/setup.js
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -30,7 +30,7 @@ for (const [from, to] of retireLegacyData(HOME_DIR)) console.log(`旧版本的 $
 try {
   const sitesDir = path.join(HOME_DIR, "sites");
   const hasUserLog = fs.readdirSync(sitesDir).some((site) => { try { return fs.readdirSync(path.join(sitesDir, site, "log")).some((seg) => fs.existsSync(path.join(sitesDir, site, "log", seg, "timeline.user.jsonl"))); } catch { return false; } });
-  if (hasUserLog) console.log(`TabBot 现在只录 agent 自己的窗口；旧版本录下的你自己窗口的日志还在 ${sitesDir}/*/log，不需要时可以删除（tasks/ 别删）`);
+  if (hasUserLog) console.log(`TabBot 现在只录 agent 自己的窗口；旧版本录下的你自己窗口的日志还在 ${sitesDir}/*/log，不需要时可以删除（actions/ 别删）`);
 } catch { /* 还没有 sites 目录 */ }
 
 const lock = path.join(DEST, "package-lock.json");

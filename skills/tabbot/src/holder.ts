@@ -1,17 +1,18 @@
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
+import * as path from "node:path";
 import { ABI, ExtensionLink, frame, parseFrames } from "./browser/extension.ts";
 import { NeedExtensionError, handshakeError, missingStatus } from "./browser/connect.ts";
 import { loadAdblockEngine } from "./journal/filter.ts";
 import { EndpointIndex } from "./journal/endpoints.ts";
 import { enforce } from "./journal/retention.ts";
-import { SiteLog } from "./journal/sitelog.ts";
-import { releaseDebugWindow, runCommand, type Ctx, type TabInfo } from "./journal/commands.ts";
+import { WindowLog } from "./journal/windowlog.ts";
+import { closeLearnWindow, runCommand, type Ctx, type TabInfo } from "./journal/commands.ts";
 import { RunHost, Session } from "./run/host.ts";
-import { DebugWindows } from "./run/debug-windows.ts";
-import { TaskRunner } from "./run/runner.ts";
-import { coveredEndpoints, syncTaskLib } from "./run/tasks.ts";
+import { LearnWindows, stamp } from "./run/learn-windows.ts";
+import { ActionRunner, type RunWindows } from "./run/runner.ts";
+import { coveredEndpoints, syncActionLib, upgradeLayout } from "./run/actions.ts";
 import { AgentWindows } from "./run/window.ts";
 import { Ingestor, type PageMsg } from "./journal/ingest.ts";
 import { RawStore } from "./journal/raw.ts";
@@ -22,7 +23,7 @@ import { ALIAS_SALT_FILE, HOLDER_IDLE_EXIT_MS, HOLDER_READY_MS, SESSION_DIR, TAB
 import { createLogger, setLogFile } from "./utils/logger.ts";
 
 /**
- * holder：本机常驻 daemon，唯一的大脑。收扩展推来的页面消息写日志，执行命令行发来的命令（agent 窗口、task 运行、重放、查询都在这里）。
+ * holder：本机常驻 daemon，唯一的大脑。收扩展推来的页面消息写日志，执行命令行发来的命令（agent 窗口、action 运行、重放、查询都在这里）。
  * 扩展只是管道，CLI 只是把参数发过来、把文本打印出去。
  */
 const logger = createLogger("holder");
@@ -39,14 +40,27 @@ const startupBuild = readVersion()?.build ?? "";
 const link = new ExtensionLink();
 const win = new AgentWindows(link);
 const raw = new RawStore();
-const log = new SiteLog();
+const log = new WindowLog();
 const index = new EndpointIndex({ raw, coverage: (site) => coveredEndpoints(log.dir, site) });
 let ingest: Ingestor | undefined;
 let adblock: FiltersEngine | undefined;
 let host: RunHost | undefined;
-let runner: TaskRunner | undefined;
-const debugWindows = new DebugWindows();
+let runner: ActionRunner | undefined;
+const learn = new LearnWindows(log);
 const sessions = new Map<string, Session>();
+
+/** run 窗口：每次 run 一个，名字是 <action 或组合名>-<时间>，日志在 run-windows/<名字>/，跑完关掉浏览器窗口。 */
+const runWindows: RunWindows = {
+  open(label, meta) {
+    const base = `${label}-${stamp(Date.now())}`;
+    let key = base;
+    for (let i = 2; log.kindOf(key); i++) key = `${base}-${i}`;
+    log.openWindow(key, "run", meta);
+    return key;
+  },
+  close: (key) => win.dispose(key),
+  failureFile: (key) => path.join(log.winDir(key), "screenshots", "failure"),
+};
 
 function aliasSalt(): string {
   try { return fs.readFileSync(ALIAS_SALT_FILE, "utf8").trim(); } catch { /* 第一次 */ }
@@ -57,8 +71,9 @@ function aliasSalt(): string {
 }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
 
-/** 页面消息：写日志。tabbot agent 窗口里的标签页记为 agent 的（Ingestor 按 win.winOf 判断是哪个窗口）。 */
+/** 页面消息：写日志。tabbot agent 窗口里的标签页记为 agent 的（Ingestor 按 win.winOf 判断是哪个窗口）。扩展是旧版本时一条都不收（旧扩展会转用户在 agent 窗口里自己开的标签页）。 */
 link.on("page", (m) => {
+  if (!link.compatible()) return;
   const inner = (m.msg ?? {}) as Record<string, unknown>;
   const msg = { ...inner, k: String(inner.k ?? ""), t: typeof inner.t === "number" ? inner.t : Date.now(), tab: Number(m.tab), frame: Number(m.frame ?? 0), top: m.top === true, page: typeof m.page === "string" ? m.page : undefined } as PageMsg;
   win.adopt(msg.tab, typeof m.win === "number" ? m.win : undefined); // 页面在 agent 窗口里自己开的标签页也属于那个窗口
@@ -92,7 +107,7 @@ const ctx: Ctx = {
   get host() { return host!; },
   get runner() { return runner!; },
   win,
-  debugWindows,
+  learn,
   sessions,
   log,
   index,
@@ -231,19 +246,20 @@ export async function runHolder(): Promise<void> {
   if (!extServer) { logger.warn("已有 holder 在运行，本进程退出"); process.exit(0); }
   server = await listenUnique(SESSION_SOCK, onConnection);
   if (!server) { logger.warn("CLI socket 被占用，本进程退出"); extServer.close(); if (SESSION_SOCK_IS_FILE) fs.rmSync(SESSION_EXT_SOCK, { force: true }); process.exit(0); }
+  try { upgradeLayout(TABBOT_HOME); } catch (error) { warnCatch("upgrade layout")(error); }
   log.open();
   ingest = new Ingestor(log, { engine: () => adblock, aliasKey: aliasSalt(), raw, winOf: (tab) => win.winOf(tab), index });
   host = new RunHost({ link, win, ingest, raw });
-  runner = new TaskRunner(host);
-  try { syncTaskLib(); } catch (error) { warnCatch("sync task lib")(error); }
+  runner = new ActionRunner(host, {}, runWindows);
+  try { syncActionLib(); } catch (error) { warnCatch("sync action lib")(error); }
   loadAdblockEngine().then((engine) => { adblock = engine; }).catch(warnCatch("adblock engine"));
   // 没有扩展连接、也没有命令请求超过 HOLDER_IDLE_EXIT_MS 就退出；下次需要时由 relay 或 CLI 重新拉起
-  // 日志按额度淘汰（先只删重量层的旧文件，再删整段；接口样本受保护）
-  const retain = (): void => { try { enforce(log, { protect: (site) => index.protect(site), changed: (site) => index.touch(site) }); } catch (error) { warnCatch("retention")(error); } };
+  // 日志按窗口目录淘汰（run 窗口只留最近的；学习窗口先只删重量层的旧文件，再删整个旧窗口；开着的和接口样本不动）
+  const retain = (): void => { try { enforce(log, { protect: () => index.protect(), isOpen: (w) => learn.get(w)?.open === true, changed: () => index.touchAll() }); } catch (error) { warnCatch("retention")(error); } };
   retain();
   setInterval(retain, 10_000).unref();
-  // 空闲太久的 debug 窗口收回（学到一半被中断时不留下窗口）
-  setInterval(() => { for (const w of debugWindows.idle()) void releaseDebugWindow(ctx, w.id).catch(warnCatch("release debug window")); }, 60_000).unref();
+  // 空闲太久的学习窗口关掉 Chrome 窗口（句柄和目录保留）
+  setInterval(() => { for (const w of learn.idle()) void closeLearnWindow(ctx, w).catch(warnCatch("close learn window")); }, 60_000).unref();
   setInterval(() => { if (!extSocket && Date.now() - lastActivity > HOLDER_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();
   process.on("SIGINT", () => void shutdown(0));
   process.on("SIGTERM", () => void shutdown(0));

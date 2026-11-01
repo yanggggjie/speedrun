@@ -1,4 +1,4 @@
-export const USAGE = "用法：tabbot run | compose | learn | tabs | status | debug（学习会话里用）| daemon restart | doctor [--json]；日志和 task 是文件，在 ~/.tabbot/sites/<站点>/ 下，见 SKILL.md";
+export const USAGE = "用法：tabbot learn --url <链接|tab 号> --description \"…\" | learn <句柄> <操作> … | learn | run <action 名> | run --compose '代码' | run --resume <编号> --answer '<json>' | tabs | status | daemon restart | doctor [--json]；日志在 ~/.tabbot/learn-windows/、run-windows/，知识在 ~/.tabbot/sites/<站点>/，见 SKILL.md";
 export type HandshakeStatus = "need-install" | "need-chrome" | "need-extension";
 export type RpcMethod = "ping" | "run";
 export type JsonRpcRequest = { jsonrpc: "2.0"; id: string; method: RpcMethod; params?: Record<string, unknown> };

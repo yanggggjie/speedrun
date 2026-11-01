@@ -5,17 +5,13 @@ import { sleep } from "../utils/async.ts";
 type Tab = { tabId: number; windowId: number; url: string; anchor?: boolean };
 type Owned = { origin: string; busy: boolean; idleSince: number; key: string };
 
-/** run 窗口：长期持有，只执行 task。 */
-export const MAIN_KEY = "run";
-
 /**
- * tabbot agent 窗口：agent 干活的地方，和用户的窗口分开，不抢焦点。两种：
- * run 窗口（key 为 run）长期持有，只执行 task；debug 窗口（key 为 debug-…）一个学习会话一个，开会话时开、收回时关。
- * 一个 key 一个窗口，这样 run 窗口和学习会话的页面各在自己窗口的前台（浏览器不渲染后台标签页）。
- * 每个窗口的第一个标签页是扩展的 anchor 页（标题 tabbot agent）。窗口里其余标签页按站点（origin）池化：
- * task 结束只是还回去，下次同站点的直接复用，空闲太久才关。
- * key 到窗口的映射只在内存里；holder 重启（或扩展链路重连）一切归零：留下的窗口都是孤儿，第一次用窗口时全部关掉。
- * 窗口被用户关了，下次用到时自动重开（run 和 debug 一样）。
+ * tabbot agent 窗口：agent 干活的地方，和用户的窗口分开，不抢焦点。两种，key 就是窗口的名字：
+ * 学习窗口（key 是句柄，如 zhihu.com-20261101-130245）一直保留，agent 显式关；run 窗口（key 是 run 的名字）一次 run 一个，跑完就关（dispose）。
+ * 一个 key 一个浏览器窗口，各自的页面都在自己窗口的前台（浏览器不渲染后台标签页）。
+ * 每个窗口的第一个标签页是扩展的 anchor 页（标题 tabbot agent）。窗口里其余标签页按站点（origin）池化，只在这个窗口内复用。
+ * key 到窗口的映射只在内存里；holder 重启（或扩展链路重连）一切归零：留下的窗口都是孤儿，第一次用窗口时全部关掉（学习窗口之后按需从上次的 URL 重开）。
+ * 窗口被用户关了，下次用到时自动重开。
  */
 export class AgentWindows {
   private readonly link: Pick<ExtensionLink, "request">;
@@ -37,13 +33,13 @@ export class AgentWindows {
 
   isAgentTab(tab: number): boolean { return this.owned.has(tab) || this.adopted.has(tab); }
 
-  /** 标签页所在的窗口：run、debug-xxxx；不在任何 agent 窗口里的就是用户自己的 user。 */
+  /** 标签页所在的窗口（学习窗口的句柄、run 窗口的名字）；不在任何 agent 窗口里的就是用户自己的 user。 */
   winOf(tab: number): string { return this.owned.get(tab)?.key ?? this.adopted.get(tab) ?? "user"; }
 
   /** key 对应的浏览器窗口号（还没开就是 undefined）。 */
   windowIdOf(key: string): number | undefined { return this.windows.get(key); }
 
-  /** 扩展报来的页面消息带着标签页所在的浏览器窗口：是 agent 窗口、标签页又不是 TabBot 开的，就记为属于那个窗口。 */
+  /** 扩展报来的页面消息带着标签页所在的浏览器窗口：是 agent 窗口、标签页又不是 TabBot 开的，就记为属于那个窗口。扩展只转 TabBot 开的、以及被它们打开的标签页（看 openerTabId），用户在 agent 窗口里自己开的不会报上来。 */
   adopt(tab: number, windowId: number | undefined): void {
     if (windowId === undefined || this.owned.has(tab) || this.adopted.has(tab)) return;
     for (const [key, id] of this.windows) if (id === windowId) { this.adopted.set(tab, key); if (this.adopted.size > 2_000) this.adopted.delete(this.adopted.keys().next().value!); return; }
@@ -51,7 +47,13 @@ export class AgentWindows {
 
   private async list(): Promise<Tab[]> { return ((await this.link.request("tabs")) as { tabs: Tab[] }).tabs; }
 
-  ensureWindow(key = MAIN_KEY, tabs?: Tab[]): Promise<number> {
+  /** 这个 key 的浏览器窗口还开着（anchor 页还在）。 */
+  async isOpen(key: string): Promise<boolean> {
+    const id = this.windows.get(key);
+    return id !== undefined && (await this.list()).some((t) => t.anchor && t.windowId === id);
+  }
+
+  ensureWindow(key: string, tabs?: Tab[]): Promise<number> {
     let p = this.opening.get(key);
     if (!p) { p = this.doEnsure(key, tabs).finally(() => this.opening.delete(key)); this.opening.set(key, p); }
     return p;
@@ -73,7 +75,7 @@ export class AgentWindows {
   }
 
   /** 拿一个能在 origin 上发请求、操作页面的标签页（暖页面是 origin/robots.txt，很轻）。 */
-  async acquire(origin: string, key = MAIN_KEY): Promise<number> {
+  async acquire(origin: string, key: string): Promise<number> {
     // 快速路径：窗口已知、池里有同站点空闲标签页——不查标签页列表（要枚举用户全部标签页）。
     // 标签页要是已经被关了，由 RunHost.callTab 发现“No tab with id”后重新拿。
     if (this.cleaned && this.windows.has(key)) {
@@ -112,8 +114,7 @@ export class AgentWindows {
 
   /** 后台标签页浏览器不渲染（滚动加载、懒加载都不动）：要操作页面前先切到所在窗口的前台。 */
   async activate(tab: number): Promise<void> {
-    const e = this.owned.get(tab);
-    const key = e?.key ?? MAIN_KEY;
+    const key = this.owned.get(tab)?.key ?? this.adopted.get(tab) ?? "";
     if (this.activeTab.get(key) === tab) return;
     await this.link.request("activateTab", { tabId: tab });
     this.activeTab.set(key, tab);
@@ -126,9 +127,8 @@ export class AgentWindows {
     await this.link.request("closeTab", { tabId: tab }).catch(() => {});
   }
 
-  /** 一个 debug 窗口收回：关掉它的整个窗口。run 窗口不关。 */
+  /** 关掉一个 key 的整个浏览器窗口（run 跑完、学习窗口 close 或空闲太久）。 */
   async dispose(key: string): Promise<void> {
-    if (key === MAIN_KEY) return;
     const windowId = this.windows.get(key);
     this.windows.delete(key);
     this.activeTab.delete(key);

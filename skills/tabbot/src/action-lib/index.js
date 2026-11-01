@@ -1,5 +1,5 @@
-// task 的 SDK：task 脚本跑在 holder 的 worker 线程里，每个函数都是向 holder 发一个操作，holder 在 tabbot agent 窗口的标签页里执行。
-// 这个目录由 holder 启动时同步到 ~/.tabbot/lib，task 里 `import { ... } from "../../../lib/index.js"`（task 在 ~/.tabbot/sites/<站点>/tasks/ 下）。
+// action 的 SDK：action 脚本跑在 holder 的 worker 线程里，每个函数都是向 holder 发一个操作，holder 在 tabbot agent 窗口的标签页里执行。
+// 这个目录由 holder 启动时同步到 ~/.tabbot/lib，action 里 `import { ... } from "../../../lib/index.js"`（action 在 ~/.tabbot/sites/<站点>/actions/ 下）。
 import { parentPort, workerData } from "node:worker_threads";
 
 let nextId = 1;
@@ -15,7 +15,7 @@ parentPort?.on("message", (m) => {
 });
 
 function call(op, args = {}) {
-  if (!parentPort) throw new Error("这个 SDK 只能在 tabbot 的 task 里运行：tabbot task <名字>");
+  if (!parentPort) throw new Error("这个 SDK 只能在 tabbot 的 action 里运行：tabbot run <名字>");
   const id = nextId++;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
@@ -32,7 +32,7 @@ const PAGE = Object.freeze({ kind: "page" });
 /** 命令行 `--名字 值` 传进来的参数，值都是字符串；没传的可选参数不存在。 */
 export const tabbot = {
   params: workerData?.params ?? {},
-  /** task 入口：fn({ page }) 的返回值就是 result。 */
+  /** action 入口：fn({ page }) 的返回值就是 result。 */
   async run(fn) {
     try {
       const result = await fn({ page: PAGE });
@@ -41,8 +41,10 @@ export const tabbot = {
       parentPort?.postMessage({ type: "fail", error: String((e && e.stack) || e), message: String((e && e.message) || e) });
     }
   },
-  /** 在这次运行里顺序调用另一个 task（共用同一个页面），返回它的 result；失败时抛错。 */
-  task: (name, params = {}) => call("task", { name, params }),
+  /** 在这次运行里顺序调用另一个 action（共用同一个页面），返回它的 result；失败时抛错。 */
+  action: (name, params = {}) => call("action", { name, params }),
+  /** 只能用在最外层的组合代码里：run 在这里停下，把 question 和 data 交给 agent；agent 用 tabbot run --resume <编号> --answer … 恢复时，返回它的回答。 */
+  ask: (question, data) => call("ask", { question, data }),
 };
 
 /** 打开网址并等加载完成。 */
@@ -50,7 +52,10 @@ export const goto = (_page, url, options = {}) => call("goto", { url, ...options
 
 /**
  * 在页面里发请求（带这个站点的登录态）。默认继承这个站点页面自己最近发出的请求头（authorization、csrf 之类，token 值只在 holder 内存里）。
- * request(page, { url, method?, headers?, json?, body?, inherit?, pageOrigin? }) → { status, ok, text, json(), ct, finalUrl, ms }
+ * request(page, { url, method?, headers?, json?, body?, inherit?, inheritFrom?, auth?, pageOrigin? }) → { status, ok, text, json(), ct, finalUrl, ms }
+ * inheritFrom："/api/v4/search_v3" 这样的接口路径（:id 匹配一段），只从这个接口最近一次的请求继承请求头：签名和接口绑定的站点用它，先 goto 会发这个请求的页面。
+ * auth：{ 头: 来源 }，发送时现读，不依赖内存里的原始请求（holder 重启也能用）。来源：cookie:名字、local:key[.JSON 路径]、session:key[.路径]、meta:名字、from:/接口路径（从那个接口的请求取这个头）；前面加 "Bearer " 会拼上前缀。
+ *   取不到就报错。replay 的输出会给出判断好的 auth。
  */
 export async function request(_page, options) {
   const res = await call("request", options);

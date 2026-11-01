@@ -5,24 +5,24 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Ingestor, type PageMsg } from "./ingest.ts";
 import { summarizeBody, templateFromRequestFile } from "./replay.ts";
-import { SiteLog } from "./sitelog.ts";
+import { WindowLog } from "./windowlog.ts";
 import type { RequestFile } from "./types.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-replay-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true })); // 自检结束清掉临时目录
 const page = "https://www.example.com/";
-const SITE = "example.com";
 const T = Date.now() - 60_000;
 const net = (t: number, over: Record<string, unknown>): PageMsg => ({ k: "net", t, tab: 9, page, via: "fetch", method: "GET", status: 200, ct: "application/json", ms: 5, ...over }) as PageMsg;
 const SECRET = "sess_9f8e7d6c5b4a39281716";
 
 /** 用一个新的日志目录和 Ingestor 写入这些消息，返回写出的请求文件（按编号）。 */
 function ingestWith(dir: string, key: string | undefined, msgs: PageMsg[]): RequestFile[] {
-  const log = new SiteLog({ dir });
+  const log = new WindowLog({ root: dir });
   log.open();
-  new Ingestor(log, { aliasKey: key, winOf: () => "run" }).handleBatch(msgs);
+  log.openWindow("w-20261101-120000", "run");
+  new Ingestor(log, { aliasKey: key, winOf: () => "w-20261101-120000" }).handleBatch(msgs);
   log.close();
-  return log.readRows(SITE, { limit: 100 }).filter((r) => r.type === "request").map((r) => JSON.parse(fs.readFileSync(log.abs(SITE, r.file!), "utf8")) as RequestFile);
+  return log.readRows("w-20261101-120000", { limit: 100 }).filter((r) => r.type === "request").map((r) => JSON.parse(fs.readFileSync(log.abs(r.win, r.file!), "utf8")) as RequestFile);
 }
 
 // 别名：同一个密钥 + 同一个真值 = 同一个别名，重启（新的 Ingestor）也一样；密钥不同别名不同；别名里没有真值

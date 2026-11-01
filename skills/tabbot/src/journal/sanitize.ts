@@ -2,7 +2,8 @@ import { createHmac } from "node:crypto";
 import { parseUrl, type TabBotUrl } from "../utils/url.ts";
 
 /** 秘密的名字：加了边界，author、design 这类不会误伤。用在请求头名、查询参数名、JSON 的 key 上。 */
-const SECRET_NAME = /(^|[^a-z])(token|secret|password|passwd|pwd|csrf|xsrf|jwt|auth|authorization|api[-_]?key|access[-_]?key|session[-_]?id|cookie)([^a-z]|$)/i;
+// 连写的名字也算：x-xsrftoken、csrftoken、accesstoken、authtoken（xsrf / csrf 出现在任何位置，或以 token 结尾）
+const SECRET_NAME = /(^|[^a-z])(token|secret|password|passwd|pwd|csrf|xsrf|jwt|auth|authorization|api[-_]?key|access[-_]?key|session[-_]?id|cookie)([^a-z]|$)|xsrf|csrf|[a-z]token$/i;
 /** 严格的 JWT：头部是 base64 的 `{"`，总是以 eyJ 开头，不会把 www.example.com 这样的域名当成 JWT。 */
 const JWT = /^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

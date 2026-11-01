@@ -1,65 +1,50 @@
-import { LOG_LIMITS } from "../utils/constants.ts";
-import { tierOf, type SiteLog } from "./sitelog.ts";
+import { LOG_LIMITS, RUN_WINDOWS_KEEP } from "../utils/constants.ts";
+import { tierOf, type WindowLog } from "./windowlog.ts";
 
 /**
- * 两层淘汰（额度见 LOG_LIMITS）：
- * 1. 重量层（响应体、文档、快照）超了：从最旧的段开始，只删没受保护的重量层文件；时间线和请求文件原样保留。
- * 2. 轻量层（时间线、请求文件）超了：删最旧的整段。
- * 单个站点超了只动这个站点；总量超了先动占用最多的站点。当前段永远不动。接口样本（受保护的文件）在重量层淘汰时跳过。
+ * 按窗口目录淘汰：
+ * 1. run 窗口只留最近 RUN_WINDOWS_KEEP 个，更旧的整个删掉。
+ * 2. 学习窗口的重量层（响应体、页面、截图）超了：从最旧的窗口开始，只删没受保护的重量层文件；时间线和请求文件原样保留。
+ * 3. 学习窗口的轻量层超了：删最旧的整个窗口目录。
+ * 开着的学习窗口永远不动；接口样本（受保护的文件，相对 root 的路径）在重量层淘汰时跳过。
  */
-export type Limits = { totalLight: number; totalHeavy: number; siteLight: number; siteHeavy: number };
+export type Limits = { totalLight: number; totalHeavy: number; runKeep: number };
 export type RetentionHooks = {
-  /** 这个站点受保护的文件（相对 log/ 目录的路径）：每个接口最近几次成功请求的请求文件和响应体。 */
-  protect?: (site: string) => ReadonlySet<string>;
-  /** 这个站点有文件被删了。 */
-  changed?: (site: string) => void;
+  /** 受保护的文件（相对 root 的路径）：每个接口最近几次成功请求的请求文件和响应体。 */
+  protect?: () => ReadonlySet<string>;
+  /** 学习窗口还开着（Chrome 窗口在用）：不动它。 */
+  isOpen?: (win: string) => boolean;
+  /** 有文件被删了（样本可能不在了）。 */
+  changed?: () => void;
 };
-export type RetentionResult = { strippedFiles: number; strippedBytes: number; removedSegments: number };
+export type RetentionResult = { strippedFiles: number; strippedBytes: number; removedWindows: number };
 
-/** 从最旧的段开始删这个站点没受保护的重量层文件，删到有东西可删的第一个段为止；返回释放的字节数。 */
-function stripOldestHeavy(log: SiteLog, site: string, keep: ReadonlySet<string>, result: RetentionResult): number {
-  const current = log.currentSegment(site);
-  for (const id of log.segmentIds(site)) {
-    if (id === current) continue;
-    let freed = 0;
-    for (const f of log.segmentFiles(site, id)) {
-      if (tierOf(f.name) !== "heavy") continue;
-      const rel = `${String(id).padStart(6, "0")}/${f.name}`;
-      if (keep.has(rel)) continue;
-      const n = log.removeFile(site, rel);
-      if (n > 0) { freed += n; result.strippedFiles++; }
+const DEFAULT_LIMITS: Limits = { totalLight: LOG_LIMITS.totalLight, totalHeavy: LOG_LIMITS.totalHeavy, runKeep: RUN_WINDOWS_KEEP };
+
+export function enforce(log: WindowLog, hooks: RetentionHooks = {}, limits: Limits = DEFAULT_LIMITS): RetentionResult {
+  const result: RetentionResult = { strippedFiles: 0, strippedBytes: 0, removedWindows: 0 };
+  const isOpen = hooks.isOpen ?? (() => false);
+
+  const runs = log.listWindows("run");
+  for (const win of runs.slice(0, Math.max(0, runs.length - limits.runKeep))) { log.removeWindow(win); result.removedWindows++; }
+
+  const closed = (): string[] => log.listWindows("learn").filter((w) => !isOpen(w));
+  if (log.usage().learn.heavy > limits.totalHeavy) {
+    const keep = hooks.protect?.() ?? new Set<string>();
+    for (const win of closed()) {
+      if (log.usage().learn.heavy <= limits.totalHeavy) break;
+      for (const f of log.windowFiles(win)) {
+        if (tierOf(f.rel) !== "heavy" || keep.has(log.ref(win, f.rel))) continue;
+        const n = log.removeFile(win, f.rel);
+        if (n > 0) { result.strippedFiles++; result.strippedBytes += n; }
+      }
     }
-    if (freed > 0) { result.strippedBytes += freed; return freed; }
   }
-  return 0;
-}
-
-function removeOldestSegment(log: SiteLog, site: string, result: RetentionResult): number {
-  const current = log.currentSegment(site);
-  const id = log.segmentIds(site).find((x) => x !== current);
-  if (id === undefined) return 0;
-  const freed = log.removeSegment(site, id);
-  result.removedSegments++;
-  return freed.light + freed.heavy;
-}
-
-export function enforce(log: SiteLog, hooks: RetentionHooks = {}, limits: Limits = LOG_LIMITS): RetentionResult {
-  const result: RetentionResult = { strippedFiles: 0, strippedBytes: 0, removedSegments: 0 };
-  const touched = new Set<string>();
-  const keepOf = (site: string): ReadonlySet<string> => hooks.protect?.(site) ?? new Set();
-  const use = (site: string) => log.usage().sites[site] ?? { light: 0, heavy: 0 };
-  const strip = (site: string): number => { const n = stripOldestHeavy(log, site, keepOf(site), result); if (n > 0) touched.add(site); return n; };
-  const drop = (site: string): number => { const n = removeOldestSegment(log, site, result); if (n > 0) touched.add(site); return n; };
-  const biggest = (pick: (u: { light: number; heavy: number }) => number): string[] =>
-    Object.entries(log.usage().sites).sort((a, b) => pick(b[1]) - pick(a[1])).map(([site]) => site);
-
-  // 重量层：单站点，再总量
-  for (const site of Object.keys(log.usage().sites)) while (use(site).heavy > limits.siteHeavy && strip(site) > 0);
-  while (log.usage().heavy > limits.totalHeavy) { if (!biggest((u) => u.heavy).some((site) => strip(site) > 0)) break; }
-  // 轻量层：单站点，再总量
-  for (const site of Object.keys(log.usage().sites)) while (use(site).light > limits.siteLight && drop(site) > 0);
-  while (log.usage().light > limits.totalLight) { if (!biggest((u) => u.light).some((site) => drop(site) > 0)) break; }
-
-  for (const site of touched) hooks.changed?.(site);
+  for (const win of closed()) {
+    if (log.usage().learn.light <= limits.totalLight) break;
+    log.removeWindow(win);
+    result.removedWindows++;
+  }
+  if (result.strippedFiles || result.removedWindows) hooks.changed?.();
   return result;
 }

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { SESSION_DIR, TABBOT_HOME } from "../utils/constants.ts";
 import { tryPing } from "./session.ts";
-import { SiteLog } from "../journal/sitelog.ts";
+import { WindowLog } from "../journal/windowlog.ts";
 import { readVersion } from "../store/version.ts";
 import { chromeRunning } from "../browser/connect.ts";
 import { ABI } from "../browser/extension.ts";
@@ -77,12 +77,13 @@ async function collectChecks(): Promise<Check[]> {
     optional: true,
   });
 
-  // 日志：几段、多少事件、占了多少空间
-  const usage = (() => { try { const l = new SiteLog(); l.open(); return l.usage(); } catch { return null; } })();
+  // 日志：几个窗口、占了多少空间
+  const usage = (() => { try { const l = new WindowLog(); l.open(); return { u: l.usage(), learn: l.listWindows("learn").length, run: l.listWindows("run").length }; } catch { return null; } })();
+  const mb = (n: number): string => (n / 1024 / 1024).toFixed(1);
   add({
     name: "journal",
     ok: true,
-    detail: `${Object.keys(usage?.sites ?? {}).length} 个站点，轻量层 ${((usage?.light ?? 0) / 1024 / 1024).toFixed(1)}MB，重量层 ${((usage?.heavy ?? 0) / 1024 / 1024).toFixed(1)}MB`,
+    detail: `${usage?.learn ?? 0} 个学习窗口（轻量层 ${mb(usage?.u.learn.light ?? 0)}MB，重量层 ${mb(usage?.u.learn.heavy ?? 0)}MB），${usage?.run ?? 0} 个 run 窗口`,
     fix: "",
     optional: true,
   });

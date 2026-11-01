@@ -90,7 +90,7 @@
     setTimeout(tick, 120); // 先给动作引发的请求一点时间发出来
   });
 
-  // ---- 持久定位 loc（写进 task 的）：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? } ----
+  // ---- 持久定位 loc（写进 action 的）：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? } ----
   const IMPLICIT_ROLE = { a: "link", button: "button", select: "combobox", textarea: "textbox", summary: "button", img: "img", nav: "navigation", main: "main", li: "listitem", article: "article" };
   const roleOf = (el) => {
     const r = el.getAttribute("role");
@@ -143,6 +143,36 @@
   };
 
   // 声明式取数：{ css, fields: { 名字: "子选择器@属性" }, limit }；子选择器为空取元素自己，没有 @属性取文字。不需要 eval，严格 CSP 的页面也能用。
+  // ---- 身份头的来源：只回给 holder（比对、发送），不进日志 ----
+  const STORE_MAX = 8 * 1024;
+  const cookieMap = () => Object.fromEntries(document.cookie.split(/;\s*/).filter(Boolean).map((c) => { const i = c.indexOf("="); const k = c.slice(0, i); let v = c.slice(i + 1); try { v = decodeURIComponent(v); } catch {} return [k, v]; }));
+  const storeMap = (st) => { const out = {}; try { for (let i = 0; i < st.length; i++) { const k = st.key(i); const v = st.getItem(k); if (v != null && v.length <= STORE_MAX) out[k] = v; } } catch {} return out; };
+  const metaMap = () => Object.fromEntries([...document.querySelectorAll("meta[name],meta[property]")].map((m) => [m.getAttribute("name") || m.getAttribute("property"), m.getAttribute("content") || ""]));
+  // 页面此刻的 cookie（document.cookie 能读到的）、localStorage、sessionStorage、meta：holder 拿它和请求头的真值比对，判断来源
+  T.exec.authSnapshot = () => ({ cookie: cookieMap(), local: storeMap(window.localStorage), session: storeMap(window.sessionStorage), meta: metaMap() });
+  // 按来源取值：{ 头: "cookie:_xsrf" | "local:key[.路径]" | "session:key[.路径]" | "meta:名字"，可加 "Bearer " 前缀 } → { 头: 值 }；取不到的值是 null
+  T.exec.authRead = (specs) => {
+    const out = {};
+    for (const [h, raw] of Object.entries(specs || {})) {
+      const bearer = /^Bearer\s+/i.test(raw);
+      const spec = raw.replace(/^Bearer\s+/i, "");
+      const i = spec.indexOf(":");
+      const kind = spec.slice(0, i), ref = spec.slice(i + 1);
+      let v = null;
+      if (kind === "cookie") v = cookieMap()[ref] ?? null;
+      else if (kind === "meta") v = metaMap()[ref] ?? null;
+      else if (kind === "local" || kind === "session") {
+        const st = kind === "local" ? window.localStorage : window.sessionStorage;
+        let key = ref, path = [];
+        try { if (st.getItem(ref) == null && ref.includes(".")) { key = ref.slice(0, ref.indexOf(".")); path = ref.slice(key.length + 1).split("."); } } catch {}
+        try { v = st.getItem(key); } catch { v = null; }
+        if (v != null && path.length) { try { let o = JSON.parse(v); for (const p of path) o = o == null ? undefined : o[p]; v = o == null ? null : String(o); } catch { v = null; } }
+      }
+      out[h] = v == null ? null : bearer ? `Bearer ${v}` : v;
+    }
+    return out;
+  };
+
   T.exec.query = ({ css, fields, limit = 100 }) => {
     const read = (el, spec) => {
       const [sel, attr] = String(spec).split("@");
@@ -161,7 +191,7 @@
     return await fn(...args);
   };
 
-  // 元素的持久定位（写进 task 用）：有 role 和名字就用 {role,name}，否则用 CSS 路径
+  // 元素的持久定位（写进 action 用）：有 role 和名字就用 {role,name}，否则用 CSS 路径
   const durable = (el) => { const role = roleOf(el), name = nameOfEl(el).slice(0, 60); return role && name ? { role, name } : { css: T.cssPath(el) }; };
 
   T.exec.act = async (cmd) => {
@@ -196,7 +226,7 @@
   };
 
   // ---- 按屏幕坐标操作：给截图探索用。坐标是视口里的 CSS 像素（截图就是按这个尺寸缩的），左上角 (0,0)。
-  // 返回元素的持久定位 loc，写 task 时直接用；定位不唯一时补 nth，保证回放时命中同一个元素。----
+  // 返回元素的持久定位 loc，写 action 时直接用；定位不唯一时补 nth，保证回放时命中同一个元素。----
   const deepFromPoint = (x, y) => {
     let el = document.elementFromPoint(x, y);
     while (el && el.shadowRoot) { const inner = el.shadowRoot.elementFromPoint(x, y); if (!inner || inner === el) break; el = inner; }

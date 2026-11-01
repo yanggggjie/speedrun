@@ -8,33 +8,35 @@ import type { RequestFile, Row } from "./types.ts";
 
 /**
  * 接口聚合：每个站点一个 <站点>/endpoints.json，写入时增量维护（不用每次重读日志）。
- * 只由 agent 窗口（学习会话、run）的记录累积，给 agent 判断"这个站点学过、跑过哪些接口，哪些还没有 task"。不排序、不替 agent 下结论，只给信号：
- * actionTriggered（动作引发的次数）、onLoad（页面加载期自动发的次数）、idle（轮询等）、lastCause（最近一次是什么动作触发的）。
- * 每个接口最近几次成功请求登记成样本，样本的请求文件和响应体在日志淘汰时受保护。
+ * 只由学习窗口的记录累积（run 窗口的日志只给反查用），给 agent 判断"这个站点学过、跑过哪些接口，哪些还没有 action"。不排序、不替 agent 下结论，只给信号：
+ * cmdTriggered（动作引发的次数）、onLoad（页面加载期自动发的次数）、idle（轮询等）、lastCause（最近一次是什么动作触发的）。
+ * 每个接口最近几次成功请求登记成样本（文件路径相对 ~/.tabbot，如 learn-windows/<句柄>/requests/…），样本的请求文件和响应体在日志淘汰时受保护。
  */
 export const SAMPLES_PER_ENDPOINT = 5;
 const SHAPE_TEXT_MAX = 2 * 1024 * 1024;
 
 export type Sample = { seq: number; file: string; body?: string; t: number; size: number };
-/** agent 用 --description 写下的一句业务含义：引发它的动作、重放它、跑覆盖它的 task 时写的。 */
+/** agent 用 --description 写下的一句业务含义：引发它的动作、重放它、跑覆盖它的 action 时写的。 */
 export type Description = { text: string; from: string; t: number };
 export const DESCRIPTIONS_PER_ENDPOINT = 5;
 export type EndpointStat = {
   key: string; method: string; host: string; name: string;
   count: number; firstSeq: number; lastSeq: number; lastStatus?: number;
-  actionTriggered: number; onLoad: number; idle: number; lastCause?: string;
+  cmdTriggered: number; onLoad: number; idle: number; lastCause?: string;
   descriptions?: Description[];
+  /** 身份头的来源（最近一次判断）：头 → "cookie:_xsrf" 这样的来源，或 signed / static / unknown；signed 为真表示带签名头，换参数可能被拒（以 replay、run 的结果为准）。 */
+  auth?: Record<string, string>; signed?: boolean;
   variables: string[]; shape?: string; samples: Sample[];
   lastTab?: number; lastRid?: string;
 };
-export type EndpointJson = Omit<EndpointStat, "samples" | "lastTab" | "lastRid"> & { replayable: boolean; samples: Array<Omit<Sample, "size"> & { available: boolean }>; task: string | null };
+export type EndpointJson = Omit<EndpointStat, "samples" | "lastTab" | "lastRid"> & { replayable: boolean; samples: Array<Omit<Sample, "size"> & { available: boolean }>; action: string | null };
 export type EndpointsFile = { site: string; updatedAt: number; endpoints: EndpointJson[] };
 
-export type ObserveInput = { site: string; row: Row; file: RequestFile; relFile: string; text?: string; label?: string; description?: { text: string; from: string } };
+export type ObserveInput = { site: string; row: Row; file: RequestFile; ref: string; bodyRef?: string; text?: string; label?: string; description?: { text: string; from: string } };
 export type IndexOptions = {
   dir?: string;
   raw?: RawStore;
-  /** 这个站点的 task 覆盖了哪些接口：键是 `方法 接口名`，值是 task 名。 */
+  /** 这个站点的 action 覆盖了哪些接口：键是 `方法 接口名`，值是 action 名。 */
   coverage?: (site: string) => Map<string, string>;
   flushMs?: number;
   now?: () => number;
@@ -44,6 +46,7 @@ export type IndexOptions = {
 
 export class EndpointIndex {
   private readonly dir: string;
+  private readonly root: string;
   private readonly raw: RawStore | undefined;
   private readonly coverage: (site: string) => Map<string, string>;
   private readonly flushMs: number;
@@ -55,6 +58,7 @@ export class EndpointIndex {
 
   constructor(options: IndexOptions = {}) {
     this.dir = options.dir ?? SITES_DIR;
+    this.root = path.dirname(this.dir);
     this.raw = options.raw;
     this.coverage = options.coverage ?? (() => new Map());
     this.flushMs = options.flushMs ?? ENDPOINTS_FLUSH_MS;
@@ -64,7 +68,7 @@ export class EndpointIndex {
 
   file(site: string): string { return path.join(this.dir, siteDirName(site), "endpoints.json"); }
 
-  private logFile(site: string, rel: string): string { return path.join(this.dir, siteDirName(site), "log", rel); }
+  private logFile(ref: string): string { return path.join(this.root, ref); }
 
   private load(site: string): Map<string, EndpointStat> {
     const key = siteDirName(site);
@@ -74,24 +78,23 @@ export class EndpointIndex {
     try {
       const data = JSON.parse(fs.readFileSync(this.file(site), "utf8")) as EndpointsFile;
       for (const e of data.endpoints ?? []) {
-        // 旧版本的文件还有 userTriggered（用户窗口的，不再要）和 agentTriggered：只留 agent 的计数
-        const { replayable: _r, task: _t, samples, userTriggered: _u, agentTriggered, ...rest } = e as EndpointJson & { userTriggered?: number; agentTriggered?: number };
-        map.set(e.key, { ...rest, actionTriggered: rest.actionTriggered ?? agentTriggered ?? 0, samples: (samples ?? []).map((s) => ({ seq: s.seq, file: s.file, body: s.body, t: s.t, size: this.sizeOf(site, s.file, s.body) })) });
+        const { replayable: _r, action: _a, samples, ...rest } = e;
+        map.set(e.key, { ...rest, samples: (samples ?? []).map((s) => ({ seq: s.seq, file: s.file, body: s.body, t: s.t, size: this.sizeOf(s.file, s.body) })) });
       }
     } catch { /* 第一次，或文件坏了：从空开始 */ }
     this.sites.set(key, map);
     return map;
   }
 
-  private sizeOf(site: string, ...rels: Array<string | undefined>): number {
+  private sizeOf(...refs: Array<string | undefined>): number {
     let n = 0;
-    for (const rel of rels) if (rel) { try { n += fs.statSync(this.logFile(site, rel)).size; } catch { /* 已经不在 */ } }
+    for (const ref of refs) if (ref) { try { n += fs.statSync(this.logFile(ref)).size; } catch { /* 已经不在 */ } }
     return n;
   }
 
   /** 写完一个请求之后通知：更新这个接口的计数、阶段、变量、响应结构、样本。 */
   observe(input: ObserveInput): void {
-    const { site, row, file, relFile } = input;
+    const { site, row, file, ref } = input;
     if (row.requestType === "replay" || !row.endpoint) return; // 重放是 agent 自己发的，不算接口的使用情况
     const map = this.load(site);
     let e = map.get(row.endpoint);
@@ -99,7 +102,7 @@ export class EndpointIndex {
       let host = "";
       try { host = new URL(file.url.bareUrl).hostname; } catch { /* 地址不合法 */ }
       const sp = row.endpoint.indexOf(" ");
-      e = { key: row.endpoint, method: row.endpoint.slice(0, sp), host, name: row.endpoint.slice(sp + 1), count: 0, firstSeq: row.seq, lastSeq: row.seq, actionTriggered: 0, onLoad: 0, idle: 0, variables: [], samples: [] };
+      e = { key: row.endpoint, method: row.endpoint.slice(0, sp), host, name: row.endpoint.slice(sp + 1), count: 0, firstSeq: row.seq, lastSeq: row.seq, cmdTriggered: 0, onLoad: 0, idle: 0, variables: [], samples: [] };
       map.set(row.endpoint, e);
     }
     e.count++;
@@ -112,14 +115,14 @@ export class EndpointIndex {
       e.lastRid = file.rid;
     }
     if (row.phase === "load") e.onLoad++;
-    else if (row.phase === "action") { e.actionTriggered++; if (input.label) e.lastCause = input.label; }
+    else if (row.phase === "cmd") { e.cmdTriggered++; if (input.label) e.lastCause = input.label; }
     else e.idle++;
     if (typeof row.status === "number" && row.status >= 200 && row.status < 300) {
       if (input.text !== undefined && input.text.length <= SHAPE_TEXT_MAX && row.seq >= e.lastSeq) {
         try { e.shape = shapeOf(JSON.parse(input.text)); } catch { /* 不是 JSON */ }
       }
-      if (input.description && (row.phase === "action" || row.phase === "load")) addDescription(e, { ...input.description, t: row.t });
-      e.samples.push({ seq: row.seq, file: relFile, body: file.responseBodyPath, t: row.t, size: this.sizeOf(site, relFile, file.responseBodyPath) });
+      if (input.description && (row.phase === "cmd" || row.phase === "load")) addDescription(e, { ...input.description, t: row.t });
+      e.samples.push({ seq: row.seq, file: ref, body: input.bodyRef, t: row.t, size: this.sizeOf(ref, input.bodyRef) });
       if (e.samples.length > SAMPLES_PER_ENDPOINT) e.samples.shift();
       this.trimSamples(map);
     }
@@ -131,6 +134,16 @@ export class EndpointIndex {
     const e = this.load(site).get(key);
     if (!e || !d.text.trim()) return false;
     addDescription(e, { text: d.text, from: d.from, t: d.t ?? this.now() });
+    this.touch(site);
+    return true;
+  }
+
+  /** 记下身份头的来源（replay、观察里判断出的）；接口还不在聚合里就不记。 */
+  setAuth(site: string, key: string, auth: Record<string, string>, signed: boolean): boolean {
+    const e = this.load(site).get(key);
+    if (!e) return false;
+    e.auth = auth;
+    e.signed = signed;
     this.touch(site);
     return true;
   }
@@ -149,12 +162,17 @@ export class EndpointIndex {
     }
   }
 
-  /** 日志淘汰时用：这个站点受保护的文件（请求文件和响应体），相对 log/ 目录。 */
-  protect(site: string): Set<string> {
+  /** 日志淘汰时用：所有站点受保护的文件（请求文件和响应体），相对 ~/.tabbot。 */
+  protect(): Set<string> {
     const keep = new Set<string>();
-    for (const e of this.load(site).values()) for (const s of e.samples) { keep.add(s.file); if (s.body) keep.add(s.body); }
+    let sites: string[] = [];
+    try { sites = fs.readdirSync(this.dir, { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith(".")).map((d) => d.name); } catch { /* 还没有 */ }
+    for (const site of new Set([...sites, ...this.sites.keys()])) for (const e of this.load(site).values()) for (const s of e.samples) { keep.add(s.file); if (s.body) keep.add(s.body); }
     return keep;
   }
+
+  /** 有日志被淘汰：所有加载过的站点稍后重写（样本的 available 会变）。 */
+  touchAll(): void { for (const site of this.sites.keys()) this.touch(site); }
 
   /** 站点的聚合有变化（或有文件被淘汰了）：稍后写 endpoints.json。 */
   touch(site: string): void {
@@ -170,8 +188,8 @@ export class EndpointIndex {
       return {
         ...rest,
         replayable: !!(this.raw && lastRid && lastTab !== undefined && this.raw.get(lastTab, lastRid)),
-        samples: samples.map((s) => ({ seq: s.seq, file: s.file, ...(s.body ? { body: s.body } : {}), t: s.t, available: fs.existsSync(this.logFile(site, s.file)) })),
-        task: covered.get(e.key) ?? null,
+        samples: samples.map((s) => ({ seq: s.seq, file: s.file, ...(s.body ? { body: s.body } : {}), t: s.t, available: fs.existsSync(this.logFile(s.file)) })),
+        action: covered.get(e.key) ?? null,
       };
     });
     return { site, updatedAt: this.now(), endpoints };
