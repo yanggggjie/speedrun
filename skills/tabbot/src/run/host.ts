@@ -158,7 +158,7 @@ export class RunHost {
     }, undefined, siteOfUrl(url.href) || undefined);
   }
 
-  private async request(s: Session, a: { url: string; method?: string; headers?: Record<string, string>; json?: unknown; body?: string; inherit?: boolean; inheritFrom?: string; auth?: Record<string, string>; pageOrigin?: string; timeout?: number }): Promise<unknown> {
+  private async request(s: Session, a: { url: string; method?: string; headers?: Record<string, string>; json?: unknown; body?: string; inherit?: boolean; inheritFrom?: string; auth?: Record<string, string>; pageOrigin?: string; readOnly?: boolean; timeout?: number }): Promise<unknown> {
     const method = (a.method ?? (a.json !== undefined || a.body !== undefined ? "POST" : "GET")).toUpperCase();
     let target: URL;
     try { target = new URL(a.url); } catch { throw new Error(`request 需要完整的网址：${a.url}`); }
@@ -216,7 +216,8 @@ export class RunHost {
     const ep = endpointOf(target.href, a.json ?? body ?? undefined);
     const endpoint = endpointKey(method, ep.name);
     const detail = { method, endpoint, bareUrl: safe.bareUrl, query: safe.query, ...(a.json !== undefined ? { reqBody: JSON.stringify(this.d.ingest.sanitizer.body(a.json)).slice(0, 4000) } : {}), inherit: a.inheritFrom ?? a.inherit !== false };
-    if (s.dry && method !== "GET" && method !== "HEAD") {
+    // 试运行只拦写请求：GET/HEAD，以及 action 声明了 readOnly 的（查询用的 POST）照常发
+    if (s.dry && method !== "GET" && method !== "HEAD" && !a.readOnly) {
       // 打印给 agent 看的是脱敏后的（和日志一样）
       const shownBody = body === null ? "" : (() => { let parsed: unknown = body; try { parsed = JSON.parse(body); } catch { /* 表单或文字 */ } const v = this.d.ingest.sanitizer.body(parsed, true); return typeof v === "string" ? v : JSON.stringify(v); })();
       const shownUrl = Object.keys(safe.query).length ? `${safe.bareUrl}?${new URLSearchParams(safe.query as Record<string, string>)}` : safe.bareUrl;

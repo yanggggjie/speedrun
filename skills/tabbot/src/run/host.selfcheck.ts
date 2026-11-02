@@ -48,4 +48,7 @@ await dryHost.op(d, "request", { url: "https://api.example.com/v1/save?access_to
 assert.equal(sent.length, 2, "试运行不真发写请求");
 assert.ok(!d.dryLog.join("").includes("tok_SECRET"), `打印给 agent 的试运行内容已脱敏：${d.dryLog.join("")}`);
 assert.match(d.dryLog[0]!, /"text":"hi"/);
+await dryHost.op(d, "request", { url: "https://api.example.com/v1/list", method: "POST", json: { page: 1 }, readOnly: true });
+assert.equal(sent.length, 3, "试运行里标了 readOnly 的查询 POST 照常发");
+assert.equal(d.dryLog.length, 1);
 console.log("host selfcheck ok");

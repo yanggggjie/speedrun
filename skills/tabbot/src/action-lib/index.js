@@ -52,10 +52,11 @@ export const goto = (_page, url, options = {}) => call("goto", { url, ...options
 
 /**
  * 在页面里发请求（带这个站点的登录态）。默认继承这个站点页面自己最近发出的请求头（authorization、csrf 之类，token 值只在 holder 内存里）。
- * request(page, { url, method?, headers?, json?, body?, inherit?, inheritFrom?, auth?, pageOrigin? }) → { status, ok, text, json(), ct, finalUrl, ms }
+ * request(page, { url, method?, headers?, json?, body?, inherit?, inheritFrom?, auth?, pageOrigin?, readOnly? }) → { status, ok, text, json(), ct, finalUrl, ms }
  * inheritFrom："/api/v4/search_v3" 这样的接口路径（:id 匹配一段），只从这个接口最近一次的请求继承请求头：签名和接口绑定的站点用它，先 goto 会发这个请求的页面。
  * auth：{ 头: 来源 }，发送时现读，不依赖内存里的原始请求（holder 重启也能用）。来源：cookie:名字、local:key[.JSON 路径]、session:key[.路径]、meta:名字、from:/接口路径（从那个接口的请求取这个头）；前面加 "Bearer " 会拼上前缀。
  *   取不到就报错。replay 的输出会给出判断好的 auth。
+ * readOnly：true 表示这个非 GET 请求只是查询（列表、搜索、读详情用的 POST）；run --dry 时照常发出，不拦。写请求不要加。
  */
 export async function request(_page, options) {
   const res = await call("request", options);

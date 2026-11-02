@@ -35,9 +35,41 @@ function setPath(root: Record<string, unknown>, keys: string[], value: string): 
   return {};
 }
 
+const isForm = (r: RawRequest): boolean => /x-www-form-urlencoded/i.test(r.headers["content-type"] ?? "");
+
+/** 请求体里有没有这个字段：JSON 按路径走到底，表单按整个名字。 */
+function bodyHas(r: RawRequest, keys: string[]): boolean {
+  if (r.body === undefined || r.body === null) return false;
+  if (isForm(r)) return new URLSearchParams(r.body).has(keys.join("."));
+  let cur: unknown;
+  try { cur = JSON.parse(r.body); } catch { return false; }
+  for (const k of keys) {
+    if (typeof cur !== "object" || cur === null || !(k in cur)) return false;
+    cur = (cur as Record<string, unknown>)[k];
+  }
+  return true;
+}
+
+function setBody(out: RawRequest, keys: string[], value: string, key: string): { error?: string } {
+  if (out.body === undefined || out.body === null) return { error: `这个请求没有请求体，没法设置 ${key}` };
+  if (isForm(out)) {
+    const params = new URLSearchParams(out.body);
+    params.set(keys.join("."), value);
+    out.body = params.toString();
+    return {};
+  }
+  let doc: unknown;
+  try { doc = JSON.parse(out.body); } catch { return { error: `请求体不是 JSON，没法设置 ${key}；整个换掉用 body=内容` }; }
+  if (typeof doc !== "object" || doc === null) return { error: `请求体不是对象或数组，没法设置 ${key}` };
+  const r = setPath(doc as Record<string, unknown>, keys, value);
+  if (r.error) return r;
+  out.body = JSON.stringify(doc);
+  return {};
+}
+
 /**
  * 改请求再重放。--set 的写法：
- *   名字=值            改地址里的查询参数（没有就加上）
+ *   名字=值            改地址里的查询参数；地址里没有、请求体里有这个字段（JSON 按点分路径找，表单按名字）就改请求体；都没有就加成查询参数
  *   名字.路径=值       查询参数的值是 JSON 时改里面的字段，如 variables.cursor=xxx、variables.count=40（GraphQL 的 GET 请求）
  *   header.名字=值     改请求头（值为空就删掉）
  *   body.路径=值       改 JSON 请求体或表单请求体里的字段，路径用点分隔，数组用下标，如 body.filter.page=2、body.items.0.id=7
@@ -56,26 +88,20 @@ export function applySets(template: RawRequest, sets: string[]): { template: Raw
     } else if (key === "body") {
       out.body = value;
     } else if (key.startsWith("body.")) {
-      const keys = key.slice(5).split(".");
-      if (out.body === undefined || out.body === null) return { error: `这个请求没有请求体，没法设置 ${key}` };
-      if (/x-www-form-urlencoded/i.test(out.headers["content-type"] ?? "")) {
-        const params = new URLSearchParams(out.body);
-        params.set(keys.join("."), value);
-        out.body = params.toString();
-        continue;
-      }
-      let doc: unknown;
-      try { doc = JSON.parse(out.body); } catch { return { error: `请求体不是 JSON，没法设置 ${key}；整个换掉用 body=内容` }; }
-      if (typeof doc !== "object" || doc === null) return { error: `请求体不是对象或数组，没法设置 ${key}` };
-      const r = setPath(doc as Record<string, unknown>, keys, value);
+      const r = setBody(out, key.slice(5).split("."), value, key);
       if (r.error) return { error: r.error };
-      out.body = JSON.stringify(doc);
     } else {
       let u: URL;
       try { u = new URL(out.url); } catch { return { error: `地址不是有效的网址：${out.url}` }; }
       // 名字里带点、且点前面是一个值为 JSON 的查询参数（GraphQL 的 variables=...）：改 JSON 里的字段，如 variables.cursor=xxx
       const dot = key.indexOf(".");
       const head = dot > 0 ? key.slice(0, dot) : "";
+      if (!u.searchParams.has(key) && !(head && u.searchParams.has(head)) && bodyHas(out, key.split("."))) {
+        // 地址里没有、请求体里有：改请求体（POST 的 JSON 字段写成 size=200 也能改对，不会被悄悄加成查询参数）
+        const r = setBody(out, key.split("."), value, key);
+        if (r.error) return { error: r.error };
+        continue;
+      }
       if (head && !u.searchParams.has(key) && u.searchParams.has(head)) {
         let doc: unknown;
         try { doc = JSON.parse(u.searchParams.get(head)!); } catch { return { error: `查询参数 ${head} 的值不是 JSON，没法设置 ${key}` }; }

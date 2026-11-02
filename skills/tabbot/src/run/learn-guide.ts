@@ -77,14 +77,14 @@ export function makeLearnGuide(w: LearnWindow, info: LearnInfo): string {
  */
 \`\`\`
    前置请求也要发时，@endpoint 按发送顺序写多行；run 时会检查实际发出的顺序，不对就不晋升。
-5. 学完一个就接着学下一个；都写好后 \`tabbot run --compose '代码' --name 名字 --description "…"\`（或单个 \`tabbot run <名字>\`）在新的 run 窗口里跑。草稿真跑成功就晋升 verified。写操作可以先 \`--dry\`：只打印要发的请求，不真发、不晋升。
+5. 学完一个就接着学下一个；都写好后 \`tabbot run --compose '代码' --name 名字 --description "…"\`（或单个 \`tabbot run <名字>\`）在新的 run 窗口里跑。草稿真跑成功就晋升 verified。写操作可以先 \`--dry\`：只打印要发的写请求，不真发、不晋升（GET 和标了 \`readOnly\` 的照常发）。
 6. run 出问题：回到这个窗口继续观察、重放，或对比本窗口和 run 窗口目录里的 timeline.jsonl 找原因，改了再 run。
 7. 学不会：把 action 文件头改成 \`@status blocked\`，\`@note\` 写原因和证据（试过哪些请求编号、为什么 network 和 DOM 都不行），最终回复说明卡在哪。verified 的坏了：改回 \`@status draft\`，\`@note\` 写原因，回来修，run 通过再晋升。
 8. 事情做完由你决定 \`${cmd} close\`（关掉 Chrome 窗口，句柄和目录保留）。
 
 # 写 action 的规则
 - SDK：\`import { tabbot, goto, request, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../../../lib/index.js"\`，入口 \`await tabbot.run(async ({ page }) => { ... })\`，返回值就是结果。
-- \`request(page, {url, method?, headers?, json?, inheritFrom?})\` 默认继承 agent 窗口里同站点页面最近发出的请求头（token 真值只在 holder 内存里）；没有可继承的头时会自动打开站点首页让页面自己发请求。签名和接口绑定的站点（换个接口的签名会被拒）用 \`inheritFrom: "/接口路径"\` 只从那个接口继承，先 \`goto\` 会发它的页面；签名还和完整 URL 绑定（\`replay --set\` 改参数就被拒）的，改页面实现。
+- \`request(page, {url, method?, headers?, json?, inheritFrom?, readOnly?})\` 默认继承 agent 窗口里同站点页面最近发出的请求头（token 真值只在 holder 内存里）；没有可继承的头时会自动打开站点首页让页面自己发请求。签名和接口绑定的站点（换个接口的签名会被拒）用 \`inheritFrom: "/接口路径"\` 只从那个接口继承，先 \`goto\` 会发它的页面；签名还和完整 URL 绑定（\`replay --set\` 改参数就被拒）的，改页面实现。只读的 POST（查列表、搜索）加 \`readOnly: true\`，\`--dry\` 时照常发，写操作的 action 才能在试运行里先读到状态。
 - **身份头说清来源**：值来自 cookie、localStorage / sessionStorage、meta 的，用 \`auth: { "x-xsrftoken": "cookie:_xsrf", authorization: "Bearer local:token" }\` 声明，发送时在页面里现读，holder 重启也能用；来自前序响应的（上传凭证、nonce），先发前序请求再取值（多行 @endpoint）；签名不能继承，用页面实现。观察里 ★ 写请求和 replay 的输出会写出每个身份头的来源。
 - run 窗口每次从空白开始，不沿用学习窗口的页面状态：页面实现的 action 自己 \`goto\` 起点。
 - 参数用 \`tabbot.params.名字 ?? 默认值\`（字符串）；变化的值（id、关键词、页码）都做成参数；返回字段用页面上的词命名。

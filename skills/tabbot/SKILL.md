@@ -55,7 +55,7 @@ description: >-
    - 验证：看到要的请求就读它的请求文件，`tabbot learn <句柄> replay <编号> --set 名字=值` 在当前页面重发、试参数（通用操作换一个对象验证一次）。非 GET 要 `--yes`。replay 和 action 里的 `request()` 走同一条路径，输出写明请求头继承自哪里、**身份头来源**、签名和参数对不上的提示，以及一行可贴进 action 的 `request(...)`（带 `auth`）。`--raw` 只用来排查。replay 成功后写进草稿、马上 run，以 run 为准。
    - 写 action：直接写 `~/.tabbot/sites/<站点>/actions/<名字>.js`，文件头 `@status draft`。学完一个接着学下一个。
    - 中途要登录就停下来请用户在 Chrome 里登录，再继续。
-4. **交付**：`tabbot run --compose '代码' --description "…" --name <名字> --参数 值`（或单个 `tabbot run <名字>`），在新的 run 窗口里跑，跑完窗口就关。草稿真跑成功就晋升 verified（多行 `@endpoint` 要按顺序发出）。写操作可以先 `--dry`：只打印要发的请求，不真发、不晋升。最终回复引用回执。学习时真发过的写操作要告诉用户。
+4. **交付**：`tabbot run --compose '代码' --description "…" --name <名字> --参数 值`（或单个 `tabbot run <名字>`），在新的 run 窗口里跑，跑完窗口就关。草稿真跑成功就晋升 verified（多行 `@endpoint` 要按顺序发出）。写操作可以先 `--dry`：只打印要发的写请求，不真发、不晋升；GET 和 `request()` 里标了 `readOnly: true` 的查询 POST 照常发（写操作的 action 先读状态要靠它）。最终回复引用回执。学习时真发过的写操作要告诉用户。
    - **中途要你判断**（挑出"硬核技术"的回答、选哪一条）：在组合里写 `const picked = await tabbot.ask("问题", 数据)`，先在代码里把数据裁到判断要用的字段。run 停下输出 `{ "status": "ask", "resume": "AS-…", "question", "data" }`，你判断后 `tabbot run --resume <编号> --answer '<json>'` 继续，前面已执行的 action 不会重跑。存下来的组合下次照样停在这里问。
 5. **排查**：run 出问题，回到学习窗口继续观察、重放；或者对比学习窗口和 run 窗口目录里的 `timeline.jsonl` 找原因（run 窗口每次从空白开始：页面实现的 action 要自己 `goto` 起点），改了再 run。学不会：把文件头改成 `@status blocked`，`@note` 写原因和证据。verified 的坏了：改回 `@status draft`，`@note` 写原因，回来修。
 6. **收尾**：事情做完由你决定 `tabbot learn <句柄> close`（关掉 Chrome 窗口，句柄和目录保留）。
@@ -132,9 +132,9 @@ description: >-
 | `tabbot learn <句柄> open <网址> \| click <x> <y> \| type "文字" \| key <键> \| scroll down\|up\|top\|bottom … --description "…"` | 页面操作，靠截图加坐标（没有页面结构和元素编号）；执行完自动附带一次观察；Chrome 窗口关着就先从上次的 URL 重开 |
 | `tabbot learn <句柄> screenshot` | 截图，存进窗口目录的 `screenshots/`，用读图片的方式看 |
 | `tabbot learn <句柄> observe [--since <编号>]` | 观察：上次观察以来的页面状态、导航、请求、依赖，然后推进游标；`--since` 重看某个编号之后的（不推进） |
-| `tabbot learn <句柄> replay <编号> [--set 名字=值 …] [--inherit-from <接口路径>] [--yes] [--raw] --description "…"` | 按 action 的方式在当前页面重发一个录到的请求（同一套请求头继承；当前页面不同源时在同窗口另开标签页），输出继承来源、身份头来源、签名提示、可贴进 action 的一行；`--raw` 原样重放，只用来排查；非 GET 要 `--yes`；输出附带观察 |
+| `tabbot learn <句柄> replay <编号> [--set 名字=值 …] [--inherit-from <接口路径>] [--yes] [--raw] --description "…"` | 按 action 的方式在当前页面重发一个录到的请求（同一套请求头继承；当前页面不同源时在同窗口另开标签页），输出继承来源、身份头来源、签名提示、可贴进 action 的一行；`--set`：`名字=值` 改查询参数，地址里没有就改请求体里的同名字段（嵌套用点，如 `filter.page=2`），`body.路径=值`、`header.名字=值` 明确指定；`--raw` 原样重放，只用来排查；非 GET 要 `--yes`；输出附带观察 |
 | `tabbot learn <句柄> close` | 关掉 Chrome 窗口；句柄和目录保留 |
-| `tabbot run <action 名> --description "…" [--参数 值] [--dry]` | 新开 run 窗口执行一个 action（草稿也行，真跑成功就晋升 verified），跑完关掉。`--dry`：非 GET 的请求不真发，只打印将发送的内容 |
+| `tabbot run <action 名> --description "…" [--参数 值] [--dry]` | 新开 run 窗口执行一个 action（草稿也行，真跑成功就晋升 verified），跑完关掉。`--dry`：非 GET 且没标 `readOnly` 的请求不真发，只打印将发送的内容 |
 | `tabbot run --compose '代码' --description "…" [--name 名字] [--参数 值] [--dry]` | 跑一段组合代码：只能 `action("名字", 参数)` 调用 action，用 `tabbot.params.名字` 读参数；跑通就存成组合实现的 action（`--name` 起名；只用到一个站点的放那个站点的 `actions/`，否则放 `~/.tabbot/compose/`；没名字按哈希） |
 | `tabbot run --resume <编号> --answer '<json>'` | 恢复停在 `tabbot.ask` 的 run：`--answer` 是给那个问题的回答（可重复，按 ask 的顺序；不是 JSON 就当字符串）；action、参数、`--dry`、`--name`、`--description` 沿用停下时的那次。只在 holder 内存里，30 分钟内有效 |
 | `tabbot tabs` `status` `doctor [--json]` `daemon restart` | 用户的标签页（只有地址和标题，用来对出 `--url` 的 tab 号）/ 状态（日志占用、开着的学习窗口、没跑通的草稿）/ 检查安装 / 重启 daemon |

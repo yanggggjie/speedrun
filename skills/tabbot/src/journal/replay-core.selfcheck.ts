@@ -11,6 +11,14 @@ let t = ok(["page=2", "q=你好 世界", "sort=new"]);
 const u = new URL(t.url);
 assert.equal(u.searchParams.get("page"), "2"); assert.equal(u.searchParams.get("q"), "你好 世界"); assert.equal(u.searchParams.get("sort"), "new");
 
+// 不带前缀的名字：地址里没有、请求体里有，就改请求体（否则 POST 的 size=200 会被悄悄加成查询参数，请求体没变）
+t = ok(["note=bye", "filter.page=3"]);
+assert.deepEqual(JSON.parse(t.body!), { filter: { page: 3, tags: ["x"], on: true }, items: [{ id: 5 }], note: "bye" });
+assert.equal(t.url, base().url, "地址没被加参数");
+const form: RawRequest = { method: "POST", url: "https://example.com/f?page=1", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "size=20&page=9" };
+t = ok(["size=200", "page=2"], form);
+assert.equal(t.body, "size=200&page=9"); assert.equal(new URL(t.url).searchParams.get("page"), "2", "地址里有的优先改地址");
+
 // 查询参数的值是 JSON（GraphQL 的 variables=...）：改里面的字段，按已有类型转换；名字本身带点的参数仍按整体名字处理
 const gql: RawRequest = { method: "GET", url: `https://x.com/i/api/graphql/abc/HomeTimeline?variables=${encodeURIComponent(JSON.stringify({ count: 20, cursor: "OLD", opts: { on: true } }))}&features=%7B%7D&a.b=1&q=hello`, headers: {} };
 t = ok(["variables.cursor=NEW", "variables.count=40", "variables.opts.on=false", "variables.extra=x", "a.b=2"], gql);
