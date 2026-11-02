@@ -1,1 +1,1 @@
-skills/tabbot/AGENTS.md
+skills/deft/AGENTS.md

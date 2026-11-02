@@ -1,12 +1,12 @@
 {
-  "name": "tabbot-skill-repo",
+  "name": "deft-skill-repo",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Dev harness for the tabbot skill; the shippable package lives in skills/tabbot/src.",
+  "description": "Dev harness for the deft skill; the shippable package lives in skills/deft/src.",
   "scripts": {
-    "check": "npm --prefix skills/tabbot/src run check",
-    "test": "npm --prefix skills/tabbot/src run test",
+    "check": "npm --prefix skills/deft/src run check",
+    "test": "npm --prefix skills/deft/src run test",
     "verify:pack": "node tools/verify-pack.mjs"
   },
   "engines": {

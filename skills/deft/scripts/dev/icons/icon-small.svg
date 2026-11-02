@@ -1,0 +1,14 @@
+<!-- Deft 图标：一个浏览器窗口，右下角一个光标（agent 在浏览器里替你操作）。粗线条、圆角、没有底框，viewBox 收紧到图形边缘（含线宽），图形占满整个图标；晚霞色：左上黄、右下红。16、32px 用这份：线条加粗，小尺寸看得清。 用 scripts/dev/make-icons.mjs 生成 PNG。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="9.5 6.5 109 109" width="128" height="128">
+  <defs>
+    <linearGradient id="sunset" gradientUnits="userSpaceOnUse" x1="16" y1="16" x2="112" y2="106"><stop offset="0" stop-color="#FFB627"/><stop offset="0.55" stop-color="#FF7A3D"/><stop offset="1" stop-color="#F0384F"/></linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#sunset)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 窗口：右下角留缺口给光标 -->
+    <path d="M70 102H32C23 102 16 95 16 86V32C16 23 23 16 32 16H96C105 16 112 23 112 32V66"/>
+    <!-- 标签栏分隔线 -->
+    <path d="M16 40H112"/>
+    <!-- 光标 -->
+    <path d="M78 72L112 86L98 92L92 106Z" fill="url(#sunset)"/>
+  </g>
+</svg>
