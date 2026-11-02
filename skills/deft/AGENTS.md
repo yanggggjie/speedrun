@@ -72,7 +72,7 @@ npm run verify:pack
 ### 2.4 命名与约定
 
 - **要书写、打字、匹配的地方一律小写 `deft`**（命令、skill 名和触发词、数据目录 `~/.deft`、native host `com.deft.connect`）；**给用户看的地方写 `Deft`**（产品名、文档正文、扩展显示名、提示文案）。
-- GitHub 仓库 `yanggggjie/TabBot`（私有，Apache-2.0）。部分代码最初来自 yodo，历史已清空，与 yodo 仓库无关联。
+- GitHub 仓库 `yanggggjie/Deft`（私有，Apache-2.0；改名前叫 TabBot，GitHub 会把旧地址转到新地址）。部分代码最初来自 yodo，历史已清空，与 yodo 仓库无关联。
 - 本机的 8766 端口曾被一个无关服务占用；产品不用固定端口，走 Unix socket 和 native messaging。
 
 ## 3. 分发与发布

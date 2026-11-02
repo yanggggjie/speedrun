@@ -20,7 +20,7 @@
 ## 2. 同步 skill
 
 - 本地安装：不需要同步，安装目录就是仓库里的 `skills/deft`，直接进入第 3 步。
-- 在线安装运行 `npx skills add yanggggjie/TabBot -g -y -a '*' -s deft`，再运行 `npx skills ls -g`，找到 Deft 的安装目录。
+- 在线安装运行 `npx skills add yanggggjie/Deft -g -y -a '*' -s deft`，再运行 `npx skills ls -g`，找到 Deft 的安装目录。
 - 下面的步骤都从安装目录运行。
 
 ## 3. 运行引导脚本
