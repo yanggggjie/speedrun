@@ -21,8 +21,9 @@ export function makeLearnGuide(w: LearnWindow, info: LearnInfo): string {
 
 # 要做的事
 「${w.description}」
-- 起点站点：${w.site}（页面要登录就停下来，请用户在 Chrome 里登录，不要自己登录）
+- 起点站点：${w.site}
 - 句柄：${w.id}，持久的：关了窗口、holder 重启了，再对它操作就从上次的 URL 重开（页面状态会丢），日志接着写进同一个目录
+- 遇到登录页：点一下就能登录的（「快速登录」「检测到当前已登录账号」「使用此账号继续」这类）你自己点：先截图确认只要点一下，点完再截图确认登进去了；要输入账号密码、扫二维码、收验证码的停下来请用户在 Chrome 里登录。登录态整个 Chrome 共用，学习窗口里登进去，run 窗口也就登进去了。
 - 最多 ${LEARN_MAX_OPS} 次页面操作；独立的 agent 窗口，不会打扰用户；${Math.round(LEARN_IDLE_MS / 60_000)} 分钟没有操作会关掉 Chrome 窗口
 
 # 先拆分，再判断通用操作
@@ -60,7 +61,8 @@ export function makeLearnGuide(w: LearnWindow, info: LearnInfo): string {
 # 怎么做
 成本顺序：读文件 < replay < 一次页面操作。**先 network，不行才 DOM**：
 - **network**（默认）：action 里用 \`request(page, …)\` 直接发这个请求。
-- **DOM**（兜底，也是正当的结果）：请求读不了响应体（流式、二进制）、必须由页面脚本带签名发出、或数据在页面里没有可用的请求时，action 做页面操作并用 \`text\` / \`query\` 取数据。
+- **等页面发**：请求必须由页面脚本带签名发出、或请求体由页面拼出来复现不了，但响应能读的，用 \`waitRequest(page, "方法 接口路径", 触发动作)\`：触发动作（\`goto\` 带参数的页面、\`click\`）让页面自己发，action 拿它的响应。
+- **DOM**（兜底，也是正当的结果）：请求读不了响应体（流式、二进制）、或数据在页面里没有可用的请求时，action 做页面操作并用 \`text\` / \`query\` 取数据。
 
 1. 截图看页面：\`${cmd} screenshot\`（存成文件，用读图片的方式看），按图上的坐标操作：\`${cmd} click <x> <y> --description "点开某某"\`、\`${cmd} type "文字" --description "…"\`（先 click 输入框）、\`${cmd} key Enter --description "…"\`、\`${cmd} scroll down [像素] [x y] --description "…"\`、\`${cmd} open <网址> --description "…"\`。没有页面结构、没有元素编号，只靠看图。
 2. 页面操作和 replay 都要带 \`--description\`：一句话用用户的话说这一步要做什么，它会存成接口的业务含义。
@@ -83,12 +85,12 @@ export function makeLearnGuide(w: LearnWindow, info: LearnInfo): string {
 8. 事情做完由你决定 \`${cmd} close\`（关掉 Chrome 窗口，句柄和目录保留）。
 
 # 写 action 的规则
-- SDK：\`import { deft, goto, request, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../../../lib/index.js"\`，入口 \`await deft.run(async ({ page }) => { ... })\`，返回值就是结果。
-- \`request(page, {url, method?, headers?, json?, inheritFrom?, readOnly?})\` 默认继承 agent 窗口里同站点页面最近发出的请求头（token 真值只在 holder 内存里）；没有可继承的头时会自动打开站点首页让页面自己发请求。签名和接口绑定的站点（换个接口的签名会被拒）用 \`inheritFrom: "/接口路径"\` 只从那个接口继承，先 \`goto\` 会发它的页面；签名还和完整 URL 绑定（\`replay --set\` 改参数就被拒）的，改页面实现。只读的 POST（查列表、搜索）加 \`readOnly: true\`，\`--dry\` 时照常发，写操作的 action 才能在试运行里先读到状态。
+- SDK：\`import { deft, goto, request, waitRequest, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../../../lib/index.js"\`，入口 \`await deft.run(async ({ page }) => { ... })\`，返回值就是结果。
+- \`request(page, {url, method?, headers?, json?, inheritFrom?, readOnly?})\` 默认继承 agent 窗口里同站点页面最近发出的请求头（token 真值只在 holder 内存里）；没有可继承的头时会自动打开站点首页让页面自己发请求。签名和接口绑定的站点（换个接口的签名会被拒）用 \`inheritFrom: "/接口路径"\` 只从那个接口继承，先 \`goto\` 会发它的页面；签名还和完整 URL 绑定（\`replay --set\` 改参数就被拒）、或请求体由页面拼出来的，用 \`waitRequest(page, "POST /接口路径", () => goto(page, 带参数的页面地址))\`：让页面自己发，action 只拿它的响应（只等触发之后这个窗口里的第一个匹配请求）；页面也不发请求的，再改纯页面实现。只读的 POST（查列表、搜索）加 \`readOnly: true\`，\`--dry\` 时照常发，写操作的 action 才能在试运行里先读到状态。
 - **身份头说清来源**：值来自 cookie、localStorage / sessionStorage、meta 的，用 \`auth: { "x-xsrftoken": "cookie:_xsrf", authorization: "Bearer local:token" }\` 声明，发送时在页面里现读，holder 重启也能用；来自前序响应的（上传凭证、nonce），先发前序请求再取值（多行 @endpoint）；签名不能继承，用页面实现。观察里 ★ 写请求和 replay 的输出会写出每个身份头的来源。
 - run 窗口每次从空白开始，不沿用学习窗口的页面状态：页面实现的 action 自己 \`goto\` 起点。
 - 参数用 \`deft.params.名字 ?? 默认值\`（字符串）；变化的值（id、关键词、页码）都做成参数；返回字段用页面上的词命名。
-- 成功判断：检查 HTTP 状态码和业务码；结果必须对应本次参数；有副作用的先读状态，已满足返回 already；返回被操作对象的稳定 id。
+- 成功判断：action 自己判断任务有没有正确完成，不看最后停在什么页面。检查 HTTP 状态码和业务码；读页面内容的要检查拿到的确实是目标内容（标题、关键元素），停在登录页、错误页就抛错，不能把登录页的文字当结果返回；结果必须对应本次参数；有副作用的先读状态，已满足返回 already，并在 @summary 写明「有副作用」；返回被操作对象的稳定 id。
 - 定位用 \`{role,name}\` 或 CSS；\`query(page, {css, fields})\` 取数；\`evaluate\` 是兜底（严格 CSP 的页面会被拒）。
 - 一次调用只做这一个业务动作：翻页、批量、多个对象都做成参数，由组合循环调用。返回值只放有用的字段。
 

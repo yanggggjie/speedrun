@@ -69,6 +69,28 @@ export async function request(_page, options) {
 
 // 定位：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? }。元素没出现会等到 timeout（默认 10 秒）。
 // 操作之后默认不等页面“稳定”（有动静的页面会白等）；要等某个结果就用 waitFor 等具体元素，或传 { settle: true } 等在途请求结束。
+/**
+ * 等页面自己发出某个请求，拿它的响应：请求体由页面拼、签名复现不了时用（介于 request() 和纯页面操作之间）。
+ * waitRequest(page, "POST /api/list", () => goto(page, url), { timeout? }) → { status, ok, text, json(), ct, url, requestBody }
+ * 接口写法和 @endpoint 一样（:id 匹配一段）；只等触发动作之后、这个窗口里发出的第一个匹配请求，超时（默认 15 秒）报错并列出实际发出的请求。
+ * 触发动作是真的页面操作：run --dry 时页面照样发请求，别用它触发写操作。
+ */
+export async function waitRequest(_page, endpoint, trigger, options = {}) {
+  const { id } = await call("waitStart", { endpoint });
+  try {
+    if (trigger) await trigger();
+  } catch (error) {
+    await call("waitCancel", { id }).catch(() => {});
+    throw error;
+  }
+  const res = await call("waitEnd", { id, ...(options.timeout ? { timeout: options.timeout } : {}) });
+  return {
+    ...res,
+    ok: res.status >= 200 && res.status < 300,
+    json() { try { return JSON.parse(res.text); } catch { throw new Error(`响应不是 JSON（${res.status}）：${String(res.text).slice(0, 120)}`); } },
+  };
+}
+
 export const click = (_page, loc, options = {}) => call("act", { kind: "click", loc, ...options });
 export const fill = (_page, loc, text, options = {}) => call("act", { kind: "fill", loc, text, ...options });
 export const select = (_page, loc, text, options = {}) => call("act", { kind: "select", loc, text, ...options });

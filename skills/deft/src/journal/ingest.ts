@@ -52,6 +52,9 @@ export type IngestOptions = {
 export type CmdRef = { seq: number; site: string; win: string; tab: number; ts: number; verb: string; target: string; detail?: Record<string, unknown> };
 type LastAction = { seq: number; ts: number; label: string; description?: string; verb?: string; inherited?: boolean };
 
+/** 页面发出、刚收录的一个请求（原始内容，只在内存里交给 waitRequest）。 */
+export type SeenRequest = { seq: number; win: string; tab: number; method: string; url: string; endpoint: string; status?: number; body?: string; reqBody?: string; ct?: string; truncated?: boolean; error?: string; noise?: boolean };
+
 export class Ingestor {
   readonly sanitizer: Sanitizer;
   private readonly log: WindowLog;
@@ -64,6 +67,9 @@ export class Ingestor {
   private readonly lastNav = new Map<number, number>();
   /** 每个窗口最近一条命令：新开的标签页还没有自己的命令时，用它当引发者。 */
   private readonly lastCmdOfWin = new Map<string, LastAction>();
+  /** 收录了一个页面发出的请求：waitRequest 在这里拿原始响应（不经过日志文件、不脱敏，和 request() 返回的一样）。 */
+  private readonly seenListeners = new Set<(r: SeenRequest) => void>();
+  onRequest(fn: (r: SeenRequest) => void): () => void { this.seenListeners.add(fn); return () => this.seenListeners.delete(fn); }
   private queue: PageMsg[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -296,6 +302,10 @@ export class Ingestor {
       endpoint, ...(noise ? { noise: 1 as const } : {}), ...(cause ? { cause: cause.seq, causeDt } : {}), phase, file: rel,
     };
     this.log.append(row);
+    if (this.seenListeners.size) {
+      const seen: SeenRequest = { seq, win, tab: msg.tab, method, url: rawUrl, endpoint, ...(status !== undefined ? { status } : {}), ...(rawBody !== undefined ? { body: rawBody } : {}), ...(rawReqBody !== undefined ? { reqBody: rawReqBody } : {}), ...(ct ? { ct } : {}), ...(msg.truncated ? { truncated: true } : {}), ...(str(msg.err) ? { error: str(msg.err) } : {}), ...(noise ? { noise: true } : {}) };
+      for (const fn of this.seenListeners) { try { fn(seen); } catch { /* 订阅者的错不影响收录 */ } }
+    }
     // 接口聚合只由学习窗口累积；run 窗口的日志只给反查用
     if (!noise && this.log.kindOf(win) === "learn") this.index?.observe({ site, row, file, ref: this.log.ref(win, rel), ...(responseBodyPath ? { bodyRef: this.log.ref(win, responseBodyPath) } : {}), text, label: cause?.label, ...(cause?.description ? { description: { text: cause.description, from: cause.verb ?? "cmd" } } : {}) });
   }

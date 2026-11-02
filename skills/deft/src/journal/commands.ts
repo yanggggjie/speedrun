@@ -15,7 +15,7 @@ import { HANDLE, type LearnWindow, type LearnWindows } from "../run/learn-window
 import { Session, type RequestSource, type RunHost } from "../run/host.ts";
 import { makeLearnGuide } from "../run/learn-guide.ts";
 import type { ActionRunner, JournalEntry, Outcome, Replay } from "../run/runner.ts";
-import { ACTION_NAME, actionSummary, composeHash, composeTarget, draftActions, findAction, isComposed, parseCliParams, promoteAction, pruneUnnamed, saveComposed } from "../run/actions.ts";
+import { ACTION_NAME, actionSummary, composeHash, composeTarget, draftActions, isWriteAction, findAction, isComposed, parseCliParams, promoteAction, pruneUnnamed, saveComposed } from "../run/actions.ts";
 import type { AgentWindows } from "../run/window.ts";
 import { looksReadOnly, normalizeSite } from "./digest.ts";
 import type { EndpointIndex } from "./endpoints.ts";
@@ -138,7 +138,10 @@ async function statusCommand(ctx: Ctx, out: Output): Promise<void> {
   const open = ctx.learn.opened();
   out.line(open.length ? `开着的学习窗口：${open.map((w) => `${w.id}（${w.url}，空闲 ${idleMin(w)} 分钟）`).join("；")}` : "开着的学习窗口：无");
   const drafts = draftActions(ctx.log.dir);
-  if (drafts.length) out.line(`还没跑通的草稿（@status draft）：${drafts.map((t) => `${t.name}（${t.site}）`).join("、")}；deft run <名字> 真跑成功就晋升 verified`);
+  const list = (xs: typeof drafts): string => xs.map((t) => `${t.name}（${t.site}）`).join("、");
+  const writes = drafts.filter((t) => isWriteAction(t.file)), others = drafts.filter((t) => !isWriteAction(t.file));
+  if (others.length) out.line(`还没跑通的草稿（@status draft）：${list(others)}；deft run <名字> 真跑成功就晋升 verified`);
+  if (writes.length) out.line(`写操作的草稿（等第一次真用）：${list(writes)}；--dry 不晋升，用户真要做这件事时跑成功就晋升，不用为了晋升去真发`);
   out.line(`目录：学习窗口 ${path.join(ctx.log.root, "learn-windows")}，run 窗口 ${path.join(ctx.log.root, "run-windows")}，知识 ${ctx.log.dir}（每个站点：endpoints.json、actions/），跨站点的组合 ${composeDirOf(ctx)}`);
 }
 

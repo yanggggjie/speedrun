@@ -79,7 +79,7 @@ export class ActionRunner {
       if (out.status === "failure" && !nested && !composed) {
         const page = await this.host.failureShot(session, this.windows.failureFile(key));
         if (page) out.page = page;
-        if (looksLoggedOut(out.error, page?.url)) out.hint = "像是登录失效：用读图片的方式看 page.screenshot；确认是登录页就请用户在 Chrome 里登录后重跑同一条命令，不要重新学习、不要改 action。";
+        if (looksLoggedOut(out.error, page?.url)) out.hint = "像是登录失效：用读图片的方式看 page.screenshot。点一下就能登录的（快速登录、使用此账号继续），用 deft learn --url <这个页面> 打开学习窗口点登录，确认登进去后重跑同一条命令；要账号密码、二维码、验证码的请用户在 Chrome 里登录后重跑。不要重新学习、不要改 action。";
         else if (page?.screenshot) out.hint = "看 page.screenshot 判断页面停在了哪；页面正常但 action 失败，才是 action 坏了。";
       }
       if (out.status === "success" && !session.dry && !composed && summary.status === "draft") session.draftsOk.push(file);

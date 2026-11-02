@@ -51,4 +51,24 @@ assert.match(d.dryLog[0]!, /"text":"hi"/);
 await dryHost.op(d, "request", { url: "https://api.example.com/v1/list", method: "POST", json: { page: 1 }, readOnly: true });
 assert.equal(sent.length, 3, "试运行里标了 readOnly 的查询 POST 照常发");
 assert.equal(d.dryLog.length, 1);
+
+// waitRequest：只拿登记之后、本窗口里方法和接口对得上的那一个；别的窗口、别的接口、登记之前的都不算（拿错了会静默返回错误的数据）
+let emit: (r: Record<string, unknown>) => void = () => {};
+const wHost = new RunHost({ link, win, ingest: { ...ingest, onRequest: (fn: typeof emit) => { emit = fn; return () => {}; } }, raw } as never);
+const w = new Session("w-20261102-120000");
+const req = (win: string, method: string, url: string, body: string) => ({ seq: 1, win, tab: 1, method, url, endpoint: `${method} ${new URL(url).pathname}`, status: 200, body });
+emit(req(w.key, "POST", "https://a.com/api/list", "登记之前的"));
+const { id } = await wHost.op(w, "waitStart", { endpoint: "POST /api/list" }) as { id: number };
+emit(req("other-window", "POST", "https://a.com/api/list", "别的窗口的"));
+emit(req(w.key, "GET", "https://a.com/api/list", "方法不对"));
+emit(req(w.key, "POST", "https://a.com/api/other", "接口不对"));
+emit(req(w.key, "POST", "https://a.com/api/list?x=1", "要的这个"));
+emit(req(w.key, "POST", "https://a.com/api/list", "之后的"));
+assert.equal((await wHost.op(w, "waitEnd", { id }) as { text: string }).text, "要的这个");
+const { id: id2 } = await wHost.op(w, "waitStart", { endpoint: "GET /api/items/:id" }) as { id: number };
+emit(req(w.key, "GET", "https://a.com/api/items/42", "带 id 的"));
+assert.equal((await wHost.op(w, "waitEnd", { id: id2 }) as { text: string }).text, "带 id 的", ":id 匹配一段");
+const { id: id3 } = await wHost.op(w, "waitStart", { endpoint: "POST /api/none" }) as { id: number };
+emit(req(w.key, "POST", "https://a.com/api/x", ""));
+await assert.rejects(wHost.op(w, "waitEnd", { id: id3, timeout: 50 }), /没等到 POST \/api\/none.*POST \/api\/x/, "超时报错并列出实际发出的请求");
 console.log("host selfcheck ok");

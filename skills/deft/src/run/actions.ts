@@ -241,6 +241,11 @@ export function draftActions(sitesDir: string): ActionSummary[] {
   return listActions(sitesDir).filter((t) => t.status === "draft");
 }
 
+/** 写操作的草稿：@summary 或 @note 写明「有副作用」或「写操作」。--dry 不晋升，它们等第一次真用时跑成功才晋升，不算没学会。 */
+export function isWriteAction(file: string): boolean {
+  return headerTags(fs.readFileSync(file, "utf8")).some(([k, v]) => (k === "summary" || k === "note") && /有副作用|写操作/.test(v));
+}
+
 /** 这次布局的标记：日志按窗口存（learn-windows/、run-windows/），跨站点的组合在 compose/。写在 sites/.layout 里。 */
 export const LAYOUT = "windows-1";
 

@@ -60,7 +60,7 @@ export class LearnWindows {
   use(id: string): LearnWindow | { error: string } {
     const w = this.get(id);
     if (!w) return { error: `没有学习窗口 ${id}：deft learn 列出有哪些，或 deft learn --url <链接|tab 号> --description "…" 开一个` };
-    if (w.ops >= LEARN_MAX_OPS) return { error: `学习窗口 ${id} 的页面操作用完了（${LEARN_MAX_OPS} 次）：需要登录就请用户在 Chrome 里登录；学不会的 action 在文件头写 @status blocked 和 @note` };
+    if (w.ops >= LEARN_MAX_OPS) return { error: `学习窗口 ${id} 的页面操作用完了（${LEARN_MAX_OPS} 次）：卡在登录页：点一下能登录的自己点，要账号密码、二维码的请用户登录；学不会的 action 在文件头写 @status blocked 和 @note` };
     w.ops++;
     w.lastActive = Date.now();
     return w;

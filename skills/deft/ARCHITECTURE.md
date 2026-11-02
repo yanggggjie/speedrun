@@ -6,7 +6,7 @@ Deft 的目标、角色分工和运行时架构。agent 怎么用见 `SKILL.md`�
 
 一句话：**超快的、用已登录 Chrome 的 skill；在一个持续的学习窗口里探索、学会 action，再在用完即关的 run 窗口里交付。**
 
-- **用户只做两件事**：说要做什么（可以给链接，或说"我的某某页面"），以及页面要登录时登录。其余全靠 agent 自己探索，没有用户示范。agent 干活在单独的 `deft agent` 窗口里，不打扰用户的窗口和标签页。
+- **用户只做两件事**：说要做什么（可以给链接，或说"我的某某页面"），以及要输入账号密码、扫码的登录（点一下就能登录的 agent 自己点）。其余全靠 agent 自己探索，没有用户示范。agent 干活在单独的 `deft agent` 窗口里，不打扰用户的窗口和标签页。
 - **只录 agent 自己的窗口**（学习窗口和 run 窗口）。用户很久以前、或不是 agent 做的操作，agent 不知道请求的来源和意图；agent 自己做一次、学自己做出来的请求才准。要了解用户手上的页面，就在学习窗口里重新打开它的地址，从加载开始录。
 - **录制的用途**：① 拿到接口信息，用接口大幅提速；② 接口无法重放时，给 DOM 操作提供依据（持久定位、该步之后出现了哪个请求）；③ 作为请求头的来源（`request` 继承 agent 窗口里同站点页面最近的请求头）；④ run 出问题时反查。
 
@@ -40,7 +40,7 @@ deft learn --url <链接|tab 号> --description "要做的事"  → 句柄
   页面操作（截图加坐标）→ 自动附带观察：上次以来的页面状态、导航、请求（★ 写请求）、依赖
   observe：晚到的请求；replay：在当前页面重发、试参数
   写 action 文件（@status draft），一个窗口里学完所有要学的
-  要登录：停下来请用户登录，再继续
+  要登录：点一下就能登录的自己点；要账号密码、扫码的停下来请用户登录，再继续
          ▼
 deft run --compose '代码' --name <名>：新开 run 窗口跑，跑完关；草稿真跑成功晋升 verified；引用回执
   有问题：回学习窗口排查，或对比两个窗口的 timeline.jsonl
@@ -66,7 +66,7 @@ deft learn <句柄> close（agent 决定）
 2. **观察按游标**（`journal/commands.ts` 的 `observe`，`journal/explore.ts`）：每个学习窗口记一个游标（日志编号）。观察返回游标之后这个窗口的全部变化，然后推进游标：页面状态（当前 URL、标题、窗口里的其他标签页）、导航（跳到别的站点时写明站点）、请求（非噪声、非静态资源、非周期性接口；含 GET；`describeRequest`：★ 写请求（`digest.ts` 的 `looksReadOnly` 判断）、`方法 接口名`、状态、内容类型、有没有响应体、请求文件名、接口以前的业务含义）、请求之间的依赖（`dependencies`：后一个请求的查询参数或请求体里长度 ≥ 6 的值等于前一个响应里的值）、编号范围；折叠掉的噪声、轮询、静态资源给个数。页面操作（`open` / `click` / `type` / `key` / `scroll` / `replay`）执行完等页面稳定，自动附带一次观察；单独的 `observe` 拿晚到的请求，`--since <编号>` 重看不推进。"这一步之后发生了什么"以两次观察之间为准，不靠 `cause` 猜。
 3. **写请求由 agent 判断**：学习窗口里页面发什么就真的发什么，不拦。SKILL 和学习指引写明标准：轻量可撤销的直接做；删除、支付、下单、发布或发给别人、改设置、不可撤销的先问用户。`replay` 重发非 GET 要 `--yes`。
 4. **组合只能调用 action**：`run --compose` 和 `@compose` 的 action 的会话被标为 compose-only，任何页面操作（包括 `import` SDK 后调用）都被 host 拒绝。组合可以调用草稿。
-5. **草稿在 run 里晋升**（`journal/commands.ts` 的 `finishRun`）：`run` 能跑草稿；这次真跑（非 `--dry`）成功、执行过且成功的学出来的草稿晋升 verified，输出列出。多行 `@endpoint` 要按顺序出现在这次 run 窗口发出的请求里（`missingInSequence`），否则那个草稿不晋升并说明。`--dry` 只打印要发的写请求，不真发、不晋升；GET、HEAD 和 `request()` 标了 `readOnly` 的照常发（`run/host.ts`）。
+5. **草稿在 run 里晋升**（`journal/commands.ts` 的 `finishRun`）：`run` 能跑草稿；这次真跑（非 `--dry`）成功、执行过且成功的学出来的草稿晋升 verified，输出列出。多行 `@endpoint` 要按顺序出现在这次 run 窗口发出的请求里（`missingInSequence`），否则那个草稿不晋升并说明。`--dry` 只打印要发的写请求，不真发、不晋升，写操作的草稿（`@summary` 或 `@note` 写明「有副作用」「写操作」）就等第一次真用时晋升，`status` 把它们单独列出；GET、HEAD 和 `request()` 标了 `readOnly` 的照常发（`run/host.ts`）。
 6. action 头写 `@endpoint 方法 接口名`（可多行，和 `endpoints.json` 里的 `key` 一致）：聚合文件把 action 覆盖的接口标上 `action`，为 `null` 的就是还没学会的。`@status` 有 `draft`、`verified`、`blocked` 三种，`blocked` 是确认学不会的记录（原因在 `@note`），`run` 拒绝。agent 自己改文件头：学不会改成 blocked；verified 的坏了改回 draft，回学习窗口修。
 7. **`--description`：意图沉淀成业务知识**（和 Claude Code 的 Bash 工具的 `description` 同名同用法）：打开学习窗口、页面操作、`replay`、`run` 必须带一句"用用户的话说这一步要做什么"，没带就拒绝（不占操作次数）。存在 agent 本来就读的地方：时间线 cmd 行的 `description`（它引发的请求经 `cause` 继承）；`endpoints.json` 每个接口的 `descriptions`（引发它的操作、重放它、跑覆盖它的 action 时带的，只收成功的，最近 5 句，`journal/endpoints.ts` 的 `observe` / `describe`）；组合文件的头。观察列请求时附上接口以前的 description。学出来的 action 文件不自动改。
 8. **组合自动存留**（`run/actions.ts` 的 `composeTarget`、`saveComposed`）：`deft run --compose '代码' --description "…" [--name 名字] [--参数 值]`，代码里 `action("名字", 参数)` 调用 action，参数以 `deft.params.名字` 读到。成功的代码存成组合实现的 action：有 `--name` 时，用到的 action 都在同一个站点就放那个站点的 `actions/`，否则放 `~/.deft/compose/`（同名的学出来的 action 拒绝）；没名字按代码哈希前 12 位放 `~/.deft/compose/`（只留最近 200 个，起名后删掉哈希版本）。头由 Deft 填（`// 描述`、`@description` 最多 5 句、`@compose` 从 `action("名字")` 解析、`@params` 从 `deft.params.名字` 解析、`@ok` 次数和最近时间），代码原样；按名字 `run` 成功也累加 description 和次数；失败的不存（日志在 run 窗口目录里）。
@@ -139,8 +139,8 @@ CLI（argv→RPC→打印） ──socket──▶ holder（唯一的大脑） �
 
 - **agent 窗口**（`run/window.ts`）：key 就是窗口名（学习窗口的句柄、run 窗口的名字），一个 key 一个浏览器窗口，各自的页面在自己窗口的前台（浏览器不渲染后台标签页）。窗口的第一个标签页是扩展的 anchor 页（标题 `deft agent`）。其余标签页按 origin（协议加主机加端口，只在执行层用：保证请求和页面同源）在**单个窗口内**池化：`acquire(origin, key)` 复用这个窗口里同站点空闲的标签页，没有就开 `origin/robots.txt`（很轻，页面脚本就位）；空闲 30 分钟关闭。`dispose(key)` 关掉整个窗口（run 跑完、学习窗口 close 或空闲）。key 到窗口的映射只在内存里：holder 重启（或扩展链路重连）一切归零，留下的窗口都是孤儿，第一次用窗口时全部关掉；学习窗口之后按需从 `meta.json` 里的 URL 重开。
 - **学习窗口的页面**：`ctx.sessions` 按句柄存当前的 `Session`（绑定的标签页），页面操作、`screenshot`、`replay` 都用它；`ensureOpen` 发现 Chrome 窗口没开就新建 `Session` 并 `goto` 上次的 URL。
-- **RunHost**（`run/host.ts`）：goto、request、act、pointer、screenshot、waitFor、text、query、eval，每个都写一行 `cmd` 记录（`request` 的 `detail.endpoint` 是它发的接口，晋升时据此检查多行 `@endpoint`）。`request` 默认继承 holder 内存里同站点最近一个带身份头（authorization、csrf、x-*）的原始请求的请求头；内存里没有（holder 重启过、页面还没发过请求）时，自动打开该站点首页让页面自己发请求，每个站点只试一次，仍没有再按需报错。`inheritFrom: "/接口路径"`（`:id` 匹配一段）只从这个接口最近一次的原始请求继承：签名和接口绑定的站点（知乎 `x-zse-96`）继承别的接口的签名会被拒；没有就报错，让 action 先 `goto` 会发它的页面。
-- **ActionRunner**（`run/runner.ts`）：学出来的 action 脚本在 worker 线程里运行（`action-lib/index.js` 同步到 `~/.deft/lib`），SDK 的每个函数是向 holder 发一个操作；组合实现（`run --compose` 的代码和 `@compose` 的文件）包成一个注入了 `action()` 的模块再跑（临时文件在 `~/.deft/session/`），会话标为 compose-only。最外层的 `runAction` / `runCompose` 经 `RunWindows`（holder 里接到 `AgentWindows` 和 `WindowLog`）开一个 run 窗口，结束时关掉；嵌套调用共用这次的窗口和页面状态。整体超时 115 秒（`@timeout` 可改）。真跑成功的草稿收集在 `Session.draftsOk`，交给命令层晋升。`run` 失败（非嵌套、非组合）时，如果 run 窗口里有页面，输出带 `page`（URL、标题、截图 `run-windows/<名字>/screenshots/failure.*`）；页面像登录页或错误是 401/403 时带 `hint`（请用户登录后重跑，不要重新学习）。截图失败不影响原来的错误。
+- **RunHost**（`run/host.ts`）：goto、request、act、pointer、screenshot、waitFor、text、query、eval，每个都写一行 `cmd` 记录（`request` 的 `detail.endpoint` 是它发的接口，晋升时据此检查多行 `@endpoint`）。`request` 默认继承 holder 内存里同站点最近一个带身份头（authorization、csrf、x-*）的原始请求的请求头；内存里没有（holder 重启过、页面还没发过请求）时，自动打开该站点首页让页面自己发请求，每个站点只试一次，仍没有再按需报错。`inheritFrom: "/接口路径"`（`:id` 匹配一段）只从这个接口最近一次的原始请求继承：签名和接口绑定的站点（知乎 `x-zse-96`）继承别的接口的签名会被拒；没有就报错，让 action 先 `goto` 会发它的页面。`waitRequest`（SDK 分两步：`waitStart` 登记、执行触发动作、`waitEnd` 取结果）等页面自己发出的请求：`Ingestor.onRequest` 在收录请求时把原始响应交给 host，只匹配登记之后、同一个 agent 窗口（学习窗口句柄或 run 窗口名字）里方法和接口对得上的第一个；超时列出这段时间发出的请求，响应被录制截断的直接报错；session 结束时清掉没等完的。
+- **ActionRunner**（`run/runner.ts`）：学出来的 action 脚本在 worker 线程里运行（`action-lib/index.js` 同步到 `~/.deft/lib`），SDK 的每个函数是向 holder 发一个操作；组合实现（`run --compose` 的代码和 `@compose` 的文件）包成一个注入了 `action()` 的模块再跑（临时文件在 `~/.deft/session/`），会话标为 compose-only。最外层的 `runAction` / `runCompose` 经 `RunWindows`（holder 里接到 `AgentWindows` 和 `WindowLog`）开一个 run 窗口，结束时关掉；嵌套调用共用这次的窗口和页面状态。整体超时 115 秒（`@timeout` 可改）。真跑成功的草稿收集在 `Session.draftsOk`，交给命令层晋升。`run` 失败（非嵌套、非组合）时，如果 run 窗口里有页面，输出带 `page`（URL、标题、截图 `run-windows/<名字>/screenshots/failure.*`）；页面像登录页或错误是 401/403 时带 `hint`（一点就能登录的 agent 在学习窗口里自己点，要账号密码、扫码的请用户登录，然后重跑，不要重新学习）。run 成功与否只看 action 有没有正确完成任务，不看最后停在什么页面。截图失败不影响原来的错误。
 - 学出来的 action 是 `~/.deft/sites/<站点>/actions/<名字>.js`，从 `../../../lib/index.js` 引用 SDK；组合实现在站点的 `actions/` 或 `~/.deft/compose/`（`run/actions.ts`）。名字全局唯一，`deft run <名字>` 先找各站点的 `actions/`，再找 `~/.deft/compose/`。学出来的文件头 `@summary`、`@status draft|verified|blocked`、`@endpoint 方法 接口名`（可多行）、`@param 名字? 说明`、`@timeout`、`@note`（经验：签名、风控、踩过的坑，一行一条）。参数一律具名 `--名字 值`，学出来的 action 缺必填或传了没声明的参数直接报错，`answer`、`resume` 不能当参数名；组合实现不检查。
 
 ### 重放（learn <句柄> replay）

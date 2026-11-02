@@ -6,7 +6,7 @@ description: >-
 
 # Deft
 
-用户在自己的 Chrome 里浏览，你在单独的 `deft agent` 窗口里替用户做事，用的是同一份登录态。**Deft 只录 agent 自己的窗口**（请求、操作、页面），不录、不碰用户的窗口；用户只负责说要做什么（可以给链接，或说"我的某某页面"），以及页面要登录时登录。其余全靠你自己探索。
+用户在自己的 Chrome 里浏览，你在单独的 `deft agent` 窗口里替用户做事，用的是同一份登录态。**Deft 只录 agent 自己的窗口**（请求、操作、页面），不录、不碰用户的窗口；用户只负责说要做什么（可以给链接，或说"我的某某页面"），以及要输入账号密码、扫码的登录。其余全靠你自己探索（点一下就能登录的你自己点）。
 
 命令入口 `~/.deft/bin/deft`（在 PATH 中直接用 `deft`）。所有命令的第一行是结论；失败是 `{ "status": "failure", "error": ... }` 且退出码非零；`need-install` / `need-chrome` / `need-extension` 按 `~/.deft/ARCHITECTURE.md` 第 10 节处理，对用户只说一句话，等回复后重跑同一条命令。
 
@@ -39,7 +39,7 @@ description: >-
 2. **有 action 先用 action。** 不管什么任务，先找已有的 action。
 3. **先拆分，通用操作只学一次。** 学之前把事情拆成 action；同一种操作作用在不同对象上就是通用操作，只在最容易的那个对象上学。
 4. **探索即写 action。** 探索的唯一产物是 action，不是答案；在学习窗口里看到的东西不能直接交给用户。
-5. **network 优先，DOM 兜底。** 请求读不了响应体（流式、二进制）时，DOM 是正当的结果，不是失败。
+5. **network 优先，DOM 兜底。** `request()` 复现不了的（签名、页面拼的请求体），用 `waitRequest` 让页面自己发、拿它的响应；请求读不了响应体（流式、二进制）时，DOM 是正当的结果，不是失败。
 6. **成本顺序：** 读文件 < `replay` < 一次页面操作（截图加坐标）< 继续探索。
 7. **写请求你判断严重程度。** 学习窗口里页面发什么就真的发什么：点赞、收藏这类轻量可撤销的直接做；删除、支付、下单、发布或发给别人、改设置、不可撤销的先问用户。
 8. **只录 agent 的窗口。** 用户的窗口和标签页不录、不碰，只读标签页列表（地址、标题）；要看用户手上的页面，就在学习窗口里重新打开它。
@@ -54,8 +54,8 @@ description: >-
    - 探索：`deft learn <句柄> screenshot`、`click <x> <y>`、`type`、`key`、`scroll`、`open`。页面操作执行完**自动附带一次观察**：上次观察以来的页面状态、导航、请求（★ 是写请求，带请求文件名）、请求之间的依赖（"#813 用了 #812 响应的 data.token"），外加一行可贴进 action 的代码。请求晚到就等一会儿 `deft learn <句柄> observe`，只给新东西，不漏不重。
    - 验证：看到要的请求就读它的请求文件，`deft learn <句柄> replay <编号> --set 名字=值` 在当前页面重发、试参数（通用操作换一个对象验证一次）。非 GET 要 `--yes`。replay 和 action 里的 `request()` 走同一条路径，输出写明请求头继承自哪里、**身份头来源**、签名和参数对不上的提示，以及一行可贴进 action 的 `request(...)`（带 `auth`）。`--raw` 只用来排查。replay 成功后写进草稿、马上 run，以 run 为准。
    - 写 action：直接写 `~/.deft/sites/<站点>/actions/<名字>.js`，文件头 `@status draft`。学完一个接着学下一个。
-   - 中途要登录就停下来请用户在 Chrome 里登录，再继续。
-4. **交付**：`deft run --compose '代码' --description "…" --name <名字> --参数 值`（或单个 `deft run <名字>`），在新的 run 窗口里跑，跑完窗口就关。草稿真跑成功就晋升 verified（多行 `@endpoint` 要按顺序发出）。写操作可以先 `--dry`：只打印要发的写请求，不真发、不晋升；GET 和 `request()` 里标了 `readOnly: true` 的查询 POST 照常发（写操作的 action 先读状态要靠它）。最终回复引用回执。学习时真发过的写操作要告诉用户。
+   - 遇到登录页：点一下就能登录的（「快速登录」「检测到当前已登录账号」「使用此账号继续」）你自己点，先截图确认只要点一下，点完截图确认登进去了；要输入账号密码、扫二维码、收验证码的停下来请用户在 Chrome 里登录，再继续。登录态整个 Chrome 共用。
+4. **交付**：`deft run --compose '代码' --description "…" --name <名字> --参数 值`（或单个 `deft run <名字>`），在新的 run 窗口里跑，跑完窗口就关。草稿真跑成功就晋升 verified（多行 `@endpoint` 要按顺序发出）。写操作可以先 `--dry`：只打印要发的写请求，不真发、不晋升；GET 和 `request()` 里标了 `readOnly: true` 的查询 POST 照常发（写操作的 action 先读状态要靠它）。写操作的 action（`@summary` 写明「有副作用」）`--dry` 通过后就先保持草稿，等用户第一次真要做这件事时跑成功再晋升，不要为了晋升去真发。最终回复引用回执。学习时真发过的写操作要告诉用户。
    - **中途要你判断**（挑出"硬核技术"的回答、选哪一条）：在组合里写 `const picked = await deft.ask("问题", 数据)`，先在代码里把数据裁到判断要用的字段。run 停下输出 `{ "status": "ask", "resume": "AS-…", "question", "data" }`，你判断后 `deft run --resume <编号> --answer '<json>'` 继续，前面已执行的 action 不会重跑。存下来的组合下次照样停在这里问。
 5. **排查**：run 出问题，回到学习窗口继续观察、重放；或者对比学习窗口和 run 窗口目录里的 `timeline.jsonl` 找原因（run 窗口每次从空白开始：页面实现的 action 要自己 `goto` 起点），改了再 run。学不会：把文件头改成 `@status blocked`，`@note` 写原因和证据。verified 的坏了：改回 `@status draft`，`@note` 写原因，回来修。
 6. **收尾**：事情做完由你决定 `deft learn <句柄> close`（关掉 Chrome 窗口，句柄和目录保留）。
@@ -141,9 +141,9 @@ description: >-
 
 **`--description`**：打开学习窗口、页面操作、`replay`、`run` 都必须带，和 Bash 工具的 description 一样，一句话：**用用户的话说这一步要做什么**（业务含义）。好："点开变更单 10912 里的 MR 573"、"查 yanggggjie 发布的变更单"；不好："click 410 421"、"GET 请求"。Deft 把它存进时间线和 `endpoints.json` 的 `descriptions`、组合的文件头，下次就靠它找到、看懂这些接口和做法。
 
-**写代码**（action 和组合一样）：变化的值用 `deft.params.名字 ?? 默认值`，下次直接换参数复用；返回字段用页面上的词命名（`{ 操作人: o.updateRtx, 发布人: o.info.operator }`）。学出来的 action 里嵌套调用别的 action 用 `deft.action(名字, 参数)`。`request` 默认继承同站最近一个带身份头的请求的请求头；签名和接口绑定的站点用 `inheritFrom: "/接口路径"` 只从那个接口继承（先 `goto` 会发它的页面），签名还和完整 URL 绑定的就改页面实现。身份头说清来源：`auth: { "x-xsrftoken": "cookie:_xsrf", authorization: "Bearer local:token.access" }`（`cookie:` `local:` `session:` `meta:` `from:/接口路径`），发送时在页面里现读，holder 重启也能用，取不到就报错；来源看观察和 replay 输出的"身份头来源"，也记在 `endpoints.json` 每个接口的 `auth`（带签名的标 `signed`）。run 窗口每次从空白开始：页面实现的 action 自己 `goto` 起点。`deft.ask(问题, 数据)` 只能写在最外层的组合里：组合里不要用时间、随机数决定调哪个 action（恢复时会核对，对不上就失败）；ask 之后第一个页面实现的 action 要自己打开页面。`answer`、`resume` 不能当参数名。
+**写代码**（action 和组合一样）：变化的值用 `deft.params.名字 ?? 默认值`，下次直接换参数复用；返回字段用页面上的词命名（`{ 操作人: o.updateRtx, 发布人: o.info.operator }`）。学出来的 action 里嵌套调用别的 action 用 `deft.action(名字, 参数)`。`request` 默认继承同站最近一个带身份头的请求的请求头；签名和接口绑定的站点用 `inheritFrom: "/接口路径"` 只从那个接口继承（先 `goto` 会发它的页面），签名还和完整 URL 绑定、或请求体由页面拼出来的，用 `waitRequest(page, "POST /接口路径", () => goto(page, 带参数的页面地址))` 让页面自己发、拿它的响应（只等触发之后这个窗口里的第一个匹配请求，超时会列出实际发出了哪些；触发动作是真的页面操作，`--dry` 也照发，别用它触发写操作）；页面也不发请求的再改页面实现。身份头说清来源：`auth: { "x-xsrftoken": "cookie:_xsrf", authorization: "Bearer local:token.access" }`（`cookie:` `local:` `session:` `meta:` `from:/接口路径`），发送时在页面里现读，holder 重启也能用，取不到就报错；来源看观察和 replay 输出的"身份头来源"，也记在 `endpoints.json` 每个接口的 `auth`（带签名的标 `signed`）。run 窗口每次从空白开始：页面实现的 action 自己 `goto` 起点。`deft.ask(问题, 数据)` 只能写在最外层的组合里：组合里不要用时间、随机数决定调哪个 action（恢复时会核对，对不上就失败）；ask 之后第一个页面实现的 action 要自己打开页面。`answer`、`resume` 不能当参数名。
 
-action 失败时输出里有 `page`（URL、标题、`screenshot` 截图文件，用读图片的方式看）和 `hint`；先判断是不是登录失效（401/403、停在登录页），是就请用户在 Chrome 里重新登录后重跑，不要重新学习。同一个失败没有新证据不要重试；确实坏了回学习窗口修。
+action 失败时输出里有 `page`（URL、标题、`screenshot` 截图文件，用读图片的方式看）和 `hint`；先判断是不是登录失效（401/403、停在登录页），是就按上面的办法登录（一点就能登录的用 `deft learn --url <那个页面>` 自己点，要账号密码、二维码的请用户登录），再重跑同一条命令，不要重新学习。run 成功与否只看 action 有没有正确完成任务，不看最后停在什么页面：读页面内容的 action 要自己检查拿到的是目标内容。同一个失败没有新证据不要重试；确实坏了回学习窗口修。
 
 ## 5. 常用脚本
 
@@ -178,7 +178,7 @@ for d in ~/.deft/learn-windows/x.com-20261101-130245 ~/.deft/run-windows/x-searc
 
 ## 6. 对用户
 
-只说明要做的操作、需要用户做的（登录、确认删除这类写操作）和最终结果；不暴露 action、学习窗口、回执这些内部结构（回执只写在回复末尾一行）。
+只说明要做的操作、需要用户做的（输入账号密码、扫码登录，确认删除这类写操作）和最终结果；不暴露 action、学习窗口、回执这些内部结构（回执只写在回复末尾一行）。
 
 ## 7. 遇到问题
 

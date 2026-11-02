@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionLink } from "../browser/extension.ts";
-import type { Ingestor } from "../journal/ingest.ts";
+import type { Ingestor, SeenRequest } from "../journal/ingest.ts";
 import type { RawEntry, RawStore } from "../journal/raw.ts";
 import type { AuthSnapshot } from "../journal/auth.ts";
 import { VOLATILE } from "../journal/replay.ts";
@@ -36,6 +36,10 @@ export type RequestSource = { inheritedFrom?: { method: string; endpoint: string
 /** run 失败时的页面现场。 */
 export type FailurePage = { url: string; title: string; screenshot?: string };
 
+type Wait = { key: string; method: string; path: string; pattern: RegExp; others: string[]; hit?: SeenRequest; resolve?: (r: SeenRequest | undefined) => void };
+const WAIT_REQUEST_MS = 15_000;
+const pathOf = (url: string): string => { try { return new URL(url).pathname; } catch { return url.split("?")[0]!; } };
+
 export type HostDeps = { link: Pick<ExtensionLink, "request">; win: AgentWindows; ingest: Ingestor; raw: RawStore };
 
 /** 请求头里带身份信息的那些：继承页面自己的请求头时优先挑带这些的请求。 */
@@ -55,7 +59,23 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 export class RunHost {
   private readonly d: HostDeps;
   private readonly byTab = new Map<number, Session>();
-  constructor(deps: HostDeps) { this.d = deps; }
+  /** waitRequest 登记的等待：只收登记之后、这个 agent 窗口里发出的请求。 */
+  private readonly waits = new Map<number, Wait>();
+  private nextWait = 1;
+  constructor(deps: HostDeps) {
+    this.d = deps;
+    deps.ingest.onRequest?.((r) => this.seen(r));
+  }
+
+  private seen(r: SeenRequest): void {
+    for (const w of this.waits.values()) {
+      if (w.key !== r.win) continue;
+      if (!r.noise) w.others.push(r.endpoint); // 超时时列给 agent 看的，埋点广告不列
+      if (w.hit || r.method !== w.method || !(r.endpoint === `${w.method} ${w.path}` || w.pattern.test(pathOf(r.url)))) continue;
+      w.hit = r;
+      w.resolve?.(r);
+    }
+  }
 
   /** 把 session 绑到 origin 的标签页：已经是就复用，否则还回去再拿一个（池里有同站点空闲的就直接用）。 */
   async bind(s: Session, origin: string): Promise<number> {
@@ -89,6 +109,7 @@ export class RunHost {
   }
 
   async end(s: Session): Promise<void> {
+    for (const [id, w] of this.waits) if (w.key === s.key) this.waits.delete(id); // action 中途失败没等完的
     if (s.tab !== undefined) this.d.win.release(s.tab);
     s.tab = undefined;
     s.origin = undefined;
@@ -137,8 +158,41 @@ export class RunHost {
       case "waitFor": return this.waitFor(s, a);
       case "text": { const tab = this.page(s); return this.callTab(tab, "text", [a.max ?? 20_000]); }
       case "query": { const tab = this.page(s); return this.callTab(tab, "query", [a]); }
+      case "waitStart": return this.waitStart(s, a);
+      case "waitEnd": return this.waitEnd(s, a);
+      case "waitCancel": { this.waits.delete(Number(a.id)); return {}; }
       case "eval": { const tab = this.page(s); return this.log(tab, "eval", String(a.src).slice(0, 60), { src: String(a.src).slice(0, 2000) }, () => this.callTab(tab, "eval", [a])); }
       default: throw new Error(`未知操作 ${name}`);
+    }
+  }
+
+  /** 登记要等的请求（"POST /api/list"，:id 匹配一段），返回编号；之后的触发动作引发的请求才算。 */
+  private waitStart(s: Session, a: { endpoint: string }): { id: number } {
+    const m = /^\s*([A-Za-z]+)\s+(\S+)\s*$/.exec(String(a.endpoint ?? ""));
+    if (!m) throw new Error(`waitRequest 的接口要写成「方法 路径」，如 "POST /api/list"，收到：${a.endpoint}`);
+    const method = m[1]!.toUpperCase(), path = m[2]!.split("?")[0]!;
+    const pattern = new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/:id/g, "[^/]+")}$`);
+    const id = this.nextWait++;
+    this.waits.set(id, { key: s.key, method, path, pattern, others: [] });
+    return { id };
+  }
+
+  /** 等登记的请求出现，返回它的原始响应；超时报错并列出这段时间发出了哪些请求。 */
+  private async waitEnd(s: Session, a: { id: number; timeout?: number }): Promise<unknown> {
+    const w = this.waits.get(Number(a.id));
+    if (!w || w.key !== s.key) throw new Error("waitRequest 的等待已经失效");
+    const ms = a.timeout ?? WAIT_REQUEST_MS;
+    try {
+      const r = w.hit ?? await new Promise<SeenRequest | undefined>((resolve) => { w.resolve = resolve; setTimeout(() => resolve(undefined), ms); });
+      if (!r) {
+        const seen = [...new Set(w.others)].slice(0, 15);
+        throw new Error(`等了 ${Math.round(ms / 1000)} 秒没等到 ${w.method} ${w.path}：触发动作之后页面${seen.length ? `发出了 ${seen.join("、")}` : "没有发出请求"}`);
+      }
+      if (r.error) throw new Error(`${r.endpoint} 请求失败：${r.error}`);
+      if (r.truncated) throw new Error(`${r.endpoint} 的响应太大，录制时被截断了，拿不到完整内容：换成 request()，或缩小查询范围`);
+      return { status: r.status ?? 0, text: r.body ?? "", ct: r.ct ?? "", url: r.url, requestBody: r.reqBody ?? null, seq: r.seq };
+    } finally {
+      this.waits.delete(Number(a.id));
     }
   }
 
