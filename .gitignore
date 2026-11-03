@@ -1,5 +1,5 @@
 # 运行时 / 本地数据
-.deft/
+.lore/
 *.har
 node_modules/
 dist/

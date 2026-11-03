@@ -1,5 +1,5 @@
 // 分发烟测：导出 git 认的 skill 文件，用 `skills add --copy` 装进隔离 HOME，再从安装位跑 setup（镜像 + npm install）+ doctor，
-// 断言 ~/.deft 是 skill 目录的逐字节镜像、本机数据没被碰。
+// 断言 ~/.lore 是 skill 目录的逐字节镜像、本机数据没被碰。
 // 用法：npm run verify:pack
 import * as assert from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { exportPayload } from "./export-payload.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "deft-pack-"));
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pack-"));
 const env = { ...process.env, HOME, USERPROFILE: HOME };
 
 function findSkillDir() {
@@ -26,7 +26,7 @@ function findSkillDir() {
     for (const e of ents) {
       if (!e.isDirectory()) continue;
       const p = path.join(d, e.name);
-      if (e.name === "deft" && path.basename(d) === "skills") hits.push(p);
+      if (e.name === "lore" && path.basename(d) === "skills") hits.push(p);
       else walk(p, depth + 1);
     }
   };
@@ -40,19 +40,19 @@ try {
   exportPayload(REPO, exported);
   execFileSync(
     "npx",
-    ["-y", "skills@latest", "add", exported, "-s", "deft", "--copy", "-g", "-a", "*", "-y"],
+    ["-y", "skills@latest", "add", exported, "-s", "lore", "--copy", "-g", "-a", "*", "-y"],
     { env, stdio: "ignore" },
   );
 
   const skillDir = findSkillDir();
-  assert.ok(skillDir, "skills add 后未找到已安装的 deft skill 目录");
+  assert.ok(skillDir, "skills add 后未找到已安装的 lore skill 目录");
 
   for (const rel of [
     "SKILL.md",
     "LICENSE",
     "setup.js",
-    "src/holder.ts",
-    "src/cli/deft.ts",
+    "src/daemon.ts",
+    "src/cli/lore.ts",
     "src/cli/shim.ts",
     "src/store/deploy.ts",
     "src/journal/ingest.ts",
@@ -72,7 +72,7 @@ try {
   }
 
   // 本机数据：镜像不能碰
-  const keep = path.join(HOME, ".deft", "sites", "x.com", "keep.txt");
+  const keep = path.join(HOME, ".lore", "sites", "x.com", "keep.txt");
   fs.mkdirSync(path.dirname(keep), { recursive: true });
   fs.writeFileSync(keep, "用户的日志\n");
 
@@ -81,19 +81,19 @@ try {
     encoding: "utf8",
   });
   assert.equal(setup.status, 0, `setup 失败：${setup.stderr || setup.stdout}`);
-  const dest = path.join(HOME, ".deft", "src");
-  assert.ok(fs.existsSync(path.join(dest, "holder.ts")), "~/.deft/src 未建好");
-  assert.equal(fs.readFileSync(keep, "utf8"), "用户的日志\n", "setup 不应动 ~/.deft/sites");
-  // ~/.deft 是 skill 目录的镜像：除 node_modules 和 .version（本机生成）外，每个文件内容都相同；自检、夹具、scripts、文档都在
+  const dest = path.join(HOME, ".lore", "src");
+  assert.ok(fs.existsSync(path.join(dest, "daemon.ts")), "~/.lore/src 未建好");
+  assert.equal(fs.readFileSync(keep, "utf8"), "用户的日志\n", "setup 不应动 ~/.lore/sites");
+  // ~/.lore 是 skill 目录的镜像：除 node_modules 和 .version（本机生成）外，每个文件内容都相同；自检、夹具、scripts、文档都在
   const listFiles = (dir, rel = "") => fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).flatMap((e) => {
     const r = path.join(rel, e.name);
     if (e.name === "node_modules") return [];
     return e.isDirectory() ? listFiles(dir, r) : [r];
   });
   for (const rel of listFiles(skillDir)) {
-    const mirrored = path.join(HOME, ".deft", rel);
-    assert.ok(fs.existsSync(mirrored), `~/.deft 缺 ${rel}`);
-    assert.ok(fs.readFileSync(mirrored).equals(fs.readFileSync(path.join(skillDir, rel))), `~/.deft/${rel} 与 skill 目录不同`);
+    const mirrored = path.join(HOME, ".lore", rel);
+    assert.ok(fs.existsSync(mirrored), `~/.lore 缺 ${rel}`);
+    assert.ok(fs.readFileSync(mirrored).equals(fs.readFileSync(path.join(skillDir, rel))), `~/.lore/${rel} 与 skill 目录不同`);
   }
   assert.ok(fs.existsSync(path.join(dest, "journal", "auth.selfcheck.ts")), "自检应随源码分发");
   const version = JSON.parse(fs.readFileSync(path.join(dest, ".version"), "utf8"));
@@ -112,12 +112,12 @@ try {
 
   const doctor = spawnSync(
     process.execPath,
-    [path.join(dest, "cli", "deft.ts"), "doctor"],
+    [path.join(dest, "cli", "lore.ts"), "doctor"],
     { env, encoding: "utf8" },
   );
   assert.equal(doctor.status, 0, `doctor 失败：${doctor.stderr || doctor.stdout}`);
 
-  console.log("[verify:pack] ok — payload 完整，~/.deft 是它的镜像，setup + npm install 可运行");
+  console.log("[verify:pack] ok — payload 完整，~/.lore 是它的镜像，setup + npm install 可运行");
 } finally {
   fs.rmSync(HOME, { recursive: true, force: true });
 }

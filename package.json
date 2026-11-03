@@ -1,12 +1,12 @@
 {
-  "name": "deft-skill-repo",
+  "name": "lore-skill-repo",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Dev harness for the deft skill; the shippable package lives in skills/deft/src.",
+  "description": "Dev harness for the lore skill; the shippable package lives in skills/lore/src.",
   "scripts": {
-    "check": "npm --prefix skills/deft/src run check",
-    "test": "npm --prefix skills/deft/src run test",
+    "check": "npm --prefix skills/lore/src run check",
+    "test": "npm --prefix skills/lore/src run test",
     "verify:pack": "node tools/verify-pack.mjs"
   },
   "engines": {

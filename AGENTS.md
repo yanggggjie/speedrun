@@ -1,1 +1,1 @@
-skills/deft/AGENTS.md
+skills/lore/AGENTS.md
