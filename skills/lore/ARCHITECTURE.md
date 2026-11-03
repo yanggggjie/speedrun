@@ -81,20 +81,21 @@ daemon 内部分四层，上层只依赖下层：
 
 ## 4. 扩展
 
-`src/chrome-extension/background.js` 没有业务逻辑，是一个固定 ABI 的管道；页面脚本是扩展包里的静态内容脚本（`page/`）。`manifest.json` 有固定的 `key`，扩展 ID 是 `dkjmgdhelenchaippejoppbcfbjfgppl`（和 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）；权限 `tabs`、`nativeMessaging`、`alarms`、`scripting`、`storage`、`debugger`、`<all_urls>`，Chrome 135 起，只支持 Chrome。
+`src/chrome-extension/background.js` 没有业务逻辑，是一个固定 ABI 的管道；页面脚本是扩展包里的静态内容脚本（`page/`）。`manifest.json` 有固定的 `key`，扩展 ID 是 `dkjmgdhelenchaippejoppbcfbjfgppl`（和 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）；权限 `tabs`、`tabGroups`、`nativeMessaging`、`alarms`、`scripting`、`storage`、`debugger`、`<all_urls>`，Chrome 135 起，只支持 Chrome。
 
-- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 13）：`call`（在页面 MAIN world 调 `window.__lore.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`history`（后退、前进）、`openWindow`、`openTab`、`activateTab`、`closeTab`、`closeWindow`、`screenshot`、`input`、`evaluate`、`reload`。帧是 4 字节小端长度加 UTF-8 JSON。
-- **CDP**（`cdp.js`，`chrome.debugger`）：lore 唯一的输入路径，learn 的 `computer` / `form_input` 和 action 的 `click` / `hover` / `key` / `scroll` / `form_input` 都走这里，发的是真实输入（`isTrusted` 为真）：鼠标 `mouseMoved → mousePressed → mouseReleased`（双击三击按 `clickCount`）、拖动分 10 步、滚轮 `mouseWheel`、按键 `dispatchKeyEvent`（键名表在 `keys.js`，扩展和自检共用；mac 上 cmd 组合键带 `commands`，如 `selectAll`）、输入文字每个 ASCII 字符 `rawKeyDown → insertText → keyUp`、中文只 `insertText`。截图是 `Page.captureScreenshot`（按 `1/devicePixelRatio` 缩，图上一个像素就是一个 CSS 像素，不用把标签页切到前台），`evaluate` 是 `Runtime.evaluate`（不受页面 CSP 限制）。只附着 agent 标签页：第一次要输入时附着，附着后开 `Emulation.setFocusEmulationEnabled`（后台窗口的输入也送得到）；同时附着同一个标签页的调用共用一次附着；每条命令 20 秒超时；附着断了（用户点掉「正在调试此浏览器」提示条）下一次自动重新附着；agent 窗口里开着 DevTools 时附着失败，报清楚的错。
-- **握手和自动重新加载**：`hello` 带 `abi` 和 `build`（`setup.js` 写进 `chrome-extension/build.js` 的版本）。和 daemon 的 ABI 不一致时不工作；扩展支持 `reload`（ABI ≥ 13）并且跑的不是磁盘上这一版（ABI 不同，或 `build` 和 `~/.lore/src/.version` 不同）时，daemon 让它 `chrome.runtime.reload()` 从磁盘重新加载、重连，`ensureExtension` 等它回来。不支持 `reload` 的旧版（ABI ≤ 12）：`ensureExtension` 开一个 anchor 页，anchor 页每次都从磁盘读，新版 `anchor.js` 问 background 是哪个 build，不一样（或旧 background 不回答）就 `chrome.runtime.reload()`；新代码跑在还没有 `debugger` 权限的旧 manifest 上时 `cdp.js` 也会自己重新加载。只有第一次加载要用户在 `chrome://extensions` 里操作。重新加载会关掉 agent 窗口里的 anchor 页，daemon 当作窗口关了，下次操作重开。
-- 页面消息：页面脚本 `postMessage` → `bridge.js` → `chrome.runtime.sendMessage` → 扩展补上 tab、frame 转给 daemon。每条带这次页面加载的编号 `d` 和递增序号 `n`（`page/common.js`），daemon 据此判断记录有没有送达。页面自己的脚本也能发，所以日志只是观察记录，不能当权限依据。
+- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 14）：`call`（在页面 MAIN world 调 `window.__lore.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`history`（后退、前进）、`openTab`、`closeTab`、`closeGroup`、`closeAllGroups`、`idleGroup`、`screenshot`、`input`、`evaluate`、`reload`。帧是 4 字节小端长度加 UTF-8 JSON。
+- **CDP**（`cdp.js`，`chrome.debugger`）：lore 唯一的输入路径，learn 的 `computer` / `form_input` 和 action 的 `click` / `hover` / `key` / `scroll` / `form_input` 都走这里，发的是真实输入（`isTrusted` 为真）：鼠标 `mouseMoved → mousePressed → mouseReleased`（双击三击按 `clickCount`）、拖动分 10 步、滚轮 `mouseWheel`、按键 `dispatchKeyEvent`（键名表在 `keys.js`，扩展和自检共用；mac 上 cmd 组合键带 `commands`，如 `selectAll`）、输入文字每个 ASCII 字符 `rawKeyDown → insertText → keyUp`、中文只 `insertText`。截图是 `Page.captureScreenshot`（按 `1/devicePixelRatio` 缩，图上一个像素就是一个 CSS 像素，不用把标签页切到前台），`evaluate` 是 `Runtime.evaluate`（不受页面 CSP 限制）。只附着 lore 的标签页：标签页一开出来就附着（`call`、`goto` 之前也确保附着），附着后开 `Emulation.setFocusEmulationEnabled`。附着同时是后台标签页的「渲染开关」：没附着的后台标签页不渲染（rAF、IntersectionObserver 都停），在折叠的组里约 3 秒后还会被 Chrome 冻结（冻结的页面里 `chrome.scripting` 一直挂着）；附着后页面以为自己可见、有焦点，照常渲染，冻结的立刻解冻。组闲置 20 秒（`GROUP_IDLE_MS`）就解除附着（`idleGroup`），不吃 CPU，没有附着时「正在调试此浏览器」的横幅也消失（横幅是浏览器级别的，附着期间所有窗口都显示）；同时附着同一个标签页的调用共用一次附着；每条命令 20 秒超时；附着断了（用户点掉「正在调试此浏览器」提示条）下一次自动重新附着；lore 的标签页开着 DevTools 时附着失败，报清楚的错。
+- **握手和自动重新加载**：`hello` 带 `abi` 和 `build`（`setup.js` 写进 `chrome-extension/build.js` 的版本）。和 daemon 的 ABI 不一致时不工作；扩展支持 `reload`（ABI ≥ 13）并且跑的不是磁盘上这一版（ABI 不同，或 `build` 和 `~/.lore/src/.version` 不同）时，daemon 让它 `chrome.runtime.reload()` 从磁盘重新加载、重连，`ensureExtension` 等它回来。新代码跑在还没有 `debugger` 权限的旧 manifest 上时 `cdp.js` 也会自己重新加载。只有第一次加载要用户在 `chrome://extensions` 里操作。
+- 页面消息：页面脚本 `postMessage` → `bridge.js` → `chrome.runtime.sendMessage` → 扩展补上 tab、group、frame 转给 daemon。每条带这次页面加载的编号 `d` 和递增序号 `n`（`page/common.js`），daemon 据此判断记录有没有送达。页面自己的脚本也能发，所以日志只是观察记录，不能当权限依据。
 - 连接：Chrome 拉起的 relay 无状态，只转发字节；断开后扩展指数退避重连（上限 30 秒），点工具栏图标立即重连。daemon 不随扩展刷新退出。
 
 ## 5. 页面脚本
 
 - `a11y.js` 是唯一的元素模型（做法来自 open-claude-in-chrome 的 content.js）：`role` / `name` 算法（`aria-label` > `aria-labelledby` > `placeholder` > `title` > `alt` > `<label>` > 按内容命名的元素的文字），a11y 树（`readPage`）、`findElements`、持久定位的生成（`locOf`）和解析（`find`、`resolveLoc`），以及把目标（ref、持久定位、坐标）变成视口坐标的 `point`：元素在视口外先滚到中央，报告这一点上真正收到点击的元素（被别的元素盖住时写出是谁）和落点提醒（落在页面背景、没有控件的 `<label>` 上，不自动纠正）。learn 里看到的 `role "name"` 和回放时解析 `{ role, name }` 用同一套算法。ref（`ref_N`，`common.js` 的 `refOf` / `byRef`，WeakRef 表）只在当前页面里有效，只给 learn 用；写进 action 的永远是持久定位。
 - `recorder.js` 只如实上报发生的事，不改变页面行为：HTML 文档、XHR、fetch（不录 WebSocket、`sendBeacon`、Worker、事件流）、导航、页面快照、渲染后的 DOM；不记输入事件（agent 的每一步操作由 daemon 记成 `cmd` 行）。`executor.js` 等页面安静、等元素、读 auth 来源、`query`、替 `request()` 发请求。页面脚本不发输入：输入都由扩展用 CDP 发。细节见各文件的注释。
-- **只录 agent 的标签页（两层，安全相关）**：① 扩展：agent 标签页是 lore 开的，以及被它们打开的（`openerTabId`；创建时是 `chrome://` 地址的 Cmd+T 新标签页不算），集合存在 `chrome.storage.session`。页面脚本在 `document_start` 装钩子、先缓存消息，`bridge.js` 问到「是 agent 标签页」才放行，否则清空缓存、之后一条都不发；`call`、补注入也只对 agent 标签页。② daemon：`Ingestor.handle` 按 `AgentWindows.winOf` 丢弃不属于 agent 窗口的一切，窗口没在 `WindowLog` 登记的也丢；扩展 ABI 不对时一条页面消息都不收。
-- agent 窗口里发生的一切都记为 `src: agent`，不区分是 agent 还是有人在那个窗口里动了一下。
+- **页面新开标签页由 lore 接管**（`newtab.js`，只在 lore 的标签页里生效）：页面在用户手势下自己新开标签页（点 `target=_blank`、cmd/ctrl/shift/中键点击、`window.open`），Chrome 会选中它、显示窗口、把 Chrome 拉到前台。所以页面脚本拦下这些（链接默认行为、`HTMLAnchorElement.prototype.click`、`window.open` 返回假窗口对象并接住后设的地址、`target=_blank` 的表单改在当前标签页提交），把地址发给扩展，扩展在同一个组里开（`openForPage`），时间线记一行 `tab` / `opened`。不拦：带窗口参数的 `window.open`（弹出窗口，如 OAuth 登录）、download 链接、非 http(s) 地址、指向页面里 iframe 的 target。代价：新标签页没有 `window.opener`、`Referer`、`sessionStorage`。漏掉的兜底：opener 是 lore 的新标签页收进组、被选中就还给用户，记 `tab` / `leaked`。判断逻辑的自检在 `browser/newtab.selfcheck.mjs`。
+- **只录 lore 的标签页（两层，安全相关）**：① 扩展：在 lore 的标签组里的标签页才是 lore 的（扩展只记哪些组是 lore 的，存在 `chrome.storage.session`；组属于哪个窗口由 daemon 记）。用户把标签页拖进组就是交给 lore，拖出去就收回（扩展经 `bridge.js` 告诉页面脚本开始或停止上报）。页面脚本在 `document_start` 装钩子、先缓存消息，`bridge.js` 问到「是 lore 的标签页」才放行，否则清空缓存、之后一条都不发；`call`、`input`、`evaluate`、补注入也只对 lore 的标签页。② daemon：`Ingestor.handle` 按 `AgentWindows.winOf` 丢弃不属于 lore 窗口的一切（页面消息带组号，按组号归到窗口），窗口没在 `WindowLog` 登记的也丢；扩展 ABI 不对时一条页面消息都不收。
+- lore 组里发生的一切都记为 `src: agent`，不区分是 agent 还是有人在那个组里动了一下。
 
 ## 6. 日志（`record/`）
 
@@ -134,7 +135,7 @@ daemon 内部分四层，上层只依赖下层：
 
 ## 7. 执行
 
-- **agent 窗口**（`browser/window.ts`）：一个窗口名一个 Chrome 窗口，第一个标签页是 anchor 页（标题 `lore agent`）；其余标签页在窗口内按 origin 池化，保证请求和页面同源。窗口名到 Chrome 窗口的映射只在内存里：daemon 重启后留下的都是孤儿，第一次用时全部关掉。
+- **lore 窗口**（`browser/window.ts`）：不是单独的 Chrome 窗口，而是用户窗口里 lore 的一个**标签组**（一个 learn 句柄或一次 run 一个组，始终折叠；learn 组标题 `lore·站点`，run 组 `lore▶名字`）。组建在用户最近用的普通窗口里，没有普通窗口时才开一个不抢焦点的窗口。lore 从不选中自己的标签页：新标签页先开成 `chrome://newtab/`（Tab Activate 这类把新标签页切到前台的扩展会跳过它），进组、附着调试器后再导航；刚开的标签页万一被别的扩展选中，扩展把选中还给用户之前的标签页。组内标签页按 origin 池化，保证请求和页面同源。窗口名到组号的映射只在内存里：daemon 重启后留下的组都是孤儿，第一次用时全部关掉（`closeAllGroups`，也按标题认出浏览器重启后恢复的 lore 组）。
 - **RunHost**（`browser/host.ts`）：action 的每个操作都在这里执行并写一行 `cmd`。三种实现方式按顺序选：`request` > `waitRequest` > DOM。
   - `request` 的请求头按顺序凑齐，尽量继承复用：① 浏览器自己带的（cookie）；② 从这次窗口里页面发过的同站请求抄（`copyHeaders`）：页面发过同一个 endpoint 就整组抄它最近一次的，否则按 `record/headers.ts` 的 `headerKinds` 只抄页面级不变的头，每次都变、按 endpoint 变的不跨 endpoint 抄，和它们同一族的（名字去掉最后一段相同，如 `x-zse-93` 和 `x-zse-96`）也不抄：只带签名族的一半会被拒；这次窗口里还没有同站请求就等 1.5 秒；③ `auth` 声明的页面固定位置（cookie、localStorage、sessionStorage、meta），发送时在页面里现读；④ 前序请求的值由 action 代码写进 `headers`；`headers` 显式写的最后覆盖。cmd 行的 `detail` 记下抄自哪些 endpoint、抄了和没抄的头名。被 401/403 拒时，run 的 `hint` 写清楚抄了什么、没抄什么、下一步（`takeRejected`）。和当前页面同一注册域名的请求在当前页面上发，否则在请求自己的 origin 上开页面发。
   - `waitRequest` 等页面自己发出的第一个匹配请求，签名由页面算。
@@ -157,7 +158,7 @@ daemon 内部分四层，上层只依赖下层：
 | 现象 | 处理 |
 |---|---|
 | `extension-abi` 不对，或"扩展是旧版本" | 扩展会自己重新加载（跑一次 `lore tabs` 触发，等几秒再试）；仍不行在 `chrome://extensions` 里刷新 lore |
-| 「连不上这个标签页的调试接口」 | 这个 agent 窗口开着 DevTools（或别的调试器），关掉后重试；用户点掉了「正在调试此浏览器」提示条的，下一次操作会自动重新附着 |
+| 「连不上这个标签页的调试接口」 | 这个 lore 标签页开着 DevTools（或别的调试器），关掉后重试；用户点掉了「正在调试此浏览器」提示条的，下一次操作会自动重新附着 |
 | 「被遮挡：…」 | 点击落在了盖在目标上面的元素（弹窗、遮罩、吸顶栏）上：先关掉它，或换一个没被盖住的目标 |
 | 「ref_N 找不到了」 | 页面跳转或元素被移除，ref 失效：重新 `find` / `read_page` |
 | `need-extension` | 请用户确认 Chrome 里的 lore 扩展开着，点一下工具栏图标；从没加载过的属于安装问题 |
@@ -166,9 +167,9 @@ daemon 内部分四层，上层只依赖下层：
 | 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |
 | 升级后旧 daemon 还在跑 | `lore daemon restart` |
 | `run` 的请求被 401/403 拒 | 失败的「下一步」写了抄了什么、没抄什么：登录失效就请用户登录；页面这次没发带某个头的请求，action 要先 `navigate` 会发它的页面，或照 learn 窗口观察「请求头」给的位置写 `auth`；每次都变的头被拒，改用 `waitRequest` 或 DOM |
-| learn 窗口的操作说"重新打开" | Chrome 窗口之前关了（`learn close`、空闲 30 分钟、daemon 重启），页面状态没了；回到了上次的 URL，需要的话重新点到那个状态 |
+| learn 窗口的操作说"重新打开" | lore 组之前关了（`learn close`、空闲 30 分钟、daemon 重启、用户关了组），页面状态没了；回到了上次的 URL，需要的话重新点到那个状态 |
 | `learn <句柄> find` / `read_page` / `computer …` 报"页面里没有 lore 的脚本" | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
-| 日志里没有某个站点的事件 | 只录 agent 窗口：用户自己窗口里的浏览不会有记录，要用 `learn new --url` 在 learn 窗口里重新打开；用户在 agent 窗口里自己开的标签页（Cmd+T）也不录；看对应窗口目录里的 `timeline.jsonl`，按 `site` 字段筛 |
+| 日志里没有某个站点的事件 | 只录 lore 组里的标签页：组外的浏览不会有记录，要用 `learn new --url` 在 learn 窗口里重新打开（或把那个标签页拖进 lore 的组）；看对应窗口目录里的 `timeline.jsonl`，按 `site` 字段筛 |
 | 磁盘上 `~/.lore/learn-windows` 太大 | 按额度自动淘汰（`lore status` 看占用）；要手动清就删关掉的旧窗口目录，别删 `sites/*/actions/` |
 
 - 运行时日志：`~/.lore/session/log.jsonl`。

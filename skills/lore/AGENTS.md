@@ -46,22 +46,25 @@ npm run verify:pack
 
 ### 2.3 真实 Chrome 里的验证：用 Claude in Chrome
 
-**不再模拟扩展**：没有假扩展、没有桩 `chrome.*`、没有起 Chrome for Testing 的端到端脚本。改了扩展、页面脚本、agent 窗口、action 运行时之后，用真实的 Chrome 验证。lore 只录 agent 自己的窗口，所以录制要在 learn 窗口里触发（`lore learn new --url …` 拿到句柄，`lore learn <句柄> <工具>`），再读 `~/.lore/learn-windows/<句柄>/` 下的 `timeline.jsonl`、`requests/` 和 `~/.lore/sites/<站点>/endpoints.json`（格式见 `ARCHITECTURE.md` 第 6 节）；Claude in Chrome 只用来在用户窗口里浏览（确认不产生记录），以及开出被 `--url tab号` 引用的页面：
+**不再模拟扩展**：没有假扩展、没有桩 `chrome.*`、没有起 Chrome for Testing 的端到端脚本。改了扩展、页面脚本、lore 窗口（标签组）、action 运行时之后，用真实的 Chrome 验证。lore 只录自己标签组里的标签页，所以录制要在 learn 窗口里触发（`lore learn new --url …` 拿到句柄，`lore learn <句柄> <工具>`），再读 `~/.lore/learn-windows/<句柄>/` 下的 `timeline.jsonl`、`requests/` 和 `~/.lore/sites/<站点>/endpoints.json`（格式见 `ARCHITECTURE.md` 第 6 节）；Claude in Chrome 只用来在 lore 组外浏览（确认不产生记录），以及开出被 `--url tab号` 引用的页面。
 
-1. `node skills/lore/setup.js` 重装到 `~/.lore`：daemon 换成新代码；扩展（ABI ≥ 13）下一次握手发现自己不是磁盘上这一版，会自动从磁盘重新加载（不用去 `chrome://extensions` 点），跑一次 `lore doctor` 或任何要扩展的命令就会触发。从 ABI 12 及更早升级时由 anchor 页触发重新加载（见 `ARCHITECTURE.md` 第 4 节）。只有第一次加载要在 `chrome://extensions` 里手动操作。`lore doctor` 的 `extension-abi` 提示扩展是否太旧。
-2. 只录 agent 窗口：用 Claude in Chrome 在用户窗口里浏览、点击几个站点，`~/.lore` 下不产生任何新行和新文件。
+**不抢前台是硬要求**：下面每一项都要同时记录前台应用（`lsappinfo info -only name $(lsappinfo front)`）和用户选中的标签页（`lore tabs` 里「前台」的那个），每 0.2 秒一次、只记变化；测试期间请用户待在 Chrome 以外的应用、不碰 Chrome。lore 操作期间这两样都不能变，也不能出现新窗口。
+
+1. `node skills/lore/setup.js` 重装到 `~/.lore`：daemon 换成新代码；扩展（ABI ≥ 13）下一次握手发现自己不是磁盘上这一版，会自动从磁盘重新加载（不用去 `chrome://extensions` 点），跑一次 `lore doctor` 或任何要扩展的命令就会触发。只有第一次加载要在 `chrome://extensions` 里手动操作。`lore doctor` 的 `extension-abi` 提示扩展是否太旧。
+2. 只录 lore 组里的标签页：用 Claude in Chrome 在组外浏览、点击几个站点（包括点 `target=_blank` 链接），`~/.lore` 下不产生任何新行和新文件，链接照常在新标签页打开（拦截只在 lore 的标签页里）。
 3. 走一遍 learn 窗口，至少在三个站点上试：一个公共站点、一个 GraphQL 站点、一个公司内部多子域站点：
    - `lore learn new --url <链接|tab 号> --description "…"`（`tab 号` 用 `lore tabs` 按标题对出来）：第一行 `ok`，拿到句柄 `<站点>-<时间>`，输出里有窗口目录、learn 指引的路径（第一次或有更新时附全文，写在 `~/.lore/learn-guide.md`）、起点的观察结果。
    - **看结构**：`find "<查询>"` 找得到目标、带 ref 和定位；`read_page --filter interactive` 的 `role "name"` 和页面相符，`--ref` 只看一块；全文存进 `pages/<编号>-a11y.txt`；`get_page_text` 取到正文。三者不计操作次数、不要 `--description`。
    - **观察**：多步操作（`computer left_click --ref` / `form_input` / `computer type` / `key` / `scroll`，都带 `--description`），每步附带的观察和实际操作相符（「稳定：」写了等了多久），输出里的文件名在窗口目录里都找得到、是语义化的（`requests/<编号>-<方法>-<endpoint 名>.json`）；`computer wait 2` 拿到晚到的请求，且和上一次不重复；第二步之后的观察不再列 `/me` 这类前面出现过的 endpoint。页面跳到别的站点时写明站点。
    - **定位能回放**：每个用 ref 的操作输出的「定位：」，在 run 窗口的 action 里用同名 SDK 函数能找回同一个元素（`read_page` 显示的名字和回放的匹配是同一套算法）。
-   - **CDP 输入**：agent 窗口不在前台时点击、输入、滚动照样生效；截图不把窗口切到前台；在 agent 窗口里打开 DevTools 后操作报「连不上这个标签页的调试接口」，关掉后恢复；点掉「正在调试此浏览器」提示条后下一次操作自动重新附着；严格 CSP 的页面上 `evaluate` 能跑。
+   - **标签组和不抢前台**：`learn new` 后用户窗口里出现一个折叠的 `lore·<站点>` 组，没有新窗口；点 `target=_blank` 链接、cmd+点击、中键点击、`window.open(url)`、`window.open()` 后设地址、`target=_blank` 表单：都不抢前台，新标签页进同一个组并被录，观察里有「新标签页：页面打开了…」；带窗口参数的 `window.open` 照常弹出；用户把一个标签页拖进组后被录，拖出去后不录；组闲置 20 秒后「正在调试此浏览器」的横幅消失（请用户看一眼），再操作照常；懒加载（滚动后才发的请求，如 IT之家评论）在后台组里照常触发。
+   - **CDP 输入**：lore 的标签页从不被选中，点击、输入、滚动照样生效；截图不把标签页切到前台；在 lore 的标签页里打开 DevTools 后操作报「连不上这个标签页的调试接口」，关掉后恢复；点掉「正在调试此浏览器」提示条后下一次操作自动重新附着；严格 CSP 的页面上 `evaluate` 能跑。
    - **请求头和 try_action**：观察里带非浏览器头的请求有一行「请求头」（值怎么变、页面里的位置），和实际相符、没有真值；action 只写 `request({ url, method, json })`，`lore learn <句柄> try_action <名> --参数 值` 在当前页面跑通、换参数也跑通，不变成 verified；run 窗口里同样跑通（头从这次窗口里页面发过的请求抄）；故意去掉 `navigate` 让它被拒，失败输出写清抄了什么、没抄什么。
    - **写请求**：点赞这类轻量写操作真的发出（站点上看得到结果）；带 `@write` 的 action 在 learn 窗口里 `try_action` 直接发，输出的「已发出的非 GET 请求」和实际一致；观察里的请求行没有 `write` 前缀。
    - **工具对齐和「下一步」**：`computer` 的 13 个 action 都能用，坐标和 `--ref` 两种写法都行（`zoom` 的图只有那块、`hover` 出悬停菜单、`left_click_drag` 拖得动、`type` 时页面收到按键事件、`key "Enter"` 能提交表单、`key "cmd+a"` 能全选）；`form_input` 填文本框、选下拉、勾复选框，填完核对；`navigate back` 能后退；这一步引发了没有 action 覆盖的 endpoint 时有「下一步」提醒，已有 action 覆盖的没有；`lore learn close` 前没跑过成功的 `lore run` 有提醒。
    - **一个窗口学多个 action**：在同一个窗口里写两个 action（draft），`run --compose-code …` 新开 run 窗口、跑完窗口消失、`run-windows/<名字>/` 有日志和 meta、两个 draft 变成 verified、`endpoints.json` 没有多出 run 窗口的请求；多行 `@endpoint` 漏了前置请求时不变成 verified 并说明。
-   - **持久**：`lore learn close <句柄>` 后、`lore daemon restart` 后，对同一个句柄 `computer screenshot` / `computer left_click`：窗口从上次的 URL 重新打开，日志接着写进同一个目录，游标接着上次；新句柄不重名。learn 窗口空闲 30 分钟自动关。
-   - **run 窗口**：同一个站点连跑两次 `run`，第二次不沿用第一次的页面；两个 `run` 同时跑，各开各的窗口，互不排队。
+   - **持久**：`lore learn close <句柄>` 后、`lore daemon restart` 后（旧组被关掉）、用户手动关掉组后，对同一个句柄 `computer screenshot` / `computer left_click`：新建组，从上次的 URL 重新打开，日志接着写进同一个目录，游标接着上次；新句柄不重名。learn 窗口空闲 30 分钟自动关。
+   - **run 窗口**：`run` 期间出现一个 `lore▶<名字>` 组，跑完组消失；同一个站点连跑两次 `run`，第二次不沿用第一次的页面；两个 `run` 同时跑，各开各的组，互不排队。
    - **description 与 compose**：操作的 `--description` 进了时间线，并出现在 endpoint 的 `endpoints.json` 的 `descriptions` 里；compose 文件出现在 `~/.lore/compose/`，`rg` 能用 description 里的词命中，`lore run --compose <名>` 带别的参数再跑一次，`@description` 多一句。
    - **@write 和 compose**：带 `@write` 的 draft 在 `lore status` 里标出；学出来的 action 里调用 `action()` 被拒；compose 里 `action()` 不用 import 就能用。
    - **SDK、参数、helpers**：`export default async () => …` 加 `navigate(url)`、`request({…})`、`click(定位)`、`hover(定位)`、`form_input(定位, 值)`、`key(…)`、`scroll({ direction })`、`get_page_text()` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.lore/helpers/` 里的函数被 action `import` 后能跑，`lore daemon restart` 后还在；`--compose` 写哈希前几位能跑。

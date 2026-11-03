@@ -25,7 +25,7 @@ export function makeLearnGuide(info: LearnInfo): string {
 
 ## 窗口
 - 句柄是持久的：关了窗口、daemon 重启了，再对它操作就从上次的 URL 重开（页面状态会丢），日志接着写进同一个目录。
-- 最多 ${LEARN_MAX_OPS} 次页面操作；独立的 agent 窗口，不会打扰用户；${Math.round(LEARN_IDLE_MS / 60_000)} 分钟没有操作会关掉 Chrome 窗口。
+- 最多 ${LEARN_MAX_OPS} 次页面操作；在用户窗口里 lore 自己的折叠标签组里干活，不会切换用户的标签页、不抢前台；页面自己要新开的标签页由 lore 开在同一个组里；${Math.round(LEARN_IDLE_MS / 60_000)} 分钟没有操作会关掉这个组。
 - 遇到登录页：点一下就能登录的（「快速登录」「检测到当前已登录账号」「使用此账号继续」这类）你自己点：先 find / read_page 确认只要点一下，点完再看一次确认登进去了；要输入账号密码、扫二维码、收验证码的停下来请用户在 Chrome 里登录。登录态整个 Chrome 共用，learn 窗口里登进去，run 窗口也就登进去了。
 
 ## 先拆分，同一种操作只学一次
@@ -97,7 +97,7 @@ export function makeLearnGuide(info: LearnInfo): string {
 6. 学完一个就接着学下一个；都写好后 \`lore run --compose-code '代码' --description "…"\`（或单个 \`lore run --action <名字>\`）在新的 run 窗口里交付。draft 真跑成功就变成 verified。
 7. run 出问题：回到这个窗口继续观察、在窗口里 try_action，或对比本窗口和 run 窗口目录里的 timeline.jsonl 找原因，改了再 run。
 8. 学不会：把 action 文件头改成 \`@status blocked\`，\`@note\` 写原因和证据（试过哪些请求编号、为什么 network 和 DOM 都不行），最终回复说明卡在哪。verified 的坏了：改回 \`@status draft\`，\`@note\` 写原因，回来修，run 通过再变成 verified。
-9. 事情做完由你决定 \`lore learn close <句柄>\`（关掉 Chrome 窗口，句柄和目录保留）。
+9. 事情做完由你决定 \`lore learn close <句柄>\`（关掉这个组，句柄和目录保留）。
 
 ## 写 action 的规则
 - SDK：\`import { lore, navigate, request, waitRequest, click, hover, key, scroll, scroll_to, form_input, waitFor, get_page_text, query, evaluate, sleep } from "../../../lib/index.js"\`，入口 \`export default async () => { ... }\`，返回值就是结果。函数都不用传 page：\`navigate(url)\`、\`click(定位)\`、\`request({…})\`。名字和 learn 的工具对齐，区别只有一个：learn 用 ref（或坐标），action 用持久定位（action 要在别的窗口重放）。操作输出的「定位：…」原样放进去：\`computer left_click --ref …\` → \`click(定位)\`（右键、双击：\`click(定位, { button: "right" })\`、\`{ count: 2 }\`）；\`computer hover\` → \`hover(定位)\`；\`form_input ref_9 值\` → \`form_input(定位, 值)\`；\`computer key "cmd+a"\` → \`key("cmd+a", { loc })\`；\`computer scroll … down 3\` → \`scroll({ direction: "down", amount: 3, loc })\`；\`computer scroll_to\` → \`scroll_to(定位)\`；\`get_page_text\` → \`get_page_text({ max })\`。输入和 learn 走同一条路径（CDP 真实输入），learn 里点得动的，回放也点得动。

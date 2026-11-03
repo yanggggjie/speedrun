@@ -56,9 +56,8 @@ const ingest = new Ingestor(log, { aliasKey: "k", raw, index, winOf: (tab) => WI
 const page = "https://www.x.com/home";
 const net = (t: number, over: Record<string, unknown>): PageMsg => ({ k: "net", t, tab: 20, page, via: "fetch", method: "GET", status: 200, ct: "application/json", ms: 10, ...over }) as PageMsg;
 const tabs = [
-  { tabId: 7, windowId: 1, active: true, url: page, title: "用户的", status: "complete" },
-  { tabId: 20, windowId: 9, active: true, url: page, title: "示例", status: "complete" },
-  { tabId: 21, windowId: 9, active: true, url: "chrome-extension://x/anchor.html", title: "lore agent", status: "complete", anchor: true },
+  { tabId: 7, windowId: 1, groupId: -1, active: true, url: page, title: "用户的", status: "complete" },
+  { tabId: 20, windowId: 1, groupId: 5, lore: true, active: false, url: page, title: "示例", status: "complete" },
 ];
 const requests: Array<Record<string, unknown>> = [];
 const host = {
@@ -91,7 +90,7 @@ const runner = {
   runInLearn: async (name: string) => ({ status: "success", result: { name }, sent: name === "like" ? ["POST /api/like ×1"] : [] }),
   runCompose: async () => ({ status: "success", result: 1, ...nextOutcome }),
 };
-const win = { isAgentTab: (t: number) => t === 20, windowIdOf: () => 9, isOpen: async () => true, dispose: async () => {} };
+const win = { isAgentTab: (t: number) => t === 20, groupOf: () => 5, isOpen: async () => true, dispose: async () => {}, busy: () => () => {} };
 const learn = new LearnWindows({ log, host, win });
 const ctx = {
   ensureExtension: async () => {},
@@ -158,7 +157,7 @@ const liked = await run("learn", id, "try_action", "like", "--description", "点
 assert.equal(liked.code, 0, liked.stdout); assert.match(liked.stdout, /已发出的非 GET 请求：\n  POST \/api\/like ×1/);
 assert.equal(actionSummary(path.join(actions, "vote.js")).status, "draft", "learn 窗口里 try_action 不变成 verified");
 
-// 句柄持久：新的登记（daemon 重启）从 meta.json 读回，游标接着上次，Chrome 窗口当作已关
+// 句柄持久：新的登记（daemon 重启）从 meta.json 读回，游标接着上次，lore 组当作已关
 const reborn = new LearnWindows({ log, host, win }).get(id)!;
 assert.equal(reborn.description, "给第一条回答点赞同");
 assert.equal(reborn.cursor, learn.get(id)!.cursor);

@@ -39,7 +39,7 @@ export async function runCommand(argv: string[], ctx: Ctx): Promise<{ stdout: st
 /** 用户自己的标签页；agent 窗口里的不在这里。 */
 async function tabsCommand(ctx: Ctx, out: Output): Promise<void> {
   await ctx.ensureExtension();
-  const tabs = (await ctx.tabs()).filter((t) => !t.anchor && !ctx.win.isAgentTab(t.tabId));
+  const tabs = (await ctx.tabs()).filter((t) => !t.lore);
   if (tabs.length === 0) return out.line("ok 没有打开的 http/https 标签页");
   out.line(`ok ${tabs.length} 个标签页`);
   for (const t of tabs) out.line(`  tab${t.tabId} win${t.windowId} ${t.active ? "前台" : "后台"} ${t.url} "${t.title}"`);

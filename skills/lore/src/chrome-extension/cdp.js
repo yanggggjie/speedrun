@@ -13,7 +13,9 @@ chrome.debugger?.onDetach.addListener((source) => { attached.delete(source.tabId
 chrome.tabs.onRemoved.addListener((tabId) => { attached.delete(tabId); });
 
 // 附着不是幂等的：两个调用同时附着同一个标签页，第二个会报「已经有调试器」。进行中的附着大家共用。
-async function attach(tabId) {
+// 附着同时是 lore 后台标签页的「渲染开关」：没附着的后台标签页不渲染，在折叠的组里几秒后还会被 Chrome 冻结（冻结的页面连 chrome.scripting 都执行不了）；
+// 附着并开 focus emulation 后页面以为自己可见、有焦点，照常渲染，冻结的也立刻解冻。
+export async function attach(tabId) {
   if (attached.has(tabId)) return;
   if (attaching.has(tabId)) return attaching.get(tabId);
   const p = (async () => {
@@ -29,6 +31,13 @@ async function attach(tabId) {
   })();
   attaching.set(tabId, p);
   try { await p; } finally { attaching.delete(tabId); }
+}
+
+/** 解除附着（lore 的组闲置时）：页面不再渲染，折叠组里的会被 Chrome 冻结，不吃 CPU；没有标签页附着时「正在调试此浏览器」的横幅也会消失。下次操作时 cdp() 自动重新附着。 */
+export async function detach(tabId) {
+  if (!attached.has(tabId)) return;
+  attached.delete(tabId);
+  try { await chrome.debugger.detach({ tabId }); } catch { /* 已经断开、标签页已关 */ }
 }
 
 /** 发一条 CDP 命令；附着断了（用户点掉提示条）就重新附着再发一次。每条命令有超时，页面卡住时不会一直挂着。 */

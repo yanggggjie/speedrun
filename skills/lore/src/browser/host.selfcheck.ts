@@ -17,7 +17,7 @@ const link = {
     return {};
   },
 };
-const win = { acquire: async () => 1, release: () => {}, activate: async () => {}, moved: () => {} };
+const win = { acquire: async () => 1, release: () => {}, busy: () => () => {}, moved: () => {} };
 const ingest = {
   beginCmd: () => ({ seq: 1, seg: 1 }), endCmd: () => {}, flush: () => {},
   sanitizer: { url: (u: string) => ({ bareUrl: u.split("?")[0], query: {} }), body: (b: unknown) => b },

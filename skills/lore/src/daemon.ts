@@ -12,7 +12,7 @@ import { RunHost } from "./browser/host.ts";
 import { LearnWindows } from "./learn/windows.ts";
 import { ActionRunner, runWindowsOf } from "./run/runner.ts";
 import { coveredEndpoints, syncActionLib } from "./run/actions.ts";
-import { AgentWindows } from "./browser/window.ts";
+import { AgentWindows, type GroupLabel } from "./browser/window.ts";
 import { Ingestor, type PageMsg } from "./record/ingest.ts";
 import { RawStore } from "./record/raw.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
@@ -50,11 +50,17 @@ function aliasSalt(): string {
 }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
 
+/** lore 组的标题：learn 组「lore·站点」（蓝），run 组「lore▶action 名」（灰）。key 是「前缀-日期-时间」。 */
+function groupLabel(key: string, kind: string | undefined): GroupLabel {
+  const prefix = key.replace(/-\d{8}-\d{6}(?:-\d+)?$/, "");
+  return kind === "run" ? { title: `lore▶${prefix}`, color: "grey" } : { title: `lore·${prefix}`, color: "blue" };
+}
+
 /** daemon 的全部部件，启动时按依赖顺序一次建好（构造函数都不碰磁盘，除了别名的盐）。 */
 function build() {
-  const win = new AgentWindows(link);
   const raw = new RawStore();
   const log = new WindowLog();
+  const win = new AgentWindows(link, { label: (key) => groupLabel(key, log.kindOf(key)) });
   const index = new EndpointIndex({ coverage: (site) => coveredEndpoints(log.dir, site) });
   let adblock: FiltersEngine | undefined;
   const ingest = new Ingestor(log, { engine: () => adblock, aliasKey: aliasSalt(), raw, winOf: (tab) => win.winOf(tab), index });
@@ -72,12 +78,12 @@ function build() {
 const { ctx, setAdblock } = build();
 const { ingest, index, log, learn, win } = ctx;
 
-/** 页面消息：写日志。lore agent 窗口里的标签页记为 agent 的（Ingestor 按 win.winOf 判断是哪个窗口）。扩展是旧版本时一条都不收（旧扩展会转用户在 agent 窗口里自己开的标签页）。 */
+/** 页面消息：写日志。lore 组里的标签页记为那个窗口的（Ingestor 按 win.winOf 判断是哪个窗口）。扩展是旧版本时一条都不收。 */
 link.on("page", (m) => {
   if (!link.compatible()) return;
   const inner = (m.msg ?? {}) as Record<string, unknown>;
   const msg = { ...inner, k: String(inner.k ?? ""), t: typeof inner.t === "number" ? inner.t : Date.now(), tab: Number(m.tab), frame: Number(m.frame ?? 0), top: m.top === true, page: typeof m.page === "string" ? m.page : undefined } as PageMsg;
-  win.adopt(msg.tab, typeof m.win === "number" ? m.win : undefined); // 页面在 agent 窗口里自己开的标签页也属于那个窗口
+  win.adopt(msg.tab, typeof m.group === "number" ? m.group : undefined); // 页面自己开的（扩展替它开在同一个组里）、用户拖进组的标签页也属于那个窗口
   lastActivity = Date.now();
   ingest.push(msg);
 });
@@ -85,9 +91,6 @@ link.on("page", (m) => {
 function pingBody() {
   return { pid: process.pid, extension: extSocket !== null, build: startupBuild, abi: link.abi };
 }
-
-/** 这个 daemon 里已经试过用 anchor 页让旧版扩展重新加载（只试一次，失败就请用户刷新）。 */
-let anchorReloadTried = false;
 
 async function ensureExtension(): Promise<void> {
   if (!extSocket) {
@@ -104,14 +107,6 @@ async function ensureExtension(): Promise<void> {
     // 握手时已经发过 reload：等它带着新版本重连
     const deadline = Date.now() + DAEMON_READY_MS * 2;
     while (link.outdated(disk) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
-  }
-  if (!link.compatible() && !anchorReloadTried) {
-    // 不会自己 reload 的旧版扩展：开一个 anchor 页。anchor 页每次都从磁盘读，新版 anchor.js 发现 background 不是这一版就让扩展重新加载
-    anchorReloadTried = true;
-    logger.info("extension too old to reload itself, opening anchor page", { abi: link.abi });
-    await link.request("openWindow", { anchor: true }).catch(() => {});
-    const deadline = Date.now() + DAEMON_READY_MS * 2;
-    while (!link.compatible() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
   }
   if (!link.compatible()) throw new Error(`Chrome 里的 lore 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 lore 扩展`);
 }

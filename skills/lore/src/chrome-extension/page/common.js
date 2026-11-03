@@ -9,18 +9,20 @@
   // 每条消息带这次页面加载的编号 d 和递增序号 n：操作结束时页面报告最后的 n，daemon 等它到了，就知道这一步引发的记录都收齐了。
   T.doc = Math.random().toString(36).slice(2, 10);
   T.n = 0;
-  // 只有 lore 开的（以及被它们打开的）标签页才上报：bridge 问过扩展之前先缓存（有上限，加载期的请求不能漏），
-  // 答"录"就发出缓存并放行，答"不录"（用户的窗口）就清空缓存，之后一条都不发。
+  // 只有 lore 组里的标签页才上报：bridge 问过扩展之前先缓存（有上限，加载期的请求不能漏），
+  // 答"录"就发出缓存并放行，答"不录"（用户的标签页）就清空缓存，之后一条都不发。
+  // 用户把标签页拖进、拖出 lore 的组时，扩展经 bridge 再告诉一次（之后开始或停止上报）。
   const PENDING_MAX = 500;
   let sent = 0, windowStart = Date.now(), gate = "ask", pending = [];
   const send = (m) => { try { window.postMessage(m, "*"); } catch {} };
   window.addEventListener("message", (e) => {
-    if (e.source !== window || !e.data || e.data.__loreGate !== 1 || gate !== "ask") return;
+    if (e.source !== window || !e.data || e.data.__loreGate !== 1) return;
     gate = e.data.on ? "on" : "off";
     const queued = pending; pending = [];
     if (gate === "on") for (const m of queued) send(m);
   });
   T.recording = () => gate !== "off";
+  T.isLore = () => gate === "on";
   T.post = (o) => {
     if (gate === "off") return;
     const now = Date.now();

@@ -61,3 +61,5 @@ export const GOTO_WAIT_MS = 15_000;
 export const WAIT_REQUEST_MS = 15_000;
 /** learn 窗口里空闲的标签页保留多久再关掉。只录 agent 窗口，请求头只能从这些页面继承，留久一点少重开。 */
 export const AGENT_TAB_IDLE_MS = 30 * 60_000;
+/** lore 的组这么久没有操作就解除调试器附着：页面不再渲染、被冻结，不吃 CPU；没有附着时「正在调试此浏览器」的横幅也会消失。下次操作自动重新附着（解冻几十毫秒）。 */
+export const GROUP_IDLE_MS = 20_000;

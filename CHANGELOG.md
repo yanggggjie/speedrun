@@ -2,10 +2,11 @@
 
 ## 未发布
 
+- 不再开窗口、不抢前台：learn 窗口和 run 窗口改成用户窗口里 lore 自己的**标签组**（折叠，一个句柄或一次 run 一个），lore 从不选中自己的标签页。后台页面靠调试器照常渲染（懒加载、滚动加载都正常）；组闲置 20 秒就解除附着，「正在调试此浏览器」的横幅随之消失。页面在 lore 的标签页里要新开标签页时（`target=_blank`、cmd/中键点击、`window.open`），由 lore 开在同一个组里，不会把用户的标签页切走、不会把 Chrome 拉到前台；带窗口参数的弹出窗口照常。归属看组：把标签页拖进 lore 的组就交给 lore，拖出去就收回。扩展 ABI 14，新增 `tabGroups` 权限；去掉 anchor 页。
 - daemon 的工作目录改到 `~/.lore`：之前重装（build 没变、daemon 没重启）后 action 会报 `ENOENT uv_cwd`。
 - learn 的探索按 open-claude-in-chrome（Claude in Chrome）的做法：新增 `find`、`read_page`（a11y 树）、`get_page_text`、`form_input`；`computer` 的点击、悬停、拖拽、滚动可以用 `--ref ref_N` 指元素，不用看截图猜坐标。用 ref 的每一步输出「定位：」，写进 action。
-- 输入只走 CDP（真实输入）：learn 的 `computer` / `form_input` 和 action 的 `click` / `hover` / `key` / `scroll` / `form_input` 共用一条路径；截图改用 CDP（不再把标签页切到前台），`evaluate` 不再受页面 CSP 限制。扩展新增 `debugger` 权限，agent 窗口顶部会显示「正在调试此浏览器」；只支持 Chrome。
-- 扩展会自己重新加载：升级后 daemon 发现扩展不是磁盘上这一版，就让它从磁盘重新加载（ABI 13 起用 `reload`；更旧的版本由 agent 窗口的 anchor 页触发，也不用手动刷新）。
+- 输入只走 CDP（真实输入）：learn 的 `computer` / `form_input` 和 action 的 `click` / `hover` / `key` / `scroll` / `form_input` 共用一条路径；截图改用 CDP（不再把标签页切到前台），`evaluate` 不再受页面 CSP 限制。扩展新增 `debugger` 权限，lore 干活时会显示「正在调试此浏览器」；只支持 Chrome。
+- 扩展会自己重新加载：升级后 daemon 发现扩展不是磁盘上这一版，就让它从磁盘重新加载（ABI 13 起用 `reload`）。
 - 不再区分 agent 和有人在 agent 窗口里的输入：去掉 `src: user` 和 `input` 行，agent 窗口里的一切都记为 agent。
 - learn 窗口的命令：去掉 `observe`（等晚到的请求用 `computer wait`，全部请求在 `timeline.jsonl` 里）；`lore learn <句柄> run --action <名>` 改名 `lore learn <句柄> try_action <名>`；`lore learn <句柄> close` 改成 `lore learn close <句柄>`。
 - SDK：`fill` / `select` / `check` 合成 `form_input(定位, 值)`；`text` 改名 `get_page_text`；新增 `hover(定位)`；`click` 可以 `{ button: "right" }`、`{ count: 2 }`。

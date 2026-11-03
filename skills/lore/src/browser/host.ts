@@ -126,7 +126,6 @@ export class RunHost {
       const info = ((await this.d.link.request("tabs")) as { tabs: { tabId: number; url: string; title: string }[] }).tabs.find((t) => t.tabId === tab);
       let shot: string | undefined;
       try {
-        await this.d.win.activate(tab);
         const r = (await withTimeout(this.d.link.request("screenshot", { tabId: tab }), STEP_TIMEOUT_MS, "截图")) as { data: string; mime: string };
         fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
         shot = `${file}.${r.mime.includes("png") ? "png" : "jpg"}`;
@@ -154,8 +153,8 @@ export class RunHost {
   }
 
   async callTab(tab: number, fn: string, args: unknown[]): Promise<any> {
+    const done = this.d.win.busy(tab);
     try {
-      await this.d.win.activate(tab);
       const res = (await this.d.link.request("call", { tabId: tab, fn, args })) as { v: unknown };
       return res.v;
     } catch (e) {
@@ -164,19 +163,21 @@ export class RunHost {
       if (!/No tab with id/.test(e instanceof Error ? e.message : String(e)) || !s || !s.origin || s.tab !== tab) throw e;
       s.tab = undefined;
       const fresh = await this.bind(s, s.origin);
-      await this.d.win.activate(fresh);
       const res = (await this.d.link.request("call", { tabId: fresh, fn, args })) as { v: unknown };
       return res.v;
+    } finally {
+      done();
     }
   }
 
   private log<T>(tab: number, verb: string, target: string, detail: Record<string, unknown>, run: () => Promise<T>, after?: (r: T) => Record<string, unknown>, site?: string): Promise<T> {
     // 命令记在它所在页面的站点里：goto 时标签页还没报上来，由调用方给；其余用标签页绑定的站点
     const ref = this.d.ingest.beginCmd(tab, Date.now(), verb, target, detail, site ?? (siteOfUrl(this.byTab.get(tab)?.origin) || undefined));
+    const done = this.d.win.busy(tab); // 操作期间组不算闲置（不会被解除附着）
     return run().then(
       (r) => { this.d.ingest.endCmd(ref, { detail: { ...detail, ...(after?.(r) ?? {}), ok: true } }); return r; },
       (e: unknown) => { this.d.ingest.endCmd(ref, { detail: { ...detail, ok: false, error: e instanceof Error ? e.message : String(e) } }); throw e; },
-    );
+    ).finally(done);
   }
 
   async op(s: Session, name: string, a: any): Promise<unknown> {
@@ -197,7 +198,6 @@ export class RunHost {
       case "eval": {
         const tab = this.page(s);
         return this.log(tab, "eval", String(a.src).slice(0, 60), { src: String(a.src).slice(0, 2000) }, async () => {
-          await this.d.win.activate(tab);
           return ((await withTimeout(this.d.link.request("evaluate", { tabId: tab, src: a.src, args: a.args ?? [] }), STEP_TIMEOUT_MS, "evaluate")) as { v: unknown }).v;
         });
       }
@@ -221,6 +221,7 @@ export class RunHost {
     const w = this.waits.get(Number(a.id));
     if (!w || w.key !== s.key) throw new Error("waitRequest 的等待已经失效");
     const ms = a.timeout ?? WAIT_REQUEST_MS;
+    const done = s.tab !== undefined ? this.d.win.busy(s.tab) : () => {}; // 等请求期间页面要一直在渲染
     try {
       const r = w.hit ?? await new Promise<SeenRequest | undefined>((resolve) => { w.resolve = resolve; setTimeout(() => resolve(undefined), ms); });
       if (!r) {
@@ -231,6 +232,7 @@ export class RunHost {
       if (r.truncated) throw new Error(`${r.endpoint} 的响应太大，录制时被截断了，拿不到完整内容：换成 request()，或缩小查询范围`);
       return { status: r.status ?? 0, text: r.body ?? "", ct: r.ct ?? "", url: r.url, requestBody: r.reqBody ?? null, seq: r.seq };
     } finally {
+      done();
       this.waits.delete(Number(a.id));
     }
   }
@@ -241,7 +243,6 @@ export class RunHost {
     let url: URL;
     try { url = new URL(a.url.includes("://") ? a.url : `https://${a.url}`); if (!/^https?:$/.test(url.protocol)) throw new Error("协议"); } catch { throw new Error(`不是有效的网址：${a.url}`); }
     const tab = await this.bind(s, url.origin);
-    await this.d.win.activate(tab);
     const safe = this.d.ingest.sanitizer.url(url.href);
     return this.log(tab, "navigate", safe.bareUrl, { bareUrl: safe.bareUrl, query: safe.query, ...(a.description ? { description: a.description } : {}) }, async () => {
       let res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as { url: string; title: string; loaded?: boolean };
@@ -257,7 +258,6 @@ export class RunHost {
 
   private async history(s: Session, dir: "back" | "forward", a: { timeout?: number; description?: string; settle?: boolean }): Promise<{ url: string; title: string }> {
     const tab = this.page(s);
-    await this.d.win.activate(tab);
     return this.log(tab, "navigate", dir, { dir, ...(a.description ? { description: a.description } : {}) }, async () => {
       let res: { url: string; title: string };
       try { res = (await withTimeout(this.d.link.request("history", { tabId: tab, dir, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, dir === "back" ? "后退" : "前进")) as typeof res; }
@@ -378,7 +378,6 @@ export class RunHost {
   /** 截图（learn 的 computer screenshot / zoom）：region 只要这块，scale 缩小；返回图和视口尺寸。图片本身不进日志。 */
   private async screenshot(s: Session, a: { region?: number[]; scale?: number } = {}): Promise<{ data: string; mime: string; w: number; h: number; vw: number; vh: number }> {
     const tab = this.page(s);
-    await this.d.win.activate(tab);
     const args = { tabId: tab, ...(a.region ? { region: a.region } : {}), ...(a.scale ? { scale: a.scale } : {}) };
     return this.log(tab, a.region ? "zoom" : "screenshot", a.region ? a.region.join(",") : "", {}, async () => (await withTimeout(this.d.link.request("screenshot", args), STEP_TIMEOUT_MS, "截图")) as { data: string; mime: string; w: number; h: number; vw: number; vh: number }, (r) => ({ w: r.w, h: r.h }));
   }
@@ -403,7 +402,6 @@ export class RunHost {
     const urlNow = async (): Promise<{ url: string; title: string } | undefined> => (await this.d.link.request("tabs") as { tabs: { tabId: number; url: string; title: string }[] }).tabs.find((t) => t.tabId === tab);
     const mayNavigate = ["left_click", "right_click", "double_click", "triple_click", "key", "form_input", "type"].includes(action);
     return this.log(tab, action, String(target), detail, async () => {
-      await this.d.win.activate(tab);
       const before = mayNavigate ? (await urlNow())?.url : undefined;
       const res: any = {};
       const pointAt = async (t: Record<string, unknown>) => (await withTimeout(this.callTab(tab, "point", [t]), (a.timeout ?? 10_000) + 5_000, "找元素")) as { x: number; y: number; target?: unknown; loc?: unknown; warning?: string; covered?: string; scrolled?: boolean };

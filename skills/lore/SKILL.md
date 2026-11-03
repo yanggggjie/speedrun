@@ -1,12 +1,12 @@
 ---
 name: lore
 description: >-
-  触发词 lore；用用户本机已登录的 Google Chrome 完成网站上的事。先找已有的 action 和 compose（~/.lore/sites/*/actions/、~/.lore/compose/）直接 run；缺的 action 就开一个 learn 窗口学会，再用 run 在新开的 run 窗口里交付。
+  触发词 lore；用用户本机已登录的 Google Chrome 完成网站上的事。先找已有的 action 和 compose（~/.lore/sites/*/actions/、~/.lore/compose/）直接 run；缺的 action 就开一个 learn 窗口学会，再用 run 在新开的 run 窗口（标签组）里交付。
 ---
 
 # lore
 
-你在单独的 Chrome 窗口里替用户做事，用的是用户 Chrome 的登录态。用户只说要做什么（可以给链接，或说"我的某某页面"），以及做要输入账号密码、扫码的登录；其余你自己来。
+你在用户 Chrome 里 lore 自己的标签组里替用户做事（组是折叠的，不切换用户的标签页、不抢前台），用的是用户 Chrome 的登录态。用户只说要做什么（可以给链接，或说"我的某某页面"），以及做要输入账号密码、扫码的登录；其余你自己来。
 
 命令是 `~/.lore/bin/lore`，下文简写为 `lore`。所有命令的输出第一行是结论，以 `ok`、`fail`、`ask` 开头（退出码 0、1、2），后面是「标题：内容」的几段（`页面`、`请求`、`依赖`、`结果`、`下一步`……）；`fail need-install` / `need-chrome` / `need-extension` 按 `~/.lore/ARCHITECTURE.md` 第 9 节处理，对用户只说一句话，等回复后重跑同一条命令。日志和 action 都是文件，用 `ls`、`rg`、`node -e`、Python 读。
 
@@ -53,7 +53,7 @@ description: >-
 |---|---|
 | `lore learn new --url <链接\|tab 号>` | 打开 learn 窗口：句柄、窗口目录、learn 指引、起点的观察 |
 | `lore learn list` | 列出 learn 窗口 |
-| `lore learn close <句柄>` | 关掉 Chrome 窗口，句柄和目录保留 |
+| `lore learn close <句柄>` | 关掉这个 learn 窗口的标签组，句柄和目录保留 |
 | `lore learn <句柄> find "<查询>"` | 和 Claude in Chrome 的 `find` 一样：按目的或文字找元素（最多 20 个），每个带 ref、坐标、在不在视口里、持久定位 |
 | `lore learn <句柄> read_page [--filter interactive\|all] [--depth 15] [--ref ref_N] [--max-chars 50000]` | 和 `read_page` 一样：a11y 树，每行 `role "name" [ref_N]`；全文存进窗口目录的 `pages/` |
 | `lore learn <句柄> get_page_text [--max 20000]` | 和 `get_page_text` 一样：正文优先（article、main …） |

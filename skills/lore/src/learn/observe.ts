@@ -18,7 +18,7 @@ const OBSERVE_MAX = 30;
 export type ObserveDeps = {
   ingest: Ingestor;
   log: WindowLog;
-  win: Pick<AgentWindows, "windowIdOf" | "isAgentTab">;
+  win: Pick<AgentWindows, "groupOf">;
   tabs(): Promise<TabInfo[]>;
   index: EndpointIndex;
   raw: RawStore;
@@ -38,13 +38,15 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   const timeline = d.log.readRows(w.id, { limit: 1_000_000 });
   const rows = timeline.filter((r) => r.seq > from && r.seq <= to);
   const lines = [`观察：${to > from ? `#${from + 1} → #${to}` : `#${from} 之后没有新的编号`}`];
-  // 页面：窗口里的 agent 标签页（用户在这个窗口里自己开的不列），当前页面在前
-  const winId = d.win.windowIdOf(w.id);
-  const tabs = w.open && winId !== undefined ? (await d.tabs()).filter((t) => t.windowId === winId && !t.anchor && d.win.isAgentTab(t.tabId)) : [];
+  // 页面：这个窗口（lore 组）里的标签页，当前页面在前
+  const group = d.win.groupOf(w.id);
+  const tabs = w.open && group !== undefined ? (await d.tabs()).filter((t) => t.groupId === group) : [];
   const current = tabs.find((t) => t.tabId === sess?.tab) ?? tabs[0];
   if (current) { w.url = current.url; w.title = current.title; }
-  lines.push(current ? `页面：${current.url} "${current.title}"${tabs.length > 1 ? `；窗口里共 ${tabs.length} 个标签页，其余：${tabs.filter((t) => t !== current).map((t) => t.url).join("、")}` : ""}` : `页面：Chrome 窗口没开（上次在 ${w.url}）`);
+  lines.push(current ? `页面：${current.url} "${current.title}"${tabs.length > 1 ? `；窗口里共 ${tabs.length} 个标签页，其余：${tabs.filter((t) => t !== current).map((t) => t.url).join("、")}` : ""}` : `页面：lore 组没开（上次在 ${w.url}）`);
   const navs = rows.filter((r) => r.type === "nav" && r.via !== "replaceState");
+  const opened = rows.filter((r) => r.type === "tab" && (r.via === "opened" || r.via === "leaked"));
+  if (opened.length) lines.push(`新标签页：页面打开了 ${opened.slice(-5).map((r) => `#${r.seq} ${r.url}`).join("、")}（在同一个组里；页面里的新开都由 lore 接管，不会切走用户的标签页）`);
   if (navs.length) lines.push(`导航：${navs.slice(-5).map((r) => `#${r.seq} ${r.url}${r.site && r.site !== w.site ? `（${r.site}）` : ""}`).join(" → ")}`);
   // 请求
   type Stat = { count: number; idle: number; cmdTriggered: number; descriptions?: Array<{ text: string }>; headers?: Record<string, HeaderSignal>; action?: string | null };

@@ -52,7 +52,7 @@ async function resolveStartUrl(ctx: Ctx, given: string): Promise<{ url: string }
   const m = /^(?:tab)?(\d+)$/i.exec(given.trim());
   if (!m) return siteOfUrl(given) ? { url: given.trim() } : { error: `--url 要是 http(s) 链接，或 lore tabs 列出的标签页号（如 tab123），收到：${given}` };
   await ctx.ensureExtension();
-  const tab = (await ctx.tabs()).find((t) => t.tabId === Number(m[1]) && !t.anchor && !ctx.win.isAgentTab(t.tabId));
+  const tab = (await ctx.tabs()).find((t) => t.tabId === Number(m[1]) && !t.lore);
   if (!tab) return { error: `没有标签页 ${given}：先 lore tabs 看用户的标签页，按标题、地址对出要的那个` };
   return siteOfUrl(tab.url) ? { url: tab.url } : { error: `标签页 ${given} 不是 http(s) 页面：${tab.url}` };
 }
@@ -203,7 +203,8 @@ async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, 
     first = lines[0]!;
     body.push(...lines.slice(1));
   } else if (computer?.action === "wait") {
-    await new Promise((r) => setTimeout(r, computer!.seconds! * 1000));
+    const done = sess.tab !== undefined ? ctx.win.busy(sess.tab) : () => {}; // 等的时候页面要一直在渲染（组不算闲置）
+    try { await new Promise((r) => setTimeout(r, computer!.seconds! * 1000)); } finally { done(); }
     first = `ok wait ${computer.seconds}s`;
   } else {
     const { action, ...rest } = computer ?? { action: "form_input" };

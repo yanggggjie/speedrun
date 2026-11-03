@@ -5,13 +5,13 @@ import type { AgentWindows } from "../browser/window.ts";
 
 /** 一个 learn 窗口最多这么多次页面操作（防止失控地翻页面）。 */
 export const LEARN_MAX_OPS = 200;
-/** learn 窗口这么久没有任何操作就关掉 Chrome 窗口（句柄和目录保留，再操作时从上次的 URL 重开）。 */
+/** learn 窗口这么久没有任何操作就关掉 lore 组（句柄和目录保留，再操作时从上次的 URL 重开）。 */
 export const LEARN_IDLE_MS = 30 * 60_000;
 
 /**
  * 一个 learn 窗口：一个窗口里可以学多个 action，不绑定 action。
  * id 是句柄（<站点>-<年月日>-<时分秒>），持久：信息存在 learn-windows/<句柄>/meta.json，daemon 重启后照样能用。
- * url、title 是最近一次看到的页面（重开时回到这里）；cursor 是观察的游标（这个编号之前的都观察过了）；open 是这个 daemon 里 Chrome 窗口开着。
+ * url、title 是最近一次看到的页面（重开时回到这里）；cursor 是观察的游标（这个编号之前的都观察过了）；open 是这个 daemon 里 lore 组开着。
  */
 export type LearnWindow = { id: string; site: string; description: string; url: string; title: string; cursor: number; ops: number; open: boolean; createdAt: number; lastActive: number };
 
@@ -40,7 +40,7 @@ export class LearnWindows {
     return w;
   }
 
-  /** 按句柄找：内存里没有就从 meta.json 读回（daemon 重启过，Chrome 窗口当作已关）。 */
+  /** 按句柄找：内存里没有就从 meta.json 读回（daemon 重启过，lore 组当作已关）。 */
   get(id: string): LearnWindow | undefined {
     const known = this.map.get(id);
     if (known) return known;
@@ -65,11 +65,11 @@ export class LearnWindows {
     return w;
   }
 
-  /** 这个窗口当前的页面（Chrome 窗口没开就是 undefined）。 */
+  /** 这个窗口当前的页面（lore 组没开就是 undefined）。 */
   session(id: string): Session | undefined { return this.sessions.get(id); }
 
   /**
-   * learn 窗口的 Chrome 窗口开着就直接用它当前的页面；没开（刚创建、close 过、空闲关了、daemon 重启过）就打开窗口，到上次的 URL。
+   * learn 窗口的 lore 组开着就直接用它当前的页面；没开（刚创建、close 过、空闲关了、daemon 重启过）就新建组，到上次的 URL。
    * 返回 opened 表示这次新打开了（页面状态没了）。
    */
   async page(w: LearnWindow): Promise<{ sess: Session; opened?: { url: string; title: string } }> {
@@ -85,7 +85,7 @@ export class LearnWindows {
     return { sess, opened: res };
   }
 
-  /** 关掉 Chrome 窗口（agent 显式 close，或空闲太久）；句柄和目录保留。 */
+  /** 关掉 lore 组（agent 显式 close，或空闲太久）；句柄和目录保留。 */
   async close(w: LearnWindow): Promise<void> {
     const sess = this.sessions.get(w.id);
     this.sessions.delete(w.id);
@@ -95,7 +95,7 @@ export class LearnWindows {
     this.save(w);
   }
 
-  /** 这个 daemon 里 Chrome 窗口开着的。 */
+  /** 这个 daemon 里 lore 组开着的。 */
   opened(): LearnWindow[] { return [...this.map.values()].filter((w) => w.open); }
 
   /** 开着但空闲太久的。 */
