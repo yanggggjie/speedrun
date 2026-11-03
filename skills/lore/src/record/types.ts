@@ -1,11 +1,11 @@
 /**
- * 事件来源：只录 agent 的窗口，所以几乎都是 agent（lore 的动作，以及 agent 窗口里页面脚本触发的请求和导航）；
- * user 只在有人在 agent 窗口里真的动了一下时出现（isTrusted 为真）。page 只在摄入时用（页面脚本触发的），写入时记为 agent。
+ * 事件来源：只录 agent 的窗口，agent 窗口里发生的一切都算 agent 的（lore 的动作，以及页面脚本触发的请求和导航）。
+ * page 只在摄入时用（页面脚本触发的），写入时记为 agent。
  */
-export type Src = "user" | "agent" | "page";
-/** request 是 fetch / XHR，input 是页面里的输入事件（点击、输入、按键、滚动），cmd 是 agent 的命令记录，doc 是主文档渲染后的 HTML，snap 是页面快照。 */
-export type RowType = "request" | "input" | "nav" | "doc" | "snap" | "cmd" | "tab";
-/** 请求发生的阶段：load 是页面刚加载（或单页应用刚路由）的那几秒，cmd 是命令（或 agent 窗口里的真人输入）引发的，idle 是轮询、后台自发。 */
+export type Src = "agent" | "page";
+/** request 是 fetch / XHR，cmd 是 agent 的命令记录（每一步操作），doc 是主文档渲染后的 HTML，snap 是页面快照（a11y 是 read_page 的 a11y 树）。 */
+export type RowType = "request" | "nav" | "doc" | "snap" | "cmd" | "tab";
+/** 请求发生的阶段：load 是页面刚加载（或单页应用刚路由）的那几秒，cmd 是 agent 的命令引发的，idle 是轮询、后台自发。 */
 export type Phase = "load" | "cmd" | "idle";
 
 /** 不是 agent 窗口的标签页（用户自己的）：它的一切都不录。agent 的窗口是 learn 窗口（句柄）和 run 窗口（名字）。 */
@@ -26,18 +26,11 @@ export type Row = {
   /** 页面地址（脱敏、不含参数）。 */
   page?: string;
   url?: string;
-  /** input / cmd / snap 的种类：click、input、scroll、key、goto、request……；target 是元素的简短描述，如 button[Like]。 */
+  /** cmd / snap 的种类：left_click、form_input、scroll、key、navigate、request……；target 是元素的简短描述，如 button[Like]。 */
   kind?: string;
   target?: string;
   /** cmd：agent 用 --description 写的这一步要做什么（用户的话，description）。这一步引发的请求经 cause 指向这一行。 */
   description?: string;
-  role?: string;
-  name?: string;
-  selector?: string;
-  key?: string;
-  deltaY?: number;
-  /** input 事件合并后的字数。 */
-  n?: number;
   /** cmd 的结果。 */
   ok?: boolean;
   error?: string;
@@ -51,7 +44,7 @@ export type Row = {
   endpoint?: string;
   /** 1 = 埋点、广告等噪声，默认不看。 */
   noise?: 1;
-  /** 这个请求由哪个动作引发：同一标签页 2 秒内最近一次用户事件或 agent 命令的 seq，causeDt 是相隔的毫秒数。 */
+  /** 这个请求由哪个动作引发：同一标签页 2 秒内最近一次 agent 命令的 seq，causeDt 是相隔的毫秒数。 */
   cause?: number;
   causeDt?: number;
   phase?: Phase;

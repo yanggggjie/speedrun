@@ -1,5 +1,5 @@
-// 页面里（MAIN world）的共用部分：命名空间 window.__lore、发消息、前台判断、元素描述与快照、DOM 变化计数。
-// 录制（recorder.js）和执行（executor.js）都建立在它上面，但互相不依赖。是扩展包里的静态内容脚本（manifest 的 content_scripts）。
+// 页面里（MAIN world）的共用部分：命名空间 window.__lore、发消息、前台判断、元素描述与快照、元素引用、DOM 变化计数。
+// 元素模型（a11y.js）、录制（recorder.js）和执行（executor.js）都建立在它上面。是扩展包里的静态内容脚本（manifest 的 content_scripts）。
 (() => {
   if (window.__lore) return;
   const T = (window.__lore = { exec: {} });
@@ -69,17 +69,19 @@
   };
   T.visible = (el) => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; const cs = getComputedStyle(el); return cs.visibility !== "hidden" && cs.display !== "none"; };
 
-  // ---- 元素引用：元素第一次出现在快照里时得到一个稳定编号（e12），agent 用 @e12 指它；页面不刷新就不变，元素被页面移除后引用失效 ----
+  // ---- 元素引用 ref_N：元素第一次被列出（read_page、find、快照）时得到编号，同一个元素一直是同一个编号；页面不刷新就不变，元素被移除后失效。
+  // 只用于 learn 里的探索（computer --ref、form_input），写进 action 的永远是持久定位（a11y.js 的 T.locOf）。----
   const ids = new WeakMap(), byRef = new Map();
   let nextRef = 1;
   T.refOf = (el) => {
     let r = ids.get(el);
-    if (!r) {
-      r = "e" + nextRef++; ids.set(el, r); byRef.set(r, new WeakRef(el));
-      if (byRef.size > 3000) for (const [k, w] of byRef) if (!w.deref()) byRef.delete(k);
+    if (!r || byRef.get(r)?.deref() !== el) {
+      r = "ref_" + nextRef++; ids.set(el, r); byRef.set(r, new WeakRef(el));
+      if (byRef.size > 5000) for (const [k, w] of byRef) if (!w.deref()) byRef.delete(k);
     }
     return r;
   };
+  T.byRef = (ref) => { const el = byRef.get(String(ref))?.deref(); if (!el) byRef.delete(String(ref)); return el; };
 
   // ---- DOM 变化：录制的快照带"自上次以来的变化数"，执行端等页面稳定要看最近一次变化的时间 ----
   T.mut = 0;

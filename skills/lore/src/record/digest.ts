@@ -1,6 +1,6 @@
 // 从日志里的行和请求文件整理出的纯函数：站点、endpoint 名、变量、响应结构、动作标签。不做 I/O。
 import { siteOfUrl } from "../utils/url.ts";
-import type { RequestFile, Row } from "./types.ts";
+import type { RequestFile } from "./types.ts";
 
 /** 站点：页面的 host（去 www.，非默认端口带上）；不是网址返回空串。 */
 export function siteOf(url: string | undefined): string {
@@ -56,11 +56,6 @@ export function endpointOf(url: string, body?: unknown): { host: string; name: s
 
 /** action 文件头 @endpoint 的写法：`方法 路径`。 */
 export const endpointKey = (method: string, name: string): string => `${method} ${name}`;
-
-/** 一行的"谁做了什么"：`user click button[Like]`、`agent cmd goto https://…`。 */
-export function causeLabel(row: Row): string {
-  return `${row.src} ${row.type === "cmd" ? "cmd " : ""}${row.kind ?? row.type}${row.target ? ` ${row.target}` : ""}`.trim();
-}
 
 function jsonKeys(v: unknown): string[] {
   return v && typeof v === "object" && !Array.isArray(v) ? Object.keys(v as object) : [];

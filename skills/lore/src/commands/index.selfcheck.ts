@@ -1,4 +1,4 @@
-// 命令层：参数解析，以及用假的 daemon 能力（假页面、假标签页、假 runner）端到端跑 learn / observe / run。
+// 命令层：参数解析，以及用假的 daemon 能力（假页面、假标签页、假 runner）端到端跑 learn / run。
 // 读日志不是命令（是文件），这里只守住坏了会静默出错的点：观察按游标不漏不重（晚到的请求下次出现、不重复）、句柄持久（重启后读回）、
 // 不是句柄被拒、观察里给出请求头的信号（没有真值）、learn 窗口里 run 输出实际发出的非 GET 请求、run 真跑成功的 draft 变成 verified（漏了就一直是 draft）。
 // 输出约定：第一行是 ok / fail / ask，退出码 0 / 1 / 2。
@@ -39,6 +39,12 @@ assert.match(bad(["left_click", "1", "2"], { modifiers: "hyper" }), /不认识�
 assert.match(bad(["zoom", "100", "100", "50", "50"]), /左上角和右下角/);
 assert.match(bad(["wait", "30"]), /最多 10 秒/);
 assert.match(bad(["click", "1", "2"]), /computer 的 action 是/);
+// --ref 代替坐标（read_page / find 给出的元素）；二选一，写错的 ref 被拒
+assert.deepEqual(ok(["left_click"], { ref: "ref_12" }), { action: "left_click", ref: "ref_12" });
+assert.deepEqual(ok(["left_click_drag"], { ref: "ref_1", to: "ref_2" }), { action: "left_click_drag", ref: "ref_1", toRef: "ref_2" });
+assert.deepEqual(ok(["scroll", "down", "2"], { ref: "ref_3" }), { action: "scroll", ref: "ref_3", direction: "down", amount: 2 });
+assert.match(bad(["left_click", "1", "2"], { ref: "ref_1" }), /二选一/);
+assert.match(bad(["left_click"], { ref: "e12" }), /--ref 要写成 ref_数字/);
 
 // ---- 假的 daemon 能力 ----
 const log = new WindowLog({ root });
@@ -64,7 +70,7 @@ const host = {
       ingest.handleBatch([net(Date.now(), { id: 1, rid: "p:1", url: "https://www.x.com/api/feed", body: "{\"items\":[]}", size: 12, at: 10 })]);
       return { url: page, title: "示例" };
     }
-    if (name === "pointer") {
+    if (name === "input") {
       const ref = ingest.beginCmd(20, Date.now(), String(a.action), "x", { description: a.description }, "x.com");
       ingest.handleBatch([net(Date.now() + 20, { id: 2, rid: "p:2", method: "POST", url: "https://www.x.com/api/answers/12345678/voters", reqHeaders: { "x-xsrftoken": "XSRF-REAL-0123456789", "x-zse-96": "2.0_SIGN" }, reqBody: "{\"type\":\"up\"}", body: "{\"ok\":1}", size: 8 })]);
       ingest.endCmd(ref, { detail: { description: a.description, ok: true } });
@@ -112,7 +118,7 @@ const first = seqsIn(opened.stdout);
 assert.equal(first.length, 1, `起点加载期的请求：${opened.stdout}`);
 
 // 观察按游标：没有新东西就不重复列
-const again = await run("learn", id, "observe");
+const again = await run("learn", id, "computer", "wait", "0.1");
 assert.deepEqual(seqsIn(again.stdout), [], "已经观察过的不再出现");
 
 // 页面操作自动附带观察：只列这一步之后的；请求行没有 write 前缀，带语义化的请求文件名
@@ -129,26 +135,28 @@ assert.ok(!clicked.stdout.includes("XSRF-REAL-0123456789"), "输出里没有 aut
 // computer 只是触发：这一步引发了没有 action 覆盖的 endpoint 时提醒写成 action（否则 agent 容易把看到的直接交给用户）
 assert.match(clicked.stdout, /下一步：POST \/api\/answers\/:id\/voters 还没有 action 覆盖 → 要用的写成 action/);
 // close 时这个窗口学到的还没用 lore run 交付过：提醒一次
-const closed = await run("learn", id, "close");
+const closed = await run("learn", "close", id);
 assert.match(closed.stdout, /^ok 已关掉/); assert.match(closed.stdout, /还没用 lore run 交付过/);
 
 // 晚到的请求（操作之后才到）：下一次观察出现，而且只出现一次
 ingest.handleBatch([net(Date.now() + 5000, { id: 3, rid: "p:3", url: "https://www.x.com/api/lazy", body: "{}", size: 2 })]);
-const late = await run("learn", id, "observe");
+const late = await run("learn", id, "computer", "wait", "0.1");
 const lateSeqs = seqsIn(late.stdout);
 assert.equal(lateSeqs.length, 1, late.stdout); assert.ok(lateSeqs[0]! > second[0]!);
-assert.deepEqual(seqsIn((await run("learn", id, "observe")).stdout), [], "不重复");
+assert.deepEqual(seqsIn((await run("learn", id, "computer", "wait", "0.1")).stdout), [], "不重复");
+// 不再有 observe（computer wait 就是等一会儿再观察）
+assert.match((await run("learn", id, "observe")).stdout, /^fail 不认识的操作「observe」/);
 
-// learn 窗口里 run：在当前页面跑 action；@write 不拦，输出列出实际发出的非 GET 请求
+// learn 窗口里 try_action：在当前页面跑 action；@write 不拦，输出列出实际发出的非 GET 请求
 const actions = path.join(log.dir, "x.com", "actions");
 fs.mkdirSync(actions, { recursive: true });
 fs.writeFileSync(path.join(actions, "vote.js"), "/**\n * @status draft\n * @endpoint POST /api/answers/:id/voters\n */\n");
 fs.writeFileSync(path.join(actions, "like.js"), "/**\n * @status draft\n * @write\n * @endpoint POST /api/like\n */\n");
-const tried = await run("learn", id, "run", "--action", "vote", "--description", "试一下点赞同");
+const tried = await run("learn", id, "try_action", "vote", "--description", "试一下点赞同");
 assert.equal(tried.code, 0, tried.stdout); assert.match(tried.stdout, /^ok vote\n/); assert.match(tried.stdout, /结果：/);
-const liked = await run("learn", id, "run", "--action", "like", "--description", "点喜欢");
+const liked = await run("learn", id, "try_action", "like", "--description", "点喜欢");
 assert.equal(liked.code, 0, liked.stdout); assert.match(liked.stdout, /已发出的非 GET 请求：\n  POST \/api\/like ×1/);
-assert.equal(actionSummary(path.join(actions, "vote.js")).status, "draft", "learn 窗口里 run 不变成 verified");
+assert.equal(actionSummary(path.join(actions, "vote.js")).status, "draft", "learn 窗口里 try_action 不变成 verified");
 
 // 句柄持久：新的登记（daemon 重启）从 meta.json 读回，游标接着上次，Chrome 窗口当作已关
 const reborn = new LearnWindows({ log, host, win }).get(id)!;

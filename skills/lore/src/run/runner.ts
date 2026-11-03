@@ -119,7 +119,7 @@ export class ActionRunner {
     if (why && out.status === "failure") out.hint = out.hint ? `${why}\n${out.hint}` : why;
   }
 
-  /** 在 learn 窗口当前的页面上跑一个 action（lore learn <句柄> run）：共用这个窗口的页面，结果里带这次实际发出的非 GET 请求。 */
+  /** 在 learn 窗口当前的页面上跑一个 action（lore learn <句柄> try_action）：共用这个窗口的页面，结果里带这次实际发出的非 GET 请求。 */
   async runInLearn(name: string, params: Record<string, unknown>, learn: Session): Promise<Outcome> {
     this.host.watchSent(learn.key);
     try {

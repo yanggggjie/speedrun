@@ -35,6 +35,9 @@ let extSocket: net.Socket | null = null;
 let lastActivity = Date.now();
 /** 本 daemon 启动时部署目录的 build；doctor 拿它和磁盘上的对比，不一致时提示重启（lore daemon restart）。 */
 const startupBuild = readVersion()?.build ?? "";
+// 工作目录放在 ~/.lore：拉起 daemon 的 relay 在 ~/.lore/src 里，setup.js 重装时会清空重建 src，
+// build 没变时 daemon 不重启，留在被删掉的目录里，之后 action 的 worker 取 cwd 会失败（ENOENT uv_cwd）
+try { process.chdir(LORE_HOME); } catch { /* 目录不在：照旧 */ }
 
 const link = new ExtensionLink();
 
@@ -83,6 +86,9 @@ function pingBody() {
   return { pid: process.pid, extension: extSocket !== null, build: startupBuild, abi: link.abi };
 }
 
+/** 这个 daemon 里已经试过用 anchor 页让旧版扩展重新加载（只试一次，失败就请用户刷新）。 */
+let anchorReloadTried = false;
+
 async function ensureExtension(): Promise<void> {
   if (!extSocket) {
     const status = missingStatus();
@@ -91,6 +97,21 @@ async function ensureExtension(): Promise<void> {
     const deadline = Date.now() + DAEMON_READY_MS;
     while (!extSocket && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
     if (!extSocket) throw new NeedExtensionError();
+  }
+  // 和磁盘上的版本比（不是 daemon 启动时的）：daemon 自己旧了也不会让扩展来回重新加载
+  const disk = readVersion()?.build ?? "";
+  if (link.outdated(disk)) {
+    // 握手时已经发过 reload：等它带着新版本重连
+    const deadline = Date.now() + DAEMON_READY_MS * 2;
+    while (link.outdated(disk) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+  }
+  if (!link.compatible() && !anchorReloadTried) {
+    // 不会自己 reload 的旧版扩展：开一个 anchor 页。anchor 页每次都从磁盘读，新版 anchor.js 发现 background 不是这一版就让扩展重新加载
+    anchorReloadTried = true;
+    logger.info("extension too old to reload itself, opening anchor page", { abi: link.abi });
+    await link.request("openWindow", { anchor: true }).catch(() => {});
+    const deadline = Date.now() + DAEMON_READY_MS * 2;
+    while (!link.compatible() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
   }
   if (!link.compatible()) throw new Error(`Chrome 里的 lore 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 lore 扩展`);
 }
@@ -197,7 +218,10 @@ function onRelay(sock: net.Socket): void {
           link.attach((out) => sock.write(frame(out)));
           helloDone = true;
           lastActivity = Date.now();
-          logger.info("extension connected", { abi: link.abi });
+          logger.info("extension connected", { abi: link.abi, build: link.build });
+          // 扩展是旧的（安装目录更新过）：让它从磁盘重新加载自己，重连后就是新的（不用用户去 chrome://extensions 点刷新）
+          const disk = readVersion()?.build ?? "";
+          if (link.outdated(disk)) { logger.info("extension outdated, reloading", { have: link.build, want: disk }); void link.request("reload").catch(() => {}); }
           return;
         }
         link.receive(msg);

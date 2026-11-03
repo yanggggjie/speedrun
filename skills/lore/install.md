@@ -47,7 +47,8 @@ node <安装目录>/setup.js
 
 以下是给 agent 的背景，不要讲给用户：
 
-- 之后改了扩展或页面脚本（`chrome-extension/`）要刷新扩展，其余改动 `lore daemon restart` 即可；细节见 `ARCHITECTURE.md`。
+- 之后升级（重跑 `setup.js`）不用用户再操作：扩展握手时 daemon 发现它不是磁盘上这一版，会让它自己重新加载（ABI 13 起；更旧的版本由 agent 窗口里的 anchor 页触发重新加载）；只有第一次加载要用户操作。细节见 `ARCHITECTURE.md` 第 4 节。
+- 扩展要 `debugger` 权限（lore 的输入走 CDP）：lore 操作 agent 窗口时，Chrome 会在那个窗口顶部显示「lore 正在调试此浏览器」，这是正常的，不用向用户解释，用户问起再说。
 
 ## 5. 验收
 
@@ -59,7 +60,7 @@ node <安装目录>/setup.js
 
 - 全部通过：进入第 6 步。
 - 扩展未连接（`need-extension`）：对用户只说「请在 `chrome://extensions` 里确认 lore 扩展是开着的，再点一下它的图标」，然后重新运行 `doctor`。
-- `extension-abi` 提示扩展 ABI 不对：对用户只说「请在 `chrome://extensions` 里点 lore 扩展卡片上的刷新，完成后告诉我『好了』」
+- `extension-abi` 提示扩展 ABI 不对：先运行一次要扩展的命令（如 `lore tabs`）再运行 `doctor`（扩展会自己重新加载）；仍不对时，对用户只说「请在 `chrome://extensions` 里点 lore 扩展卡片上的刷新，完成后告诉我『好了』」
 - 其它失败：按 `doctor` 输出的修复命令自己处理，再重新运行 `doctor`；处理不了时，对用户说清需要用户做的一件事。
 
 通过后进入第 6 步。可以自己做冒烟测试（例如 `lore status`、`lore tabs`）。

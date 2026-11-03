@@ -6,6 +6,8 @@ import { isRuntimePath } from "./deploy.ts";
 
 /** setup.js 写在部署目录里；daemon 启动时记下自己的 build，CLI 拿它对比磁盘上的最新值。 */
 export const VERSION_FILE = ".version";
+/** 同一个 build 也写进扩展（扩展握手时报给 daemon）：daemon 发现扩展跑的不是磁盘上这一版，就让它从磁盘重新加载。 */
+export const EXTENSION_BUILD_FILE = path.join("chrome-extension", "build.js");
 
 export type Version = {
   /** 运行时代码内容的哈希（规则见 isRuntimePath，不含本文件）。 */
@@ -19,7 +21,7 @@ function listFiles(root: string, dir: string, out: string[]): void {
     const file = path.join(dir, entry.name);
     if (!isRuntimePath(root, file)) continue;
     if (entry.isDirectory()) listFiles(root, file, out);
-    else if (entry.isFile() && entry.name !== VERSION_FILE) out.push(file);
+    else if (entry.isFile() && entry.name !== VERSION_FILE && path.relative(root, file) !== EXTENSION_BUILD_FILE) out.push(file);
   }
 }
 
@@ -35,6 +37,7 @@ export function computeVersion(root: string): Version {
 export function writeVersion(root: string): Version {
   const version = computeVersion(root);
   fs.writeFileSync(path.join(root, VERSION_FILE), `${JSON.stringify(version)}\n`, "utf8");
+  fs.writeFileSync(path.join(root, EXTENSION_BUILD_FILE), `// setup.js 写入：这一版扩展的 build（握手时报给 daemon）。仓库里是空的。\nexport const BUILD = ${JSON.stringify(version.build)};\n`, "utf8");
   return version;
 }
 

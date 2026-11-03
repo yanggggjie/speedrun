@@ -1,7 +1,7 @@
 import type { FiltersEngine } from "@ghostery/adblocker";
 import { isSameSite, parseUrl, siteOfUrl } from "../utils/url.ts";
 import { createLogger } from "../utils/logger.ts";
-import { causeLabel, endpointOf } from "./digest.ts";
+import { endpointOf } from "./digest.ts";
 import type { EndpointIndex } from "./endpoints.ts";
 import { noiseReason, shouldStoreBody } from "./filter.ts";
 import type { RawStore } from "./raw.ts";
@@ -28,14 +28,6 @@ const MAX_TAB_STATE = 2_000;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-
-function targetText(t: unknown): string {
-  if (!t || typeof t !== "object") return "";
-  const o = t as { tag?: string; role?: string; text?: string; sel?: string };
-  const name = (o.role || o.tag || "").trim();
-  const text = (o.text ?? "").trim();
-  return text ? `${name}[${text.slice(0, 30)}]` : `${name}${o.sel ? `(${o.sel.split(">").pop()})` : ""}`;
-}
 
 function trimMap<K, V>(map: Map<K, V>): void {
   if (map.size > MAX_TAB_STATE) map.delete(map.keys().next().value as K);
@@ -180,7 +172,6 @@ export class Ingestor {
     if (pageSite) { this.tabSite.set(msg.tab, pageSite); trimMap(this.tabSite); }
     switch (msg.k) {
       case "net": return this.net(msg, page);
-      case "ev": return this.input(msg, page);
       case "nav": {
         const url = this.bare(str(msg.url) ?? "");
         const site = siteOfUrl(str(msg.url)) || pageSite;
@@ -316,26 +307,6 @@ export class Ingestor {
     this.lastAction.set(tab, act);
     trimMap(this.lastAction);
     return act;
-  }
-
-  private input(msg: PageMsg, page: string | undefined): void {
-    const type = str(msg.type) ?? "";
-    // 来源只看 isTrusted：真的是人在 agent 窗口里动了一下（记为 user），假的是页面脚本或 agent 的 DOM 事件（记为 agent）
-    const src: Src = msg.trusted === true ? "user" : "page";
-    const t = (msg.target ?? {}) as { tag?: string; role?: string; text?: string; sel?: string };
-    const key = str(msg.key);
-    const label = type === "key" ? `${key ?? ""} ${targetText(msg.target)}`.trim() : targetText(msg.target);
-    const row: Partial<Row> & Pick<Row, "type" | "src"> = {
-      type: "input", src, kind: type, ...(label ? { target: label } : {}),
-      ...((t.role || t.tag) ? { role: (t.role || t.tag)!.trim() } : {}), ...(t.text?.trim() ? { name: t.text.trim().slice(0, 80) } : {}), ...(t.sel ? { selector: t.sel } : {}),
-      ...(key ? { key } : {}), ...(num(msg.dy) !== undefined ? { deltaY: num(msg.dy) } : {}), ...(num(msg.n) !== undefined ? { n: num(msg.n) } : {}),
-      ...(page ? { page } : {}),
-    };
-    const seq = this.emit(siteOfUrl(str(msg.page)), msg, row);
-    if (src === "user" && type !== "scroll") {
-      this.lastAction.set(msg.tab, { seq, ts: msg.t, label: causeLabel({ ...row, seq, t: msg.t, win: this.winOf(msg.tab), tab: msg.tab } as Row) });
-      trimMap(this.lastAction);
-    }
   }
 
   private snap(msg: PageMsg, page: string | undefined): void {

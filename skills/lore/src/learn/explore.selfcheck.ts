@@ -12,7 +12,7 @@ const rows: Row[] = [
   req(3, { method: "POST", endpoint: "POST /rpc/ReportViewing" }),                // 周期性 endpoint 不算
   req(4, { phase: "idle" }),                                                      // 观察按游标取，idle 的也列
   req(5, { noise: 1 }),                                                            // 噪声不算
-  { ...req(7, {}), type: "input" },                                               // 不是请求
+  { ...req(7, {}), type: "cmd" },                                                 // 不是请求
   req(8, { method: "POST", endpoint: "POST /rpc/StreamTimeline", phase: "load" }), // 翻页导致的流式请求要算
 ];
 const picked = shownRequests(rows, stats);

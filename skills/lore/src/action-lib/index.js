@@ -62,8 +62,6 @@ export async function request(options) {
   return withJson(await call("request", options));
 }
 
-// 页面操作按持久定位（learn 里 computer 按坐标；computer 输出的「定位：…」原样放进这里）：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? }。元素没出现会等到 timeout（默认 10 秒）。
-// 操作之后默认不等页面安静（有动静的页面会白等）；要等某个结果就用 waitFor 等具体元素，或传 { settle: true } 等页面安静（最多 2 秒）。
 /**
  * 等页面自己发出某个请求，拿它的响应：request 被拒（签名和参数绑定）、或请求体由页面拼出来时用；签名由页面自己算（介于 request() 和 DOM 之间）。
  * waitRequest(endpoint, () => navigate(url), { timeout? }) → { status, ok, text, json(), ct, url, requestBody }
@@ -80,26 +78,44 @@ export async function waitRequest(endpoint, trigger, options = {}) {
   return withJson(await call("waitEnd", { id, ...(options.timeout ? { timeout: options.timeout } : {}) }));
 }
 
-/** click(loc, options?) */
-export const click = (loc, options = {}) => call("act", { kind: "click", loc, ...options });
-/** fill(loc, text, options?) */
-export const fill = (loc, text, options = {}) => call("act", { kind: "fill", loc, text, ...options });
-/** select(loc, text, options?) */
-export const select = (loc, text, options = {}) => call("act", { kind: "select", loc, text, ...options });
-/** check(loc, checked = true, options?) */
-export const check = (loc, checked = true, options = {}) => call("act", { kind: "check", loc, checked, ...options });
+// ---- 页面操作：名字和 learn 的工具一样（computer 的 action、form_input），区别只在指元素用持久定位而不是 ref / 坐标 ----
+// 定位：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? }，learn 里操作输出的「定位：…」原样放进来；元素没出现会等到 timeout（默认 10 秒）。
+// 输入和 learn 走同一条路径：先在页面里把元素换成视口坐标（滚进视口），再用 CDP 发真实输入。
+// 操作之后默认不等页面安静（有动静的页面会白等）；要等某个结果就用 waitFor 等具体元素，或传 { settle: true } 等页面安静（最多 2 秒）。
+const CLICKS = { 1: "left_click", 2: "double_click", 3: "triple_click" };
+/** click(loc, { button?: "left" | "right", count?: 1 | 2 | 3, modifiers?: "cmd+shift", settle?, timeout? })：和 computer left_click / right_click / double_click / triple_click 一样。 */
+export const click = (loc, options = {}) => {
+  const { button = "left", count = 1, modifiers, ...rest } = options;
+  const action = button === "right" ? "right_click" : CLICKS[count];
+  if (!action) throw new Error("click 的 count 是 1、2 或 3，button 是 left 或 right");
+  return call("input", { action, loc, ...(modifiers ? { mods: modsOf(modifiers) } : {}), ...rest });
+};
+/** hover(loc, options?)：鼠标移到元素上（悬停菜单、提示）。 */
+export const hover = (loc, options = {}) => call("input", { action: "hover", loc, ...options });
 /** key("cmd+a Enter", { loc?, repeat? })：和 computer key 同一种写法：空格分隔多个，+ 组合，修饰键 cmd / ctrl / alt / shift；给了 loc 先让它获得焦点，否则作用在当前焦点上。repeat 最多 100。 */
-export const key = (keys, options = {}) => call("act", { kind: "key", keys, ...options });
-/** scroll({ direction, amount?, loc? })：和 computer scroll 一样：up / down / left / right，一格 100 像素（默认 3 格，最多 10）；给了 loc 滚它所在的可滚动区域，否则滚整页。 */
-export const scroll = (options = {}) => call("act", { kind: "scroll", ...options });
-/** scroll_to(loc)：把元素滚到可见（视口中间）。 */
-export const scroll_to = (loc, options = {}) => call("act", { kind: "scroll_to", loc, ...options });
-/** waitFor(loc, options?) */
+export const key = (keys, options = {}) => call("input", { action: "key", keys, ...options });
+/** scroll({ direction, amount?, loc? })：和 computer scroll 一样：up / down / left / right，一格 100 像素（默认 3 格，最多 10）；给了 loc 在它上面滚（滚它所在的可滚动区域），否则在视口中央滚。 */
+export const scroll = (options = {}) => call("input", { action: "scroll", ...options });
+/** scroll_to(loc)：把元素滚到视口中央。 */
+export const scroll_to = (loc, options = {}) => call("input", { action: "scroll_to", loc, ...options });
+/** form_input(loc, 值)：和 learn 的 form_input 一样：文本框填文字（先清空），下拉框写选项文字或值，复选框写 true / false。填完核对值，不对就报错。 */
+export const form_input = (loc, value, options = {}) => call("input", { action: "form_input", loc, value, ...options });
+/** waitFor(loc, { timeout?, gone? })：等元素出现（gone: true 等它消失）。 */
 export const waitFor = (loc, options = {}) => call("waitFor", { loc, ...options });
-/** text({ max? }) → { url, title, total, text }：页面的可见文字（最多 max 个字，默认 20000）。读整页正文用它，不用 evaluate。 */
-export const text = (options = {}) => call("text", options);
-/** 声明式取数：query({ css: "article", fields: { author: ".name", link: "a@href" }, limit: 20 })。严格 CSP 的页面也能用。 */
+/** get_page_text({ max? }) → { url, title, source, total, text }：和 learn 的 get_page_text 一样，正文优先（article、main …），没有就整页（最多 max 个字，默认 20000）。 */
+export const get_page_text = (options = {}) => call("get_page_text", options);
+/** 声明式取数：query({ css: "article", fields: { author: ".name", link: "a@href" }, limit: 20 })。 */
 export const query = (spec) => call("query", spec);
-/** 兜底：evaluate(fn, ...参数) 在页面里执行任意函数，参数必须可 JSON 序列化。严格 CSP 的页面会被浏览器拒绝，那时改用 query / request。 */
+/** 兜底：evaluate(fn, ...参数) 在页面里执行任意函数（CDP，不受页面 CSP 限制），参数和返回值必须可 JSON 序列化。 */
 export const evaluate = (fn, ...args) => call("eval", { src: fn.toString(), args });
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function modsOf(spec) {
+  const mods = {};
+  for (const p of String(spec).split("+").filter(Boolean)) {
+    const m = { cmd: "cmd", command: "cmd", meta: "cmd", ctrl: "ctrl", control: "ctrl", alt: "alt", option: "alt", shift: "shift" }[p.toLowerCase()];
+    if (!m) throw new Error(`不认识的修饰键「${p}」：用 cmd、ctrl、alt、shift，用 + 连接`);
+    mods[m] = true;
+  }
+  return mods;
+}

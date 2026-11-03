@@ -1,5 +1,5 @@
-// 页面里（MAIN world）的录制：fetch / XHR 的请求与响应、主文档的渲染结果、用户输入、导航、页面快照。
-// 只在 lore agent 窗口里上报（common.js 的 T.post 按扩展的回答放行）；只如实上报发生的事，不改变页面行为。来源只看 isTrusted。
+// 页面里（MAIN world）的录制：fetch / XHR 的请求与响应、主文档的渲染结果、导航、页面快照。
+// 只在 lore agent 窗口里上报（common.js 的 T.post 按扩展的回答放行）；只如实上报发生的事，不改变页面行为。不记输入事件：agent 窗口里的操作都是 agent 的，由 daemon 记成 cmd 行。
 // 不录 WebSocket、sendBeacon、Worker 里的请求。
 (() => {
   const T = window.__lore;
@@ -138,33 +138,8 @@
   }
   window.addEventListener("popstate", () => { post({ k: "nav", via: "popstate", url: location.href }); later("popstate", 600); });
 
-  // ---- 用户输入：点击、输入、特殊键、滚动。输入只记长度，不记内容 ----
-  let inputPending = null, inputTimer = 0, scrollDy = 0, scrollTrusted = false, scrollTimer = 0;
-  const flushInput = () => { clearTimeout(inputTimer); if (inputPending) { post({ k: "ev", type: "input", trusted: inputPending.trusted, target: inputPending.target, n: inputPending.n }); inputPending = null; } };
-  const flushScroll = () => { clearTimeout(scrollTimer); if (scrollDy) { post({ k: "ev", type: "scroll", trusted: scrollTrusted, dy: Math.round(scrollDy) }); scrollDy = 0; } };
-  addEventListener("pointerdown", (e) => { if (!T.foreground()) return; flushInput(); post({ k: "ev", type: "click", trusted: e.isTrusted, target: T.desc(e.target) }); }, true);
-  addEventListener("click", (e) => { if (!e.isTrusted && T.foreground()) post({ k: "ev", type: "click", trusted: false, target: T.desc(e.target) }); if (T.foreground()) later("after-click", 700); }, true);
-  addEventListener("input", (e) => {
-    if (!T.foreground()) return;
-    const el = e.target, trusted = e.isTrusted;
-    const key = T.cssPath(el);
-    if (inputPending && inputPending.key !== key) flushInput();
-    inputPending = { key, trusted, target: T.desc(el), n: ((el.value ?? el.textContent) || "").length };
-    clearTimeout(inputTimer); inputTimer = setTimeout(flushInput, 600);
-  }, true);
-  addEventListener("change", (e) => { if (!T.foreground()) return; flushInput(); post({ k: "ev", type: "change", trusted: e.isTrusted, target: T.desc(e.target) }); later("after-change", 700); }, true);
-  addEventListener("submit", (e) => { if (!T.foreground()) return; flushInput(); post({ k: "ev", type: "submit", trusted: e.isTrusted, target: T.desc(e.target) }); later("after-submit", 700); }, true);
-  addEventListener("keydown", (e) => {
-    if (!T.foreground()) return;
-    const special = e.key === "Enter" || e.key === "Escape" || e.key === "Tab";
-    const combo = (e.ctrlKey || e.metaKey) && e.key.length === 1;
-    if (!special && !combo) return;
-    flushInput();
-    post({ k: "ev", type: "key", trusted: e.isTrusted, key: (combo ? (e.metaKey ? "Cmd+" : "Ctrl+") : "") + e.key, target: T.desc(e.target) });
-  }, true);
-  addEventListener("wheel", (e) => {
-    if (!T.foreground()) return;
-    scrollDy += e.deltaY; scrollTrusted = e.isTrusted;
-    clearTimeout(scrollTimer); scrollTimer = setTimeout(flushScroll, 500);
-  }, { capture: true, passive: true });
+  // ---- 点击、改值、提交之后补一张页面快照（输入本身不记：agent 的每一步操作由 daemon 记成 cmd 行）----
+  addEventListener("click", () => { if (T.foreground()) later("after-click", 700); }, true);
+  addEventListener("change", () => { if (T.foreground()) later("after-change", 700); }, true);
+  addEventListener("submit", () => { if (T.foreground()) later("after-submit", 700); }, true);
 })();

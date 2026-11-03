@@ -114,8 +114,8 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts): string[] {
     if (promoted.length) lines.push(`已变成 verified：${promoted.join("、")}`);
   }
   const open = ctx.learn.opened();
-  if (outcome.status === "failure" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => w.id).join("、")} 还开着：失败的 action 如果在那里 run 成功过，多半是 action 缺了进入那个页面状态的前置步骤（先 goto 哪个页面、少了哪个前置请求），或者页面这次没发带某个头的请求（看观察里的「请求头」，照位置写进 request 的 auth）；对比两个窗口的 timeline.jsonl`);
-  if (outcome.status === "success" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => `${w.id}（空闲 ${idleMin(w)} 分钟）`).join("、")} 还开着，事情做完就 lore learn <句柄> close`);
+  if (outcome.status === "failure" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => w.id).join("、")} 还开着：失败的 action 如果在那里 try_action 成功过，多半是 action 缺了进入那个页面状态的前置步骤（先 goto 哪个页面、少了哪个前置请求），或者页面这次没发带某个头的请求（看观察里的「请求头」，照位置写进 request 的 auth）；对比两个窗口的 timeline.jsonl`);
+  if (outcome.status === "success" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => `${w.id}（空闲 ${idleMin(w)} 分钟）`).join("、")} 还开着，事情做完就 lore learn close <句柄>`);
   return lines;
 }
 

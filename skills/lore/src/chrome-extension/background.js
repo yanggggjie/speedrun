@@ -10,18 +10,24 @@
 //   openTab { windowId, url, active }  在窗口里新开标签页
 //   activateTab { tabId }              把标签页切到所在窗口的前台（后台标签页浏览器不渲染）
 //   closeTab { tabId } | closeWindow { windowId }
-//   screenshot { tabId, region?, scale? } 截图：把标签页切到前台，截可见区域，缩到视口的 CSS 像素尺寸（截图上的坐标就是页面坐标）；region [x0,y0,x1,y1] 只要这块（zoom），scale 再缩小；返回 { data(base64), mime, w, h（图的尺寸）, vw, vh（视口） }
-// 扩展 → daemon：{ type: "hello", abi, ... } | { type: "page", tab, win, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化和关闭；win 是标签页所在的浏览器窗口）
+//   screenshot { tabId, region?, scale? } 截图（CDP）：截视口，一个像素就是一个 CSS 像素（截图上的坐标就是页面坐标）；region [x0,y0,x1,y1] 只要这块（zoom，按设备像素放大），scale 再缩小；返回 { data(base64), mime, w, h（图的尺寸）, vw, vh（视口） }
+//   input { tabId, action, x, y, … }   一次真实输入（CDP Input.*）：点击、悬停、拖拽、滚轮、按键、输入文字，见 cdp.js
+//   evaluate { tabId, src, args }      在页面里执行函数（CDP Runtime.evaluate，不受 CSP 限制），返回 { v }
+//   reload {}                          从磁盘重新加载扩展
+// 扩展 → daemon：{ type: "hello", abi, build, ... }（build 是 setup.js 写进 build.js 的版本，daemon 发现不是磁盘上的最新版就发 reload） | { type: "page", tab, win, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化和关闭；win 是标签页所在的浏览器窗口）
 //
 // 只录 agent 自己的标签页：lore 开的（openWindow、openTab），以及被它们打开的（target=_blank、window.open，看 openerTabId）。
 // 窗口里有 anchor 页（标题 lore agent）只说明这是 agent 窗口，用户在这个窗口里自己开的标签页（Cmd+T、别的扩展开的）不算、不录。
 // 页面脚本加载时经 bridge 问一次，不是 agent 标签页就不再上报任何东西；地址变化也只转 agent 标签页的。
 
-const ABI = 12;
+import { evaluate, input, screenshot } from "./cdp.js";
+import { BUILD } from "./build.js";
+
+const ABI = 13;
 const HOST = "com.lore.connect";
 const RETRY_MAX_MS = 30_000;
 const KEEPALIVE_MINUTES = 0.5;
-const PAGE_FILES = ["page/common.js", "page/recorder.js", "page/executor.js"];
+const PAGE_FILES = ["page/common.js", "page/a11y.js", "page/recorder.js", "page/executor.js"];
 const ANCHOR_URL = chrome.runtime.getURL("anchor.html");
 
 let port = null;
@@ -64,7 +70,7 @@ async function connect() {
   port.onMessage.addListener((msg) => { void handleHostMessage(msg); });
   port.onDisconnect.addListener(() => { port = null; scheduleRetry(); });
   retryCount = 0;
-  current.postMessage({ type: "hello", abi: ABI, chromeVersion: navigator.userAgent, extensionVersion: chrome.runtime.getManifest().version });
+  current.postMessage({ type: "hello", abi: ABI, build: BUILD, chromeVersion: navigator.userAgent, extensionVersion: chrome.runtime.getManifest().version });
   void injectExisting();
 }
 
@@ -141,7 +147,7 @@ async function runOp(name, args) {
         args: [args.fn, args.args ?? []],
       });
       const out = res?.result;
-      if (!out) throw new Error("页面没有返回结果");
+      if (!out) throw new Error("页面没有返回结果：页面在跳转（navigating）");
       if (out.__loreError) throw new Error(out.__loreError);
       return { v: out.v ?? null };
     }
@@ -191,27 +197,19 @@ async function runOp(name, args) {
       await chrome.tabs.remove(args.tabId);
       return {};
     }
-    case "screenshot": {
-      const tab = await chrome.tabs.get(args.tabId);
-      if (!tab.active) await chrome.tabs.update(args.tabId, { active: true });
-      const [vp] = await chrome.scripting.executeScript({ target: { tabId: args.tabId }, func: () => ({ w: window.innerWidth, h: window.innerHeight }) });
-      const w = vp?.result?.w, h = vp?.result?.h;
-      if (!w || !h) throw new Error("取不到页面视口大小（受限页面截不了图）");
-      const shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
-      const bitmap = await createImageBitmap(await (await fetch(shot)).blob());
-      // 先按视口缩到 CSS 像素（图上一个像素就是一个 CSS 像素），再按 region 裁剪（zoom）、按 scale 缩小；坐标始终按 CSS 像素算
-      const [x0, y0, x1, y1] = Array.isArray(args.region) ? args.region.map(Number) : [0, 0, w, h];
-      const rw = Math.max(1, Math.min(w, x1) - Math.max(0, x0)), rh = Math.max(1, Math.min(h, y1) - Math.max(0, y0));
-      const scale = Number(args.scale) > 0 && Number(args.scale) <= 1 ? Number(args.scale) : 1;
-      const kx = bitmap.width / w, ky = bitmap.height / h;
-      const outW = Math.max(1, Math.round(rw * scale)), outH = Math.max(1, Math.round(rh * scale));
-      const canvas = new OffscreenCanvas(outW, outH);
-      canvas.getContext("2d").drawImage(bitmap, Math.max(0, x0) * kx, Math.max(0, y0) * ky, rw * kx, rh * ky, 0, 0, outW, outH);
-      const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.7 });
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      let bin = "";
-      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      return { data: btoa(bin), mime: "image/jpeg", w: outW, h: outH, vw: w, vh: h };
+    case "screenshot": return screenshot(args.tabId, args);
+    case "input": {
+      if (!(await isAgentTab(args.tabId))) throw new Error("只能在 lore 自己开的标签页里操作页面");
+      return input(args.tabId, args);
+    }
+    case "evaluate": {
+      if (!(await isAgentTab(args.tabId))) throw new Error("只能在 lore 自己开的标签页里操作页面");
+      return { v: await evaluate(args.tabId, args.src, args.args ?? []) };
+    }
+    case "reload": {
+      // 从磁盘重新加载扩展（daemon 发现扩展比安装目录里的旧时用；改了 manifest 也生效）
+      setTimeout(() => chrome.runtime.reload(), 100);
+      return {};
     }
     case "closeWindow": {
       await chrome.windows.remove(args.windowId);
@@ -225,7 +223,10 @@ async function runOp(name, args) {
 // bridge 问"这个标签页录不录"：只有 agent 标签页录。
 // 页面脚本经 bridge 发来的消息：只转 agent 标签页的，补上 tab、frame。页面自己的脚本也能发，所以只当观察记录。
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
-  if (!m || sender.id !== chrome.runtime.id || !sender.tab) return;
+  if (!m || sender.id !== chrome.runtime.id) return;
+  // anchor 页问正在跑的是哪一版（anchor.js：和磁盘上的不一样就重新加载）
+  if (m.__loreMsg === 3) { reply({ build: BUILD }); return; }
+  if (!sender.tab) return;
   if (m.__loreMsg === 2) { void isAgentTab(sender.tab.id).then((on) => reply({ on })); return true; }
   if (m.__loreMsg !== 1) return;
   const tab = sender.tab;

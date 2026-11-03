@@ -1,4 +1,4 @@
-export const USAGE = "用法：lore learn new --url <链接|tab 号> --description \"…\" | learn <句柄> <操作> … | learn list | run --action <名> | run --compose <名> | run --compose-code '代码' | run --resume <编号> --answer '<json>' | tabs | status | daemon restart | doctor [--json]；日志在 ~/.lore/learn-windows/、run-windows/，action 和 endpoints.json 在 ~/.lore/sites/<站点>/，见 SKILL.md";
+export const USAGE = "用法：lore learn new --url <链接|tab 号> --description \"…\" | learn <句柄> <工具> … | learn list | learn close <句柄> | run --action <名> | run --compose <名> | run --compose-code '代码' | run --resume <编号> --answer '<json>' | tabs | status | daemon restart | doctor [--json]；日志在 ~/.lore/learn-windows/、run-windows/，action 和 endpoints.json 在 ~/.lore/sites/<站点>/，见 SKILL.md";
 export type HandshakeStatus = "need-install" | "need-chrome" | "need-extension";
 export type RpcMethod = "ping" | "run";
 export type JsonRpcRequest = { jsonrpc: "2.0"; id: string; method: RpcMethod; params?: Record<string, unknown> };

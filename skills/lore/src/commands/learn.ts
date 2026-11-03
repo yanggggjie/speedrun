@@ -10,21 +10,30 @@ import { siteDirName, siteOfUrl } from "../utils/url.ts";
 import { descriptionOf, parseArgs, valueOf, type ArgSpec } from "./args.ts";
 import { DESCRIPTION_HINT, composeDirOf, idleMin, indent, type Ctx, type Output } from "./context.ts";
 import { outcomeLines } from "./run.ts";
+import type { Session } from "../browser/host.ts";
+import type { Row } from "../record/types.ts";
 
 
-const SUBS = new Set(["computer", "navigate", "observe", "run", "close"]);
-/** computer 里只看不动的（不计次数、不要 --description）：screenshot、zoom 也不附带观察。 */
+/** learn 窗口里的工具：和 Claude in Chrome 同名、同参数、同语义（read_page、find、get_page_text、computer、form_input、navigate），加一个 lore 自有的 try_action。 */
+const TOOLS = new Set(["read_page", "find", "get_page_text", "computer", "form_input", "navigate", "try_action"]);
+/** 只看不动的工具（不计次数、不要 --description、不附带观察）。 */
+const LOOK_TOOLS = new Set(["read_page", "find", "get_page_text"]);
+/** computer 里只看不动的（不计次数、不要 --description）：screenshot、zoom 不附带观察；wait 等完附带一次观察（等晚到的请求就用它）。 */
 const LOOK_ONLY = new Set(["screenshot", "zoom", "wait"]);
-const LEARN_USAGE = 'lore learn new --url <链接|tab 号> --description "要做的事"（打开 learn 窗口，返回句柄）；lore learn <句柄> computer <action> … | navigate <网址|back|forward> | observe | run --action <名> | close；lore learn list（列出 learn 窗口）';
+const LEARN_USAGE = 'lore learn new --url <链接|tab 号> --description "要做的事"（打开 learn 窗口，返回句柄）；lore learn list；lore learn close <句柄>；lore learn <句柄> read_page | find "<查询>" | get_page_text | computer <action> … | form_input <ref> <值> | navigate <网址|back|forward> | try_action <名> [--参数 值]';
 
-/** lore learn new …：打开；lore learn list：列出；lore learn <句柄> <操作>：在那个 learn 窗口里操作。学 action 都在这里，每一步都进日志，操作后附带一次观察。 */
+/** lore learn new …：打开；lore learn list：列出；lore learn close <句柄>：关掉；lore learn <句柄> <工具>：在那个 learn 窗口里探索。学 action 都在这里，每一步都进日志，改变页面的操作后附带一次观察。 */
 export async function learnCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
   const [first, ...rest] = args;
   if (first === "new") return startLearn(rest, ctx, out);
   if (first === "list" && rest.length === 0) return listLearn(ctx, out);
+  if (first === "close") {
+    if (rest.length !== 1) return out.fail(`用法：lore learn close <句柄>`);
+    return closeLearn(rest[0]!, ctx, out);
+  }
   if (!first || first.startsWith("--")) return out.fail(`用法：${LEARN_USAGE}`);
   const [sub, ...more] = rest;
-  if (!sub || !SUBS.has(sub)) {
+  if (!sub || !TOOLS.has(sub)) {
     if (HANDLE.test(first)) return out.fail(`不认识的操作「${sub ?? ""}」。用法：${LEARN_USAGE}`);
     return out.fail(`「${first}」不是 learn 窗口的句柄。用法：${LEARN_USAGE}`);
   }
@@ -76,11 +85,11 @@ async function startLearn(argv: string[], ctx: Ctx, out: Output): Promise<void> 
   if (fresh) fs.writeFileSync(guideFile, guide);
   out.line([
     `ok learn 窗口已打开：${w.id}`,
-    `句柄：${w.id}（之后的命令：lore learn ${w.id} <操作>）`,
+    `句柄：${w.id}（之后的命令：lore learn ${w.id} <工具>，工具和 Claude in Chrome 一样：read_page、find、get_page_text、computer、form_input、navigate，再加 try_action）`,
     `要做的事：${description}`,
     `窗口目录：${ctx.log.winDir(w.id)}`,
     `learn 指引：${guideFile}${fresh ? "（第一次给出或有更新，全文在最后）" : "（开始前先读一遍）"}`,
-    "注意：这里的 computer 只在 learn 窗口里触发页面行为，让 lore 录到请求、学出 action；用户要的结果只能来自 lore run，不要把在这里看到的直接交给用户",
+    "注意：这里的工具只在 learn 窗口里探索、触发页面行为，让 lore 录到请求、学出 action；用户要的结果只能来自 lore run，不要把在这里看到的直接交给用户",
     ...(opened ? [`起点：${opened.url} "${opened.title}"`] : []),
     obs,
     ...(fresh ? ["", guide] : []),
@@ -88,10 +97,22 @@ async function startLearn(argv: string[], ctx: Ctx, out: Output): Promise<void> 
 }
 
 const SPECS: Record<string, ArgSpec> = {
-  computer: { values: ["description", "scale", "modifiers", "repeat"] },
-  observe: { values: ["description"], switches: ["all"] },
-  run: { values: ["action", "description"], params: true },
+  computer: { values: ["description", "scale", "modifiers", "repeat", "ref", "to"] },
+  read_page: { values: ["filter", "depth", "ref", "max-chars"] },
+  find: { values: [] },
+  get_page_text: { values: ["max"] },
+  form_input: { values: ["description"] },
+  try_action: { values: ["description"], params: true },
 };
+
+async function closeLearn(id: string, ctx: Ctx, out: Output): Promise<void> {
+  const w = ctx.learn.get(id);
+  if (!w) return out.fail(`没有 learn 窗口 ${id}：lore learn list 列出有哪些`);
+  if (!w.open) return out.line(`ok learn 窗口 ${id} 的 Chrome 窗口已经关了\n窗口目录：${ctx.log.winDir(id)}`);
+  await ctx.learn.close(w);
+  const delivered = ctx.log.runsSince(w.createdAt).some((m) => m.status === "success");
+  out.line([`ok 已关掉 learn 窗口 ${id}`, `窗口目录：${ctx.log.winDir(id)}（句柄和目录保留，再对它操作会从 ${w.url} 重新打开）`, ...(delivered ? [] : ["下一步：这个窗口学到的还没用 lore run 交付过：用户要的结果要来自 lore run（把要的请求写成 action，lore run --action / --compose-code）"])].join("\n"));
+}
 
 async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, out: Output): Promise<void> {
   const a = parseArgs(argv, SPECS[sub] ?? { values: ["description"] });
@@ -100,33 +121,46 @@ async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, 
   // 先检查参数，再碰浏览器
   let computer: ComputerCmd | undefined;
   if (sub === "computer") {
-    const parsed = parseComputer(a.rest, { scale: valueOf(a, "scale"), modifiers: valueOf(a, "modifiers"), repeat: valueOf(a, "repeat") });
+    const parsed = parseComputer(a.rest, { scale: valueOf(a, "scale"), modifiers: valueOf(a, "modifiers"), repeat: valueOf(a, "repeat"), ref: valueOf(a, "ref"), to: valueOf(a, "to") });
     if ("error" in parsed) return out.fail(parsed.error);
     computer = parsed.cmd;
   }
-  const lookOnly = computer !== undefined && LOOK_ONLY.has(computer.action);
-  const counted = (sub === "computer" && !lookOnly) || sub === "navigate" || sub === "run";
+  let look: Record<string, unknown> | undefined;
+  if (sub === "read_page") {
+    const filter = valueOf(a, "filter") ?? "all";
+    if (filter !== "all" && filter !== "interactive") return out.fail("--filter 是 interactive 或 all");
+    const depth = Number(valueOf(a, "depth") ?? 15), maxChars = Number(valueOf(a, "max-chars") ?? 50_000);
+    if (!(depth >= 1 && depth <= 100) || !(maxChars >= 1000)) return out.fail("--depth 是 1 到 100，--max-chars 至少 1000");
+    const ref = valueOf(a, "ref");
+    if (ref !== undefined && !REF.test(ref)) return out.fail(`--ref 要写成 ref_数字（read_page、find 给出的），收到：${ref}`);
+    if (a.rest.length) return out.fail(`多余的参数：${a.rest.join(" ")}。用法：lore learn ${id} read_page [--filter interactive|all] [--depth 15] [--ref ref_N] [--max-chars 50000]`);
+    look = { filter, depth, maxChars, ...(ref ? { ref } : {}) };
+  } else if (sub === "find") {
+    if (!a.rest.length) return out.fail(`用法：lore learn ${id} find "<查询>"（按目的或文字找，如 "搜索框"、"评论"）`);
+    look = { query: a.rest.join(" ") };
+  } else if (sub === "get_page_text") {
+    const max = Number(valueOf(a, "max") ?? 20_000);
+    if (!(max >= 100)) return out.fail("--max 至少 100");
+    if (a.rest.length) return out.fail(`多余的参数：${a.rest.join(" ")}。用法：lore learn ${id} get_page_text [--max 20000]`);
+    look = { max };
+  }
+  let form: { ref: string; value: string } | undefined;
+  if (sub === "form_input") {
+    const [ref, ...value] = a.rest;
+    if (!ref || !REF.test(ref) || !value.length) return out.fail(`用法：lore learn ${id} form_input <ref_N> <值> --description "…"（文本框写文字，下拉框写选项文字或值，复选框写 true / false）`);
+    form = { ref, value: value.join(" ") };
+  }
+  const lookOnly = LOOK_TOOLS.has(sub) || (computer !== undefined && LOOK_ONLY.has(computer.action));
+  const counted = !lookOnly;
   const found = counted ? ctx.learn.forOp(id) : ctx.learn.get(id) ?? { error: `没有 learn 窗口 ${id}：lore learn list 列出有哪些` };
   if ("error" in found) return out.fail(found.error);
   const w: LearnWindow = found;
   if (counted && !description) return out.fail(`learn ${id} ${sub}${computer ? ` ${computer.action}` : ""} ${DESCRIPTION_HINT}`);
-  if (sub === "close") {
-    if (!w.open) return out.line(`ok learn 窗口 ${id} 的 Chrome 窗口已经关了\n窗口目录：${ctx.log.winDir(id)}`);
-    await ctx.learn.close(w);
-    const delivered = ctx.log.runsSince(w.createdAt).some((m) => m.status === "success");
-    return out.line([`ok 已关掉 learn 窗口 ${id}`, `窗口目录：${ctx.log.winDir(id)}（句柄和目录保留，再对它操作会从 ${w.url} 重新打开）`, ...(delivered ? [] : ["下一步：这个窗口学到的还没用 lore run 交付过：用户要的结果要来自 lore run（把要的请求写成 action，lore run --action / --compose-code）"])].join("\n"));
-  }
-  if (sub === "observe") {
-    if (w.open) await ctx.ensureExtension();
-    const text = await observe(ctx, w, ctx.learn.session(id), undefined, a.switches.has("all"));
-    ctx.learn.save(w);
-    return out.line(`ok 观察 ${id}\n${text}`);
-  }
   let target: { name: string; params: Record<string, string>; site?: string; endpoints: string[] } | undefined;
   if (sub === "navigate" && !a.rest[0]) return out.fail(`用法：lore learn ${id} navigate <网址|back|forward> --description "…"`);
-  if (sub === "run") {
-    const name = valueOf(a, "action");
-    if (!name) return out.fail(`用法：lore learn ${id} run --action <名> [--参数 值] --description "…"`);
+  if (sub === "try_action") {
+    const name = a.rest[0];
+    if (!name || a.rest.length > 1) return out.fail(`用法：lore learn ${id} try_action <名> [--参数 值] --description "…"`);
     const found = findAction(ctx.log.dir, name, composeDirOf(ctx));
     if (!found) return out.fail(`action 不存在：${name}（在 ${ctx.log.dir}/<站点>/actions/ 下）`);
     const summary = actionSummary(found.file, found.site);
@@ -151,6 +185,11 @@ async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, 
     const how = zoom ? `区域 [${computer.region!.join(", ")}] 放大看；图上的坐标不是页面坐标，点的时候用这个区域在整页截图里的坐标` : computer.scale ? `缩小到 ${computer.scale}；坐标仍按视口 ${shot.vw}×${shot.vh} 算（图上的坐标除以 ${computer.scale}）` : "图上的像素坐标就是 computer 操作的坐标，左上角 (0,0)";
     return out.line([`ok ${computer.action} ${shot.w}×${shot.h}`, ...head, `文件：${shot.file}（用读图片的方式看；${how}；页面变了要重新截）`].join("\n"));
   }
+  if (look) {
+    const lines = await lookTool(ctx, w, sess, sub, look);
+    ctx.learn.save(w);
+    return out.line([lines[0]!, ...head, ...lines.slice(1)].join("\n"));
+  }
   let first = `ok ${sub}${computer ? ` ${computer.action}` : ""}`;
   const body: string[] = [];
   if (sub === "navigate") {
@@ -166,27 +205,69 @@ async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, 
   } else if (computer?.action === "wait") {
     await new Promise((r) => setTimeout(r, computer!.seconds! * 1000));
     first = `ok wait ${computer.seconds}s`;
-  } else if (computer) {
-    const { action, ...rest } = computer;
-    const res = (await ctx.host.op(sess, "pointer", { action, ...rest, description })) as { navigated?: boolean; url?: string; title?: string; target?: Target; loc?: unknown; warning?: string; dropTarget?: Target; scrollY?: number };
-    if (res.target) body.push(`落在：${describeTarget(res.target)}`);
-    if (res.loc) body.push(`定位：${JSON.stringify(res.loc)}（写 action 时放进 click(定位) / fill(定位, …)）`);
-    if (res.warning) body.push(`提醒：${res.warning}`);
-    if (res.dropTarget) body.push(`松开在：${describeTarget(res.dropTarget)}`);
-    if (res.scrollY !== undefined) body.push(`滚动位置：${res.scrollY}`);
-    if (res.navigated) body.push(`跳转：${res.url ?? ""} "${res.title ?? ""}"`);
+  } else {
+    const { action, ...rest } = computer ?? { action: "form_input" };
+    const res = (await ctx.host.op(sess, "input", { action, ...rest, ...(form ? { ref: form.ref, value: form.value } : {}), description })) as InputResult;
+    body.push(...inputLines(res, action));
   }
   if (counted) w.ops++;
-  // 等页面安静、这一步引发的记录都到 daemon，再观察（不用再单独 observe 才看到这一步的请求）
+  // 等页面安静、这一步引发的记录都到 daemon，再观察
   const q = await ctx.host.quiet(sess);
-  body.push(q.settled ? `稳定：页面已安静，等了 ${(q.waitedMs / 1000).toFixed(1)}s` : `稳定：等了 ${(q.waitedMs / 1000).toFixed(1)}s 页面还在变化（晚到的请求下次 observe 出现）`);
+  body.push(q.settled ? `稳定：页面已安静，等了 ${(q.waitedMs / 1000).toFixed(1)}s` : `稳定：等了 ${(q.waitedMs / 1000).toFixed(1)}s 页面还在变化（晚到的请求用 computer wait 等一会儿再看）`);
   if (computer?.action === "scroll") body.push(`截图：${(await shotFile("scroll")).file}（滚动之后的样子）`);
   const obs = await observe(ctx, w, sess, description);
-  // 操作了很多次还没写 action：提醒一次（computer 只是触发页面行为，结果要来自 lore run）
+  // 操作了很多次还没写 action：提醒一次（这里只是探索，结果要来自 lore run）
   const nudge = counted && w.ops % NUDGE_EVERY === 0 && !obs.includes("\n下一步：") && !actionsNewerThan(ctx.log.dir, w.site, w.createdAt)
     ? [`下一步：已经操作 ${w.ops} 次，还没有写 action。看到的东西不能直接交给用户：把要的请求写成 action（读不了的写成 DOM action），lore run 交付`] : [];
   ctx.learn.save(w);
   out.line([first, ...head, ...body, obs, ...nudge].join("\n"));
+}
+
+const REF = /^ref_\d+$/;
+
+/** 只看不动的工具：read_page（全文存进 pages/，时间线记一行 snap a11y）、find、get_page_text。 */
+async function lookTool(ctx: Ctx, w: LearnWindow, sess: Session, tool: string, args: Record<string, unknown>): Promise<string[]> {
+  if (tool === "read_page") {
+    const r = (await ctx.host.op(sess, "read_page", args)) as { url: string; title: string; text: string; count: number; truncated: boolean; viewport: number[] };
+    const seq = ctx.log.reserve();
+    const rel = ctx.log.putFile(w.id, `pages/${String(seq).padStart(6, "0")}-a11y.txt`, `${r.url}\n${r.title}\n\n${r.text}`);
+    ctx.log.append({ seq, t: Date.now(), win: w.id, site: siteOfUrl(r.url) || w.site, src: "agent", tab: sess.tab ?? 0, type: "snap", kind: "a11y", target: `"${r.title.slice(0, 40)}" ${r.count}`, page: r.url.split("?")[0], file: rel } as Row);
+    const what = args.filter === "interactive" ? "交互元素" : "元素";
+    return [
+      `ok read_page ${what} ${r.count} 个（全文：${ctx.log.abs(w.id, rel)}）`,
+      `页面：${r.url} "${r.title}"（视口 ${r.viewport.join("×")}）`,
+      r.text.trimEnd() || "（没有可列的元素：页面可能还在加载，computer wait 2 再看；或者内容在 iframe 里）",
+      ...(r.truncated ? [`（超过 ${args.maxChars} 字，截断了：用 --ref 只看某一块，或 --filter interactive、--depth 小一点）`] : []),
+      "下一步：用 ref 操作（computer left_click --ref ref_N、form_input ref_N 值），ref 只在这个页面里有效；写 action 用操作输出的「定位：」",
+    ];
+  }
+  if (tool === "find") {
+    const r = (await ctx.host.op(sess, "find", args)) as { more: number; items: Array<{ ref: string; role: string; name: string; x: number; y: number; offViewport: boolean; loc: unknown }> };
+    if (!r.items.length) return [`ok find 没有找到「${args.query}」`, "下一步：换个说法（页面上的原文、控件类型如 textbox / button），或 read_page --filter interactive 看全部"];
+    return [
+      `ok find ${r.items.length} 个${r.more ? `（还有 ${r.more} 个没列，写得更具体些）` : ""}`,
+      ...r.items.map((e) => `  ${e.ref} ${e.role} "${e.name}" (${e.x},${e.y})${e.offViewport ? " 视口外" : ""}  定位：${JSON.stringify(e.loc)}`),
+    ];
+  }
+  const r = (await ctx.host.op(sess, "get_page_text", args)) as { url: string; title: string; source: string; total: number; text: string };
+  return [`ok get_page_text ${r.total} 字（取自 ${r.source}${r.total > r.text.length ? `，列前 ${r.text.length} 字` : ""}）`, `页面：${r.url} "${r.title}"`, r.text];
+}
+
+/** 输入的结果（host 的 input）。 */
+type InputResult = { target?: Target; loc?: unknown; warning?: string; covered?: string; scrolled?: boolean; dropTarget?: Target; scrollY?: number; navigated?: boolean; url?: string; title?: string; value?: string; checked?: boolean; password?: boolean; chars?: number };
+
+function inputLines(res: InputResult, action: string): string[] {
+  const out: string[] = [];
+  if (res.target) out.push(`落在：${describeTarget(res.target)}${res.scrolled ? "（先滚进了视口）" : ""}`);
+  if (res.covered) out.push(`被遮挡：目标被 ${res.covered} 盖住，点击落在了它上面`);
+  if (res.loc) out.push(`定位：${JSON.stringify(res.loc)}（写 action 时放进 ${action === "form_input" ? "form_input(定位, 值)" : action === "hover" ? "hover(定位)" : action === "scroll_to" ? "scroll_to(定位)" : action === "key" ? 'key("…", { loc: 定位 })' : "click(定位)"}）`);
+  if (res.warning) out.push(`提醒：${res.warning}`);
+  if (res.dropTarget) out.push(`松开在：${describeTarget(res.dropTarget)}`);
+  if (res.value !== undefined) out.push(`值：${res.value}`);
+  if (res.checked !== undefined) out.push(`勾选：${res.checked}`);
+  if (res.scrollY !== undefined) out.push(`滚动位置：${res.scrollY}`);
+  if (res.navigated) out.push(`跳转：${res.url ?? ""} "${res.title ?? ""}"`);
+  return out;
 }
 
 /** 页面脚本描述的元素（common.js 的 T.desc）。 */
@@ -206,6 +287,8 @@ function actionsNewerThan(sitesDir: string, site: string, t: number): boolean {
 export type ComputerCmd = {
   action: string;
   x?: number; y?: number; sx?: number; sy?: number;
+  /** --ref ref_N：read_page / find 给出的元素，代替坐标；--to ref_N：拖拽的终点。 */
+  ref?: string; toRef?: string;
   text?: string; keys?: string; repeat?: number;
   direction?: string; amount?: number;
   region?: number[]; scale?: number; seconds?: number;
@@ -218,12 +301,15 @@ const MOD_NAMES: Record<string, string> = { cmd: "cmd", command: "cmd", meta: "c
 
 /**
  * 解析 computer <action> …（和 computer 工具一一对应）：
- * screenshot [--scale s] | zoom <x0> <y0> <x1> <y1> [--scale s] | left_click|right_click|double_click|triple_click|hover <x> <y> [--modifiers cmd+shift]
- * | left_click_drag <sx> <sy> <x> <y> | type "文字" | key "<键 键…>" [--repeat n] | scroll <x> <y> <up|down|left|right> [格数] | scroll_to <x> <y> | wait <秒>
+ * screenshot [--scale s] | zoom <x0> <y0> <x1> <y1> [--scale s] | left_click|right_click|double_click|triple_click|hover (<x> <y> | --ref ref_N) [--modifiers cmd+shift]
+ * | left_click_drag (<sx> <sy> <x> <y> | --ref ref_A --to ref_B) | type "文字" | key "<键 键…>" [--repeat n] | scroll (<x> <y> | --ref ref_N) <up|down|left|right> [格数]
+ * | scroll_to (<x> <y> | --ref ref_N) | wait <秒>
  */
-export function parseComputer(args: string[], opts: { scale?: string; modifiers?: string; repeat?: string } = {}): { cmd: ComputerCmd } | { error: string } {
+export function parseComputer(args: string[], opts: { scale?: string; modifiers?: string; repeat?: string; ref?: string; to?: string } = {}): { cmd: ComputerCmd } | { error: string } {
   const [action, ...rest] = args;
-  const usage = (u: string): { error: string } => ({ error: `用法：lore learn <句柄> computer ${u}（坐标取自截图，CSS 像素，左上角 (0,0)）` });
+  const usage = (u: string): { error: string } => ({ error: `用法：lore learn <句柄> computer ${u}（坐标取自截图，CSS 像素，左上角 (0,0)；或用 --ref ref_N 指 read_page / find 给出的元素）` });
+  for (const [flag, v] of [["ref", opts.ref], ["to", opts.to]] as const) if (v !== undefined && !/^ref_\d+$/.test(v)) return { error: `--${flag} 要写成 ref_数字（read_page、find 给出的），收到：${v}` };
+  const ref = opts.ref;
   if (!action || !ACTIONS.includes(action)) return { error: `computer 的 action 是 ${ACTIONS.join("、")} 之一，收到：${action ?? "（空）"}` };
   const nums = (n: number): number[] | undefined => (rest.length === n && rest.every((v) => NUM.test(v)) ? rest.map(Number) : undefined);
   let mods: Record<string, boolean> | undefined;
@@ -242,10 +328,15 @@ export function parseComputer(args: string[], opts: { scale?: string; modifiers?
       return { cmd: { action, region: r, ...(scale ? { scale } : {}) } };
     }
     case "left_click": case "right_click": case "double_click": case "triple_click": case "hover": case "scroll_to": {
+      if (ref) return rest.length ? usage(`${action} <x> <y> 或 ${action} --ref ref_N（二选一）`) : withMods({ action, ref });
       const c = nums(2);
       return c ? withMods({ action, x: c[0], y: c[1] }) : usage(`${action} <x> <y>`);
     }
     case "left_click_drag": {
+      if (ref || opts.to) {
+        if (!ref || !opts.to || rest.length) return usage("left_click_drag --ref ref_A --to ref_B");
+        return withMods({ action, ref, toRef: opts.to });
+      }
       const c = nums(4);
       return c ? withMods({ action, sx: c[0], sy: c[1], x: c[2], y: c[3] }) : usage("left_click_drag <起点 x> <起点 y> <终点 x> <终点 y>");
     }
@@ -256,13 +347,18 @@ export function parseComputer(args: string[], opts: { scale?: string; modifiers?
       return rest.length ? { cmd: { action, keys: rest.join(" "), ...(repeat > 1 ? { repeat } : {}) } } : usage('key "<键 键…>" [--repeat n]（如 Enter、cmd+a、"Backspace Backspace"）');
     }
     case "scroll": {
+      if (ref) {
+        const [direction, amount] = rest;
+        if (!direction || !["up", "down", "left", "right"].includes(direction) || rest.length > 2 || (amount !== undefined && !/^\d+$/.test(amount))) return usage("scroll --ref ref_N <up|down|left|right> [格数]");
+        return withMods({ action, ref, direction, amount: Math.min(Math.max(1, Number(amount ?? 3)), 10) });
+      }
       const [x, y, direction, amount] = rest;
       if (!x || !y || !NUM.test(x) || !NUM.test(y) || !direction || !["up", "down", "left", "right"].includes(direction) || rest.length > 4 || (amount !== undefined && !/^\d+$/.test(amount))) return usage("scroll <x> <y> <up|down|left|right> [格数，一格 100 像素，最多 10]");
       return withMods({ action, x: Number(x), y: Number(y), direction, amount: Math.min(Math.max(1, Number(amount ?? 3)), 10) });
     }
     case "wait": {
       const sec = rest.length === 1 && NUM.test(rest[0]!) ? Number(rest[0]) : NaN;
-      return sec > 0 && sec <= 10 ? { cmd: { action, seconds: sec } } : usage("wait <秒>（最多 10 秒；每步之后已经自动等页面安静，只在要等动画时用）");
+      return sec > 0 && sec <= 10 ? { cmd: { action, seconds: sec } } : usage("wait <秒>（最多 10 秒；等完附带一次观察：等晚到的请求、动画就用它）");
     }
   }
   return usage(action);

@@ -2,7 +2,7 @@
  * 扩展通道：daemon 经 relay（Chrome 拉起的 native messaging host，只转发字节）与 lore Chrome 扩展说话。
  * 帧：4 字节小端长度前缀 + UTF-8 JSON。
  *
- * daemon → 扩展：{ id, name, args }   name：call / tabs / goto / openWindow / openTab / activateTab / closeTab / closeWindow，见 chrome-extension/background.js
+ * daemon → 扩展：{ id, name, args }   name：call / tabs / goto / history / openWindow / openTab / activateTab / closeTab / closeWindow / screenshot / input / evaluate / reload，见 chrome-extension/background.js
  * 扩展 → daemon：{ id, result|error }（应答）| { type: "hello" | "page", ... }（推送：握手、页面消息、标签页的地址变化和关闭）
  *
  * 只支持一个扩展连接、一个 daemon。
@@ -10,7 +10,9 @@
 import { EXTENSION_COMMAND_TIMEOUT_MS } from "../utils/constants.ts";
 
 /** 扩展 ABI 版本：daemon 和扩展之间的操作集合（call、tabs、goto、openWindow、screenshot 等）。只有改 ABI 才加一，用户才需要刷新扩展。 */
-export const ABI = 12;
+export const ABI = 13;
+/** 从这个 ABI 起扩展支持 reload（从磁盘重新加载自己）：daemon 发现扩展旧了就自动让它重新加载，不用用户去 chrome://extensions 点。 */
+export const RELOADABLE_ABI = 13;
 
 /** 扩展 tabs 操作返回的一个标签页；anchor 是 agent 窗口里扩展自己的 anchor 页。 */
 export type TabInfo = { tabId: number; windowId: number; active: boolean; url: string; title: string; status: string; anchor?: boolean };
@@ -62,14 +64,23 @@ export class ExtensionLink {
   }
 
   abi: number | undefined;
+  /** 扩展报来的 build（setup.js 写进扩展的版本）；空的是从仓库直接加载的开发版。 */
+  build = "";
 
-  /** 扩展握手：记下 ABI 版本和能力。版本不符不抛错（扩展还连着，需要让 daemon 能告诉用户去刷新）。 */
+  /** 扩展握手：记下 ABI 版本、build 和能力。版本不符不抛错（扩展还连着，需要让 daemon 能告诉用户去刷新，或让它自己重新加载）。 */
   hello(msg: Record<string, unknown>): void {
     this.chromeVersion = String(msg.chromeVersion ?? "");
     this.abi = typeof msg.abi === "number" ? msg.abi : undefined;
+    this.build = typeof msg.build === "string" ? msg.build : "";
   }
 
   compatible(): boolean { return this.abi === ABI; }
+
+  /** 扩展跑的不是磁盘上这一版（ABI 不同，或 build 和 daemon 的不同），并且它会自己重新加载。 */
+  outdated(diskBuild: string): boolean {
+    if ((this.abi ?? 0) < RELOADABLE_ABI) return false;
+    return !this.compatible() || (diskBuild !== "" && this.build !== "" && this.build !== diskBuild);
+  }
 
   /** 扩展链路接上（relay 发来 hello 之后）。 */
   attach(write: (message: Record<string, unknown>) => void): void {

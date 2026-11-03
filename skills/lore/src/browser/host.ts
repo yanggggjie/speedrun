@@ -184,16 +184,23 @@ export class RunHost {
     switch (name) {
       case "navigate": return this.navigate(s, a);
       case "request": return this.request(s, a);
-      case "act": return this.act(s, a);
-      case "pointer": return this.act(s, a, "pointer");
+      case "input": return this.input(s, a);
       case "screenshot": return this.screenshot(s, a);
       case "waitFor": return this.waitFor(s, a);
-      case "text": { const tab = this.page(s); return this.callTab(tab, "text", [a.max ?? 20_000]); }
+      case "read_page": { const tab = this.page(s); return this.callTab(tab, "readPage", [a]); }
+      case "find": { const tab = this.page(s); return this.callTab(tab, "findElements", [a]); }
+      case "get_page_text": { const tab = this.page(s); return this.callTab(tab, "pageText", [{ max: a.max ?? 20_000 }]); }
       case "query": { const tab = this.page(s); return this.callTab(tab, "query", [a]); }
       case "waitStart": return this.waitStart(s, a);
       case "waitEnd": return this.waitEnd(s, a);
       case "waitCancel": { this.waits.delete(Number(a.id)); return {}; }
-      case "eval": { const tab = this.page(s); return this.log(tab, "eval", String(a.src).slice(0, 60), { src: String(a.src).slice(0, 2000) }, () => this.callTab(tab, "eval", [a])); }
+      case "eval": {
+        const tab = this.page(s);
+        return this.log(tab, "eval", String(a.src).slice(0, 60), { src: String(a.src).slice(0, 2000) }, async () => {
+          await this.d.win.activate(tab);
+          return ((await withTimeout(this.d.link.request("evaluate", { tabId: tab, src: a.src, args: a.args ?? [] }), STEP_TIMEOUT_MS, "evaluate")) as { v: unknown }).v;
+        });
+      }
       default: throw new Error(`未知操作 ${name}`);
     }
   }
@@ -342,7 +349,9 @@ export class RunHost {
       let r: { settled: boolean; d: string; n: number };
       try { r = await withTimeout(this.callTab(tab, "quiet", [left]), left + 3000, "等页面安静"); }
       catch (e) {
-        if (!NAVIGATED.test(e instanceof Error ? e.message : String(e))) throw e;
+        // 页面在跳转：调用要么报执行上下文没了，要么一直等到超时（回车提交表单这类由输入引发的跳转）
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!NAVIGATED.test(msg) && !/等页面安静 超过/.test(msg)) throw e;
         await new Promise((res) => setTimeout(res, 200)); // 页面在跳转：新页面的脚本就位要一小会儿
         continue;
       }
@@ -366,7 +375,6 @@ export class RunHost {
     try { return (await this.callTab(tab, "authSnapshot", [])) as AuthSnapshot; } catch { return undefined; }
   }
 
-  /** 截图（learn 用）：返回 { data(base64), mime, w, h }；图上坐标就是页面视口的 CSS 像素。图片本身不进日志。 */
   /** 截图（learn 的 computer screenshot / zoom）：region 只要这块，scale 缩小；返回图和视口尺寸。图片本身不进日志。 */
   private async screenshot(s: Session, a: { region?: number[]; scale?: number } = {}): Promise<{ data: string; mime: string; w: number; h: number; vw: number; vh: number }> {
     const tab = this.page(s);
@@ -375,30 +383,119 @@ export class RunHost {
     return this.log(tab, a.region ? "zoom" : "screenshot", a.region ? a.region.join(",") : "", {}, async () => (await withTimeout(this.d.link.request("screenshot", args), STEP_TIMEOUT_MS, "截图")) as { data: string; mime: string; w: number; h: number; vw: number; vh: number }, (r) => ({ w: r.w, h: r.h }));
   }
 
-  /** fn 是页面里的执行函数：act 按定位（action 用），pointer 按屏幕坐标（截图 learn 用）。 */
-  private async act(s: Session, a: any, fn: "act" | "pointer" = "act"): Promise<unknown> {
+  /**
+   * 一次输入（learn 的 computer / form_input，和 action 的 click / hover / key / scroll / scroll_to / form_input 共用）：
+   * 目标（ref | loc | 坐标）先在页面里换成视口坐标（a11y.js 的 point：滚进视口、查遮挡、给出持久定位），再由扩展用 CDP 发真实输入（cdp.js）。
+   * a.action：left_click | right_click | double_click | triple_click | hover | left_click_drag | scroll | scroll_to | key | type | form_input。
+   */
+  private async input(s: Session, a: any): Promise<unknown> {
     const tab = this.page(s);
-    const cmd = { ...a };
-    const kind = String(a.kind ?? a.action);
-    const at = a.x !== undefined && a.y !== undefined ? `(${a.x},${a.y})` : "";
-    const target = a.loc !== undefined ? JSON.stringify(a.loc).slice(0, 60) : at || (a.keys ?? a.direction ?? "");
-    const base = { kind, ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(at ? { x: a.x, y: a.y } : {}), ...(a.sx !== undefined ? { sx: a.sx, sy: a.sy } : {}), ...(a.keys ? { keys: a.keys } : {}), ...(a.direction ? { direction: a.direction, amount: a.amount } : {}), ...(a.mods ? { mods: a.mods } : {}), ...(a.checked !== undefined ? { checked: a.checked } : {}), ...(a.description ? { description: a.description } : {}) };
-    delete cmd.settle;
-    return this.log(tab, kind, target, base, async () => {
-      let res: any;
-      try { res = await withTimeout(this.callTab(tab, fn, [cmd]), (a.timeout ?? 10_000) + 5_000, "页面操作"); }
-      catch (e) {
+    const action = String(a.action);
+    const where = a.ref ?? (a.loc !== undefined ? JSON.stringify(a.loc).slice(0, 60) : a.x !== undefined ? `(${a.x},${a.y})` : "");
+    const target = action === "key" ? `${a.keys}${where ? ` @${where}` : ""}` : where || (a.direction ?? "");
+    const detail = {
+      ...(a.ref ? { ref: a.ref } : {}), ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(a.x !== undefined ? { x: a.x, y: a.y } : {}), ...(a.sx !== undefined ? { sx: a.sx, sy: a.sy } : {}),
+      ...(a.toRef ? { toRef: a.toRef } : {}), ...(a.toLoc !== undefined ? { toLoc: a.toLoc } : {}), ...(a.keys ? { keys: a.keys } : {}), ...(a.repeat ? { repeat: a.repeat } : {}),
+      ...(a.direction ? { direction: a.direction, amount: a.amount } : {}), ...(a.mods ? { mods: a.mods } : {}), ...(a.description ? { description: a.description } : {}),
+    };
+    const to = (t: { ref?: string; loc?: unknown; x?: number; y?: number }) => (t.ref ? { ref: t.ref } : t.loc !== undefined ? { loc: t.loc, timeout: a.timeout } : { x: t.x, y: t.y });
+    const send = (args: Record<string, unknown>) => withTimeout(this.d.link.request("input", { tabId: tab, ...args }), STEP_TIMEOUT_MS, "输入");
+    const urlNow = async (): Promise<{ url: string; title: string } | undefined> => (await this.d.link.request("tabs") as { tabs: { tabId: number; url: string; title: string }[] }).tabs.find((t) => t.tabId === tab);
+    const mayNavigate = ["left_click", "right_click", "double_click", "triple_click", "key", "form_input", "type"].includes(action);
+    return this.log(tab, action, String(target), detail, async () => {
+      await this.d.win.activate(tab);
+      const before = mayNavigate ? (await urlNow())?.url : undefined;
+      const res: any = {};
+      const pointAt = async (t: Record<string, unknown>) => (await withTimeout(this.callTab(tab, "point", [t]), (a.timeout ?? 10_000) + 5_000, "找元素")) as { x: number; y: number; target?: unknown; loc?: unknown; warning?: string; covered?: string; scrolled?: boolean };
+      const keep = (p: { target?: unknown; loc?: unknown; warning?: string; covered?: string; scrolled?: boolean }) => Object.assign(res, { target: p.target, loc: p.loc, ...(p.warning ? { warning: p.warning } : {}), ...(p.covered ? { covered: p.covered } : {}), ...(p.scrolled ? { scrolled: true } : {}) });
+      try {
+        switch (action) {
+          case "left_click": case "right_click": case "double_click": case "triple_click": case "hover": {
+            const p = await pointAt(to(a));
+            keep(p);
+            await send({ action, x: p.x, y: p.y, mods: a.mods });
+            break;
+          }
+          case "left_click_drag": {
+            const p = await pointAt(a.ref || a.loc !== undefined ? to(a) : { x: a.sx, y: a.sy });
+            keep(p);
+            const q = await pointAt(a.toRef ? { ref: a.toRef } : a.toLoc !== undefined ? { loc: a.toLoc } : { x: a.x, y: a.y });
+            res.dropTarget = q.target;
+            await send({ action, sx: p.x, sy: p.y, x: q.x, y: q.y, mods: a.mods });
+            break;
+          }
+          case "scroll": {
+            const n = Math.min(Math.max(1, Number(a.amount) || 3), 10) * 100;
+            const [dx, dy] = a.direction === "up" ? [0, -n] : a.direction === "down" ? [0, n] : a.direction === "left" ? [-n, 0] : a.direction === "right" ? [n, 0] : [NaN, NaN];
+            if (Number.isNaN(dx)) throw new Error(`scroll 的方向要是 up、down、left、right，收到：${a.direction}`);
+            const p = a.ref || a.loc !== undefined || a.x !== undefined ? await pointAt({ ...to(a), scroll: false }) : await pointAt({ center: true });
+            res.target = p.target;
+            await send({ action, x: p.x, y: p.y, dx, dy, mods: a.mods });
+            break;
+          }
+          case "scroll_to": Object.assign(res, await this.callTab(tab, "scrollTo", [to(a)])); break;
+          case "key": {
+            if (a.ref || a.loc !== undefined) Object.assign(res, await this.callTab(tab, "focus", [to(a)]));
+            await send({ action, keys: a.keys, repeat: a.repeat });
+            break;
+          }
+          case "type": await send({ action, text: String(a.text ?? "") }); res.chars = String(a.text ?? "").length; break;
+          case "form_input": Object.assign(res, await this.formInput(tab, a, to(a), send)); break;
+          default: throw new Error(`未知的输入 ${action}`);
+        }
+      } catch (e) {
         if (!NAVIGATED.test(e instanceof Error ? e.message : String(e))) throw e;
-        res = { ok: true, navigated: true };
+        res.navigated = true;
       }
-      if (res.ok === false) throw new Error(res.error ?? "操作失败");
-      if (res.navigated) {
-        const loaded = (await this.d.link.request("tabs") as { tabs: { tabId: number; url: string; title: string }[] }).tabs.find((t) => t.tabId === tab);
-        if (loaded) { res.url = loaded.url; res.title = loaded.title; s.origin = originOf(loaded.url); this.d.win.moved(tab, s.origin); }
+      if (mayNavigate || res.navigated) {
+        // 这一步让页面跳转了（地址变了，同站也算；只改了 #hash 的不算）
+        const now = await urlNow();
+        if (now) {
+          res.url = now.url; res.title = now.title;
+          if (before !== undefined && now.url.split("#")[0] !== before.split("#")[0]) res.navigated = true;
+          if (/^https?:/.test(now.url) && originOf(now.url) !== s.origin) { s.origin = originOf(now.url); this.d.win.moved(tab, s.origin); res.navigated = true; }
+        }
+      }
+      // 滚轮滚动是异步的：等滚动位置稳定下来再读（最多 600ms）
+      if (action === "scroll") {
+        try {
+          let last = NaN;
+          for (let i = 0; i < 6; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+            const y = ((await this.callTab(tab, "viewport", [])) as { scrollY: number }).scrollY;
+            if (y === last) break;
+            last = y;
+          }
+          res.scrollY = last;
+        } catch { /* 页面在跳转 */ }
       }
       if (a.settle === true) res.settle = await this.quiet(s);
       return res;
-    }, (r: any) => ({ loc: r.loc, ...((kind === "fill" || kind === "type") && r.target?.type !== "password" ? { text: String(a.text ?? "").slice(0, 200) } : {}), ...(kind === "select" ? { text: String(a.text ?? "") } : {}), url: r.url }));
+    }, (r: any) => ({ loc: r.loc, ...(action === "type" || action === "form_input" ? (r.password ? {} : { text: String(a.text ?? a.value ?? "").slice(0, 200) }) : {}), url: r.url }));
+  }
+
+  /** form_input：文本框点一下、全选、删掉、插入；复选框状态不对就点一下；下拉框在页面里直接设值（原生下拉的选项 CDP 点不到）。最后核对值。 */
+  private async formInput(tab: number, a: any, t: Record<string, unknown>, send: (args: Record<string, unknown>) => Promise<unknown>): Promise<Record<string, unknown>> {
+    const value = a.value;
+    const f = (await this.callTab(tab, "formTarget", [{ ...t, value }])) as { kind: string; x?: number; y?: number; checked?: boolean; target?: unknown; loc?: unknown; value?: string };
+    const out: Record<string, unknown> = { target: f.target, loc: f.loc };
+    if (f.kind === "select") return { ...out, value: f.value };
+    if (f.kind === "check") {
+      const want = value === true || value === "true";
+      if (f.checked !== want) await send({ action: "left_click", x: f.x, y: f.y });
+      const now = (await this.callTab(tab, "checked", [t])) as { checked: boolean };
+      if (now.checked !== want) throw new Error(`点了之后复选框还是 ${now.checked ? "勾上" : "没勾"} 的：可能被页面拦住了，用 computer left_click 试`);
+      return { ...out, checked: now.checked };
+    }
+    await send({ action: "left_click", x: f.x, y: f.y });
+    await send({ action: "key", keys: process.platform === "darwin" ? "cmd+a" : "ctrl+a" });
+    await send({ action: "key", keys: "Backspace" });
+    const text = String(value ?? "");
+    if (text) await send({ action: "insert", text });
+    const now = (await this.callTab(tab, "valueOf", [t])) as { value: string | null; password?: boolean };
+    if (now.password) return { ...out, password: true };
+    if (now.value !== null && now.value !== text) throw new Error(`填完之后输入框里是「${String(now.value).slice(0, 60)}」，不是要的「${text.slice(0, 60)}」：页面可能改写了输入（自动补全、格式化），截图看一下`);
+    return { ...out, value: text };
   }
 
   private async waitFor(s: Session, a: { loc: unknown; timeout?: number; gone?: boolean }): Promise<unknown> {

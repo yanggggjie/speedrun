@@ -27,11 +27,11 @@ export type ObserveDeps = {
 
 /**
  * 观察：游标之后这个 learn 窗口发生的变化（页面、导航、请求、请求之间的依赖），然后把游标移到最新。
- * 晚到的请求（懒加载、轮询、防抖）下次观察时出现，不会丢也不会重复。
- * 请求默认只列这个窗口里第一次出现的 endpoint，其余只计数；all 为真列全部。
+ * 晚到的请求（懒加载、轮询、防抖）下次观察时出现（computer wait 就是等一会儿再观察），不会丢也不会重复。
+ * 请求只列这个窗口里第一次出现的 endpoint，其余只计数（全部都在 timeline.jsonl 里）。
  * 列出的请求带一行「请求头」信号：每个要关心的头值怎么变、页面存储里的来源（在内存里比真值，只输出类别和来源），同时记进 endpoints.json。
  */
-export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | undefined, step?: string, all = false): Promise<string> {
+export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | undefined, step?: string): Promise<string> {
   d.ingest.flush();
   const from = w.cursor;
   const to = d.log.lastSeq();
@@ -57,9 +57,9 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   // 请求文件：时间线行的 file（相对窗口目录）；请求文件先写、行后追加，有行就有文件
   const fileOf = (r: Row): RequestFile | undefined => { const text = r.file ? d.log.readText(w.id, r.file) : undefined; try { return text ? (JSON.parse(text) as RequestFile) : undefined; } catch { return undefined; } };
   const files = new Map(shown.map((r) => [r.seq, fileOf(r)]));
-  const seen = new Set(all ? [] : timeline.filter((r) => r.type === "request" && r.seq <= from && r.endpoint).map((r) => r.endpoint!));
+  const seen = new Set(timeline.filter((r) => r.type === "request" && r.seq <= from && r.endpoint).map((r) => r.endpoint!));
   const picked = shown.filter((r) => {
-    if (all || !r.endpoint) return true;
+    if (!r.endpoint) return true;
     if (seen.has(r.endpoint)) return false;
     seen.add(r.endpoint);
     return true;
@@ -98,12 +98,12 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
     if (deps.length) lines.push(`依赖：\n${deps.map((x) => `  #${x.to} 用了 #${x.from} 响应的 ${x.field}`).join("\n")}`);
   }
   const folded = [repeated ? `之前出现过的 ${repeated}` : "", noise ? `埋点广告 ${noise}` : "", periodic ? `轮询 ${periodic}` : "", assets ? `静态资源 ${assets}` : ""].filter(Boolean);
-  if (folded.length) lines.push(`没列出：${folded.join("，")}${repeated ? "（observe --all 看全部）" : "（在 timeline.jsonl 里）"}`);
-  if (!picked.length && !repeated) lines.push("下一步：页面可能还在加载，等一会儿再 observe；或者数据在页面里，用 DOM 取");
+  if (folded.length) lines.push(`没列出：${folded.join("，")}（都在 timeline.jsonl 里）`);
+  if (!picked.length && !repeated) lines.push("下一步：页面可能还在加载，computer wait 2 等一会儿再看；或者数据在页面里，用 DOM 取（get_page_text、read_page）");
   // 这一步引发了还没有 action 覆盖的 endpoint：提醒写成 action（computer 只是触发，结果要来自 lore run）
   if (step !== undefined) {
     const uncovered = [...new Set(picked.filter((r) => r.phase === "cmd" && r.endpoint && !stats(r.site ?? w.site).get(r.endpoint)?.action).map((r) => r.endpoint!))].slice(0, 3);
-    if (uncovered.length) lines.push(`下一步：${uncovered.join("、")} 还没有 action 覆盖 → 要用的写成 action，lore learn ${w.id} run --action <名> 试，lore run 交付`);
+    if (uncovered.length) lines.push(`下一步：${uncovered.join("、")} 还没有 action 覆盖 → 要用的写成 action，lore learn ${w.id} try_action <名> 试，lore run 交付`);
   }
   w.cursor = Math.max(w.cursor, to);
   return lines.join("\n");
