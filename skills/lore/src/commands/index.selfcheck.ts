@@ -121,10 +121,6 @@ const late = await run("learn", id, "observe");
 const lateSeqs = seqsIn(late.stdout);
 assert.equal(lateSeqs.length, 1, late.stdout); assert.ok(lateSeqs[0]! > second[0]!);
 assert.deepEqual(seqsIn((await run("learn", id, "observe")).stdout), [], "不重复");
-// --since 重看，不推进游标
-const relook = await run("learn", id, "observe", "--since", String(first[0]!));
-assert.deepEqual(seqsIn(relook.stdout), [...second, ...lateSeqs]);
-assert.deepEqual(seqsIn((await run("learn", id, "observe")).stdout), [], "--since 不推进游标");
 
 // learn 窗口里 run：在当前页面跑 action；@write 不拦，输出列出真发出的 write 请求
 const actions = path.join(log.dir, "x.com", "actions");

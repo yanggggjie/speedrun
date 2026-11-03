@@ -93,7 +93,7 @@ async function startLearn(argv: string[], ctx: Ctx, out: Output): Promise<void> 
 }
 
 const SPECS: Record<string, ArgSpec> = {
-  observe: { values: ["since", "description"], switches: ["all"] },
+  observe: { values: ["description"], switches: ["all"] },
   run: { values: ["action", "description"], params: true },
 };
 
@@ -112,10 +112,8 @@ async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, 
     return out.line(`ok 已关掉 learn 窗口 ${id}\n窗口目录：${ctx.log.winDir(id)}（句柄和目录保留，再对它操作会从 ${w.url} 重新打开）`);
   }
   if (sub === "observe") {
-    const since = valueOf(a, "since");
-    if (since !== undefined && !/^#?\d+$/.test(since)) return out.fail("--since 要是日志编号");
     if (w.open) await ctx.ensureExtension();
-    const text = await observe(ctx, w, ctx.learn.session(id), since !== undefined ? Number(since.replace("#", "")) : undefined, undefined, a.switches.has("all"));
+    const text = await observe(ctx, w, ctx.learn.session(id), undefined, a.switches.has("all"));
     ctx.learn.save(w);
     return out.line(`ok 观察 ${id}\n${text}`);
   }
@@ -168,7 +166,7 @@ async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, 
   }
   if (counted) w.ops++;
   await new Promise((r) => setTimeout(r, AFTER_OP_MS));
-  const obs = await observe(ctx, w, sess, undefined, description);
+  const obs = await observe(ctx, w, sess, description);
   ctx.learn.save(w);
   out.line([first, ...head, ...body, obs].join("\n"));
 }

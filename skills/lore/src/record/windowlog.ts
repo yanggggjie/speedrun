@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { LORE_HOME } from "../utils/constants.ts";
-import type { RequestFile, Row } from "./types.ts";
+import type { Row } from "./types.ts";
 
 /**
  * 日志按窗口存：一个窗口一个目录，learn 窗口在 <root>/learn-windows/<句柄>/，run 窗口在 <root>/run-windows/<名字>/。
@@ -22,7 +22,6 @@ export type WindowUsage = { kind: WinKind; light: number; heavy: number; created
 
 const SEQ_BLOCK = 1000;
 const BODY_MEMO_MAX = 5_000;
-const SEQ_INDEX_MAX = 50_000;
 const KIND_DIR: Record<WinKind, string> = { learn: "learn-windows", run: "run-windows" };
 
 export const seqPrefix = (seq: number): string => String(seq).padStart(6, "0");
@@ -56,8 +55,6 @@ export class WindowLog {
   private seqHigh = 0;
   private readonly wins = new Map<string, WindowUsage>();
   private readonly bodies = new Map<string, Map<string, string>>();
-  /** 最近写过的请求文件：编号 → 相对 root 的路径。 */
-  private readonly seqIndex = new Map<number, string>();
   private buffer: Map<string, string[]> | null = null;
 
   constructor(options: WindowLogOptions = {}) {
@@ -190,11 +187,6 @@ export class WindowLog {
     const bytes = (typeof content === "string" ? Buffer.byteLength(content) : content.length) - existed;
     const u = this.wins.get(win);
     if (u) { if (tierOf(rel) === "heavy") u.heavy += bytes; else u.light += bytes; }
-    const m = /^requests\/(\d+)-[^/]*\.json$/.exec(rel);
-    if (m && !rel.includes(".response.")) {
-      this.seqIndex.set(Number(m[1]), this.ref(win, rel));
-      if (this.seqIndex.size > SEQ_INDEX_MAX) this.seqIndex.delete(this.seqIndex.keys().next().value as number);
-    }
     return rel;
   }
 
@@ -225,28 +217,6 @@ export class WindowLog {
     }
     rows.sort((a, b) => a.seq - b.seq);
     return rows.length > limit ? rows.slice(rows.length - limit) : rows;
-  }
-
-  /** 编号对应的请求文件：先查最近写过的，再在给定窗口里找，最后找全部窗口（新的在前）。 */
-  findRequestFile(seq: number, win?: string): { ref: string; abs: string; win: string } | undefined {
-    const known = this.seqIndex.get(seq);
-    if (known && fs.existsSync(this.absRef(known))) return { ref: known, abs: this.absRef(known), win: known.split("/")[1]! };
-    const prefix = `${seqPrefix(seq)}-`;
-    const wins = win ? [win] : [...this.listWindows("learn"), ...this.listWindows("run")].reverse();
-    for (const w of wins) {
-      const dir = path.join(this.winDir(w), "requests");
-      let names: string[];
-      try { names = fs.readdirSync(dir); } catch { continue; }
-      const name = names.find((n) => n.startsWith(prefix) && n.endsWith(".json") && !n.includes(".response."));
-      if (name) { const ref = this.ref(w, `requests/${name}`); return { ref, abs: this.absRef(ref), win: w }; }
-    }
-    return undefined;
-  }
-
-  readRequestFile(seq: number, win?: string): { file: RequestFile; ref: string; abs: string; win: string } | undefined {
-    const found = this.findRequestFile(seq, win);
-    if (!found) return undefined;
-    try { return { file: JSON.parse(fs.readFileSync(found.abs, "utf8")) as RequestFile, ...found }; } catch { return undefined; }
   }
 
   /** 读窗口里的一个文件（窗口内的相对路径）。 */

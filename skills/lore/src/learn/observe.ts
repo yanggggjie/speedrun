@@ -27,17 +27,17 @@ export type ObserveDeps = {
 
 /**
  * 观察：游标之后这个 learn 窗口发生的变化（页面、导航、请求、请求之间的依赖），然后把游标移到最新。
- * since 给了就重看那个编号之后的，不推进游标。晚到的请求（懒加载、轮询、防抖）下次观察时出现，不会丢也不会重复。
+ * 晚到的请求（懒加载、轮询、防抖）下次观察时出现，不会丢也不会重复。
  * 请求默认只列这个窗口里第一次出现的 endpoint 和所有写请求，其余只计数；all 为真列全部。
  * 最多 3 个请求带 auth 来源和一行可以贴进 action 的 request() 草稿：写请求优先，再是这一步引发的，再是最新的。
  */
-export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | undefined, since?: number, step?: string, all = false): Promise<string> {
+export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | undefined, step?: string, all = false): Promise<string> {
   d.ingest.flush();
-  const from = since ?? w.cursor;
+  const from = w.cursor;
   const to = d.log.lastSeq();
   const timeline = d.log.readRows(w.id, { limit: 1_000_000 });
   const rows = timeline.filter((r) => r.seq > from && r.seq <= to);
-  const lines = [`观察：${to > from ? `#${from + 1} → #${to}` : `#${from} 之后没有新的编号`}${since === undefined ? "" : "（重看，不推进游标）"}`];
+  const lines = [`观察：${to > from ? `#${from + 1} → #${to}` : `#${from} 之后没有新的编号`}`];
   // 页面：窗口里的 agent 标签页（用户在这个窗口里自己开的不列），当前页面在前
   const winId = d.win.windowIdOf(w.id);
   const tabs = w.open && winId !== undefined ? (await d.tabs()).filter((t) => t.windowId === winId && !t.anchor && d.win.isAgentTab(t.tabId)) : [];
@@ -54,8 +54,9 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   for (const site of new Set(rows.map((r) => r.site ?? w.site))) for (const [k, v] of stats(site)) merged.set(k, v);
   const { shown, noise, periodic, assets } = shownRequests(rows, merged);
   // 默认只列这个窗口里第一次出现的 endpoint 和所有写请求；页面重新加载时的 /me 这类不再列
-  const fileOf = (seq: number): RequestFile | undefined => d.log.readRequestFile(seq, w.id)?.file;
-  const files = new Map(shown.map((r) => [r.seq, fileOf(r.seq)]));
+  // 请求文件：时间线行的 file（相对窗口目录）；请求文件先写、行后追加，有行就有文件
+  const fileOf = (r: Row): RequestFile | undefined => { const text = r.file ? d.log.readText(w.id, r.file) : undefined; try { return text ? (JSON.parse(text) as RequestFile) : undefined; } catch { return undefined; } };
+  const files = new Map(shown.map((r) => [r.seq, fileOf(r)]));
   const isWrite = (r: Row): boolean => { const f = files.get(r.seq); return !looksReadOnly(r.method, f?.url.bareUrl ?? r.url ?? "", f?.requestBody); };
   const seen = new Set(all ? [] : timeline.filter((r) => r.type === "request" && r.seq <= from && r.endpoint).map((r) => r.endpoint!));
   const picked = shown.filter((r) => {
@@ -90,13 +91,13 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
       }
       lines.push(`    草稿：${requestLine(d.ingest, { method: raw.method.toUpperCase(), url: raw.url, body: raw.body, auth: authSpecs(sources) })}`);
     }
-    const deps = dependencies(list, fileOf, (f) => (f.responseBodyPath ? d.log.readText(w.id, f.responseBodyPath) : undefined), (f) => (f.tab !== undefined && f.rid ? d.raw.get(f.tab, f.rid) : undefined));
+    const deps = dependencies(list, (seq) => files.get(seq), (f) => (f.responseBodyPath ? d.log.readText(w.id, f.responseBodyPath) : undefined), (f) => (f.tab !== undefined && f.rid ? d.raw.get(f.tab, f.rid) : undefined));
     if (deps.length) lines.push(`依赖：\n${deps.map((x) => `  #${x.to} 用了 #${x.from} 响应的 ${x.field}`).join("\n")}`);
   }
   const folded = [repeated ? `之前出现过的 ${repeated}` : "", noise ? `埋点广告 ${noise}` : "", periodic ? `轮询 ${periodic}` : "", assets ? `静态资源 ${assets}` : ""].filter(Boolean);
   if (folded.length) lines.push(`没列出：${folded.join("，")}${repeated ? "（observe --all 看全部）" : "（在 timeline.jsonl 里）"}`);
   if (!picked.length && !repeated) lines.push("下一步：页面可能还在加载，等一会儿再 observe；或者数据在页面里，用 DOM 取");
-  if (since === undefined) w.cursor = Math.max(w.cursor, to);
+  w.cursor = Math.max(w.cursor, to);
   return lines.join("\n");
 }
 

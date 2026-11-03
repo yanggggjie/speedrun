@@ -55,7 +55,7 @@ description: >-
 | `lore learn list` | 列出 learn 窗口 |
 | `lore learn <句柄> open <网址> \| click <x> <y> \| type "文字" \| key <键> \| scroll down\|up\|top\|bottom` | 页面操作，靠截图加坐标；自动附带观察；窗口关着就从上次的 URL 重开 |
 | `lore learn <句柄> screenshot` | 截图存进窗口目录的 `screenshots/` |
-| `lore learn <句柄> observe [--since <编号>] [--all]` | 上次观察以来的新东西，推进游标；`--since` 重看，不推进；默认只列第一次出现的 endpoint 和写请求，`--all` 列全部 |
+| `lore learn <句柄> observe [--all]` | 上次观察以来的新东西，推进游标；默认只列第一次出现的 endpoint 和写请求，`--all` 列全部 |
 | `lore learn <句柄> run --action <名> [--参数 值]` | 在 learn 窗口当前页面跑一个 action（有 `@start` 先打开它），日志进这个窗口，不变成 verified；输出列出已发出的 write 请求 |
 | `lore learn <句柄> close` | 关掉 Chrome 窗口，句柄和目录保留 |
 | `lore run --action <名> \| --compose <名> [--参数 值]` | 新开 run 窗口执行一个 action 或存下来的 compose（哈希写前几位就行），跑完关掉；输出列出已发出的 write 请求 |
