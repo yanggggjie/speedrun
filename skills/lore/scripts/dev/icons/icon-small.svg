@@ -1,4 +1,4 @@
-<!-- Lore 图标：一个浏览器窗口，右下角一个光标（agent 在浏览器里替你操作）。粗线条、圆角、没有底框，viewBox 收紧到图形边缘（含线宽），图形占满整个图标；晚霞色：左上黄、右下红。16、32px 用这份：线条加粗，小尺寸看得清。 用 scripts/dev/make-icons.mjs 生成 PNG。 -->
+<!-- lore 图标：一个浏览器窗口，右下角一个光标（agent 在浏览器里替你操作）。粗线条、圆角、没有底框，viewBox 收紧到图形边缘（含线宽），图形占满整个图标；晚霞色：左上黄、右下红。16、32px 用这份：线条加粗，小尺寸看得清。 用 scripts/dev/make-icons.mjs 生成 PNG。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="9.5 6.5 109 109" width="128" height="128">
   <defs>
     <linearGradient id="sunset" gradientUnits="userSpaceOnUse" x1="16" y1="16" x2="112" y2="106"><stop offset="0" stop-color="#FFB627"/><stop offset="0.55" stop-color="#FF7A3D"/><stop offset="1" stop-color="#F0384F"/></linearGradient>

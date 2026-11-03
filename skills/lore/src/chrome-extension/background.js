@@ -1,8 +1,8 @@
-// Lore Chrome 扩展：一个固定 ABI 的管道。没有业务逻辑；页面脚本是扩展包里的静态内容脚本（page/）。
+// lore Chrome 扩展：一个固定 ABI 的管道。没有业务逻辑；页面脚本是扩展包里的静态内容脚本（page/）。
 // daemon 端的协议见 src/browser/extension.ts。改 ABI 才需要加 ABI 版本并让用户刷新扩展。
 //
 // daemon → 扩展：{ id, name, args }，应答 { id, result | error }
-//   call { tabId, fn, args }          在页面（MAIN world）里调用 window.__tcr.exec[fn](...args)，等它的结果（可以是 Promise）
+//   call { tabId, fn, args }          在页面（MAIN world）里调用 window.__lore.exec[fn](...args)，等它的结果（可以是 Promise）
 //   tabs {}                            http/https 标签页，加上 anchor 页（标题 lore agent，extension 页，anchor: true）
 //   goto { tabId, url, wait }          在这个标签页里打开网址；wait 为真时等文档可用（readyState 不再是 loading，不等子资源；最多 15 秒）
 //   openWindow { url, anchor }         新开窗口（不抢焦点）；anchor 为真时打开 anchor 页
@@ -12,11 +12,11 @@
 //   screenshot { tabId }               截图：把标签页切到前台，截可见区域，缩到视口的 CSS 像素尺寸（截图上的坐标就是页面坐标），返回 { data(base64), mime, w, h }
 // 扩展 → daemon：{ type: "hello", abi, ... } | { type: "page", tab, win, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化和关闭；win 是标签页所在的浏览器窗口）
 //
-// 只录 agent 自己的标签页：Lore 开的（openWindow、openTab），以及被它们打开的（target=_blank、window.open，看 openerTabId）。
+// 只录 agent 自己的标签页：lore 开的（openWindow、openTab），以及被它们打开的（target=_blank、window.open，看 openerTabId）。
 // 窗口里有 anchor 页（标题 lore agent）只说明这是 agent 窗口，用户在这个窗口里自己开的标签页（Cmd+T、别的扩展开的）不算、不录。
 // 页面脚本加载时经 bridge 问一次，不是 agent 标签页就不再上报任何东西；地址变化也只转 agent 标签页的。
 
-const ABI = 9;
+const ABI = 10;
 const HOST = "com.lore.connect";
 const RETRY_MAX_MS = 30_000;
 const KEEPALIVE_MINUTES = 0.5;
@@ -73,7 +73,7 @@ async function injectExisting() {
   for (const tab of await chrome.tabs.query({})) {
     if (tab.id == null || !isWeb(tab.url) || !(await isAgentTab(tab.id))) continue;
     try {
-      const [probe] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => !!window.__tcr });
+      const [probe] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => !!window.__lore });
       if (probe?.result) continue;
       await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, world: "MAIN", files: PAGE_FILES, injectImmediately: true });
       await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["page/bridge.js"], injectImmediately: true });
@@ -130,19 +130,19 @@ const view = (tab) => ({ tabId: tab.id, windowId: tab.windowId, active: tab.acti
 async function runOp(name, args) {
   switch (name) {
     case "call": {
-      if (!(await isAgentTab(args.tabId))) throw new Error("只能在 Lore 自己开的标签页里操作页面");
+      if (!(await isAgentTab(args.tabId))) throw new Error("只能在 lore 自己开的标签页里操作页面");
       const [res] = await chrome.scripting.executeScript({
         target: { tabId: args.tabId, frameIds: [args.frameId ?? 0] }, world: "MAIN",
         func: async (fn, fnArgs) => {
-          const T = window.__tcr;
-          if (!T || !T.exec || typeof T.exec[fn] !== "function") return { __tcrError: "页面里没有 Lore 的脚本（刷新这个页面后再试）" };
-          try { return { v: await T.exec[fn](...fnArgs) }; } catch (e) { return { __tcrError: String((e && e.message) || e) }; }
+          const T = window.__lore;
+          if (!T || !T.exec || typeof T.exec[fn] !== "function") return { __loreError: "页面里没有 lore 的脚本（刷新这个页面后再试）" };
+          try { return { v: await T.exec[fn](...fnArgs) }; } catch (e) { return { __loreError: String((e && e.message) || e) }; }
         },
         args: [args.fn, args.args ?? []],
       });
       const out = res?.result;
       if (!out) throw new Error("页面没有返回结果");
-      if (out.__tcrError) throw new Error(out.__tcrError);
+      if (out.__loreError) throw new Error(out.__loreError);
       return { v: out.v ?? null };
     }
     case "tabs": {
@@ -209,8 +209,8 @@ async function runOp(name, args) {
 // 页面脚本经 bridge 发来的消息：只转 agent 标签页的，补上 tab、frame。页面自己的脚本也能发，所以只当观察记录。
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   if (!m || sender.id !== chrome.runtime.id || !sender.tab) return;
-  if (m.__tcrl === 2) { void isAgentTab(sender.tab.id).then((on) => reply({ on })); return true; }
-  if (m.__tcrl !== 1) return;
+  if (m.__loreMsg === 2) { void isAgentTab(sender.tab.id).then((on) => reply({ on })); return true; }
+  if (m.__loreMsg !== 1) return;
   const tab = sender.tab;
   void isAgentTab(tab.id).then((on) => { if (on) postToHost({ type: "page", tab: tab.id, win: tab.windowId, frame: sender.frameId ?? 0, top: m.top, page: m.page, msg: m.msg ?? {} }); });
 });

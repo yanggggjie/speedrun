@@ -12,3 +12,4 @@
 - action 文件写成 `export default async () => 结果`，不用再包一层 `lore.run`。
 - `lore run --compose` 的哈希不到 4 位时直接报错，并列出以它开头的。
 - 删掉对旧版本的兼容：旧目录（`~/.tabbot` 等）迁移、日志布局升级、`@uses`、`@status:` 写法、已删命令和参数的专门提示。
+- 扩展 ABI 升到 10（页面脚本里的命名统一成 lore）：更新后要在 `chrome://extensions` 里刷新 lore；ABI 对不上时 `lore doctor` 判为失败。

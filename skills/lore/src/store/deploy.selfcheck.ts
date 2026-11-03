@@ -5,13 +5,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { mirrorPayload } from "./deploy.ts";
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "tc-deploy-"));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "lore-deploy-"));
 process.on("exit", () => fs.rmSync(home, { recursive: true, force: true }));
 fs.mkdirSync(path.join(home, "sites", "x.com"), { recursive: true });
 fs.writeFileSync(path.join(home, "sites", "x.com", "keep.txt"), "新数据");
 
 // 镜像：payload 里删掉的顶层文档不留在本机；数据不动
-const payload = fs.mkdtempSync(path.join(os.tmpdir(), "tc-payload-"));
+const payload = fs.mkdtempSync(path.join(os.tmpdir(), "lore-payload-"));
 process.on("exit", () => fs.rmSync(payload, { recursive: true, force: true }));
 fs.writeFileSync(path.join(payload, "SKILL.md"), "新");
 fs.writeFileSync(path.join(home, "TROUBLESHOOTING.md"), "payload 里已经没有的文档");

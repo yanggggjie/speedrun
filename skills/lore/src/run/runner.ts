@@ -8,7 +8,7 @@ import { actionSummary, actionTimeoutMs, checkParams, coerceParams, findAction, 
 /** 最外层 compose 里每次 action() 调用的记录，按调用顺序；恢复时前几次直接返回记下的结果，不再执行。 */
 export type JournalEntry = { name: string; params: Record<string, unknown>; result: unknown };
 /** 最外层 compose 的重跑状态：已执行的 action 和 agent 给过的回答（按 ask 的顺序）。 */
-export type Replay = { journal: JournalEntry[]; answers: unknown[] };
+export type AskState = { journal: JournalEntry[]; answers: unknown[] };
 /** runWindow：这次 run 用的 run 窗口（名字）；drafts：这次真跑成功的 draft（文件路径），由命令层判断变成 verified；writes：这次真发出的 write 请求（`POST /api/x ×2`）。三者只在最外层有。 */
 export type Outcome = (
   | { status: "success"; result: unknown }
@@ -38,8 +38,8 @@ const MAX_LOG_LINES = 50;
 export type RunWindows = { open(label: string, meta: Record<string, unknown>): string; close(key: string): Promise<void>; failureFile(key: string): string };
 const NO_WINDOWS: RunWindows = { open: (label) => label, close: async () => {}, failureFile: (key) => path.join(SESSION_DIR, `${key}-failure`) };
 
-/** replay：恢复一次停在 ask 的 compose。 */
-export type RunOptions = { replay?: Replay };
+/** askState：恢复一次停在 ask 的 compose。 */
+export type RunOptions = { askState?: AskState };
 
 /** 在 worker 线程里跑 action。每次 run 有自己的 run 窗口，不同的 run 可以同时跑。 */
 export class ActionRunner {
@@ -76,7 +76,7 @@ export class ActionRunner {
     try {
       // 只有最外层的 compose 能 ask：嵌套调用的 compose 不带重跑状态
       const out: Outcome = composed
-        ? await this.execCompose(stripComposeHead(fs.readFileSync(file, "utf8")), params, actionTimeoutMs(file), session, nested ? undefined : (opts.replay ?? { journal: [], answers: [] }))
+        ? await this.execCompose(stripComposeHead(fs.readFileSync(file, "utf8")), params, actionTimeoutMs(file), session, nested ? undefined : (opts.askState ?? { journal: [], answers: [] }))
         : await this.startThenWork(file, summary.start, params, session);
       if (out.status === "failure" && nested) out.failedAction ??= name;
       if (out.status === "failure" && !nested && !composed) {
@@ -113,13 +113,13 @@ export class ActionRunner {
   }
 
   /** run --compose-code：一段 compose 代码，只能 action(名字, 参数) 调用 action，任何页面操作都被 host 拒绝。label 是 run 窗口的名字前缀（compose 的名字，没有就是 compose）。 */
-  async runCompose(code: string, timeoutMs = ACTION_TIMEOUT_MS, params: Record<string, unknown> = {}, replay: Replay = { journal: [], answers: [] }, label = "compose"): Promise<Outcome> {
+  async runCompose(code: string, timeoutMs = ACTION_TIMEOUT_MS, params: Record<string, unknown> = {}, askState: AskState = { journal: [], answers: [] }, label = "compose"): Promise<Outcome> {
     const key = this.windows.open(label, { compose: label, params });
     const session = new Session(key);
     session.composeOnly = true;
     this.host.watchWrites(key);
     try {
-      const out = await this.execCompose(code, params, timeoutMs, session, replay);
+      const out = await this.execCompose(code, params, timeoutMs, session, askState);
       out.runWindow = key;
       out.writes = this.host.takeWrites(key);
       out.drafts = [...session.draftsOk];
@@ -132,7 +132,7 @@ export class ActionRunner {
   }
 
   /** 把 compose 代码包成一个模块（注入 action()）在 worker 里跑。 */
-  private async execCompose(code: string, params: Record<string, unknown>, timeoutMs: number, session: Session, replay?: Replay): Promise<Outcome> {
+  private async execCompose(code: string, params: Record<string, unknown>, timeoutMs: number, session: Session, askState?: AskState): Promise<Outcome> {
     fs.mkdirSync(this.paths.tmpDir, { recursive: true });
     const file = path.join(this.paths.tmpDir, `compose-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}.mjs`);
     fs.writeFileSync(file, [
@@ -144,17 +144,17 @@ export class ActionRunner {
       "",
     ].join("\n"), "utf8");
     try {
-      return await this.work(file, params, timeoutMs, session, replay);
+      return await this.work(file, params, timeoutMs, session, askState);
     } finally {
       fs.rmSync(file, { force: true });
     }
   }
 
   /**
-   * replay 只有最外层 compose 才有：每次 action() 按调用顺序记进 journal；恢复时从头重跑代码，
+   * askState 只有最外层 compose 才有：每次 action() 按调用顺序记进 journal；恢复时从头重跑代码，
    * 前面记下的 action() 直接返回记录的结果（不重复发写请求），第 i 次 ask 返回第 i 个回答，没有回答就停下交给 agent。
    */
-  private work(file: string, params: Record<string, unknown>, timeoutMs: number, session: Session, replay?: Replay): Promise<Outcome> {
+  private work(file: string, params: Record<string, unknown>, timeoutMs: number, session: Session, askState?: AskState): Promise<Outcome> {
     const limit = this.timeoutOverrideMs ?? timeoutMs;
     return new Promise((resolve) => {
       const logs: string[] = [];
@@ -179,12 +179,12 @@ export class ActionRunner {
         if (m.type !== "call") return;
         const reply = (body: Record<string, unknown>): void => { if (!settled) worker.postMessage({ type: "reply", id: m.id, ...body }); };
         if (m.op === "ask") {
-          if (!replay) return reply({ error: "lore.ask 只能用在最外层的 compose 代码里（run --compose-code，或 run --compose <名> 直接执行的）：被调用的 compose 和学出来的 action 里不能用" });
+          if (!askState) return reply({ error: "lore.ask 只能用在最外层的 compose 代码里（run --compose-code，或 run --compose <名> 直接执行的）：被调用的 compose 和学出来的 action 里不能用" });
           const i = asks++;
-          if (i < replay.answers.length) return reply({ result: replay.answers[i] ?? null });
+          if (i < askState.answers.length) return reply({ result: askState.answers[i] ?? null });
           const size = JSON.stringify(m.args.data ?? null).length;
           if (size > ASK_DATA_LIMIT) return finish({ status: "failure", error: `lore.ask 交回的数据有 ${Math.round(size / 1024)}KB，超过 ${ASK_DATA_LIMIT / 1024}KB：先在 compose 代码里裁剪，只留判断要用的字段` });
-          return finish({ status: "ask", question: String(m.args.question ?? ""), data: m.args.data ?? null, journal: replay.journal });
+          return finish({ status: "ask", question: String(m.args.question ?? ""), data: m.args.data ?? null, journal: askState.journal });
         }
         let run: Promise<unknown>;
         if (m.op === "action") {
@@ -192,7 +192,7 @@ export class ActionRunner {
           const name = String(m.args.name);
           const p = Object.fromEntries(Object.entries(m.args.params ?? {}).filter(([, v]) => v !== undefined)) as Record<string, unknown>;
           const i = calls++;
-          const prev = replay?.journal[i];
+          const prev = askState?.journal[i];
           if (prev) {
             if (prev.name !== name || JSON.stringify(prev.params) !== JSON.stringify(p)) {
               return finish({ status: "failure", error: `compose 代码这次调用的 action 和上次不同（第 ${i + 1} 次：上次 ${prev.name} ${JSON.stringify(prev.params)}，这次 ${name} ${JSON.stringify(p)}）：compose 里不要用时间、随机数决定调什么；重新 run 一次` });
@@ -201,7 +201,7 @@ export class ActionRunner {
           }
           run = this.runAction(name, p, session).then((o) => {
             if (o.status !== "success") throw new Error(`[${name}] ${o.status === "failure" ? o.error : "被调用的 action 不能 ask"}`);
-            if (replay) replay.journal[i] = { name, params: p, result: o.result };
+            if (askState) askState.journal[i] = { name, params: p, result: o.result };
             return o.result;
           });
         } else run = this.host.op(session, m.op, m.args);

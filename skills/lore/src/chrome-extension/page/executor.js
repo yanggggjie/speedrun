@@ -1,8 +1,8 @@
-// 页面里（MAIN world）的执行：daemon 下发的动作（点击、填写、选择、勾选、按键、滚动）、按屏幕坐标操作（截图 learn 用）、读文字、重放请求。
+// 页面里（MAIN world）的执行：daemon 下发的动作（点击、填写、选择、勾选、按键、滚动）、按屏幕坐标操作（截图 learn 用）、读文字、替 action 的 request() 发请求。
 // 动作都是 DOM 事件（dispatchEvent、原生 setter），不是真实输入。只管执行，不写日志，不依赖录制端；
 // 自己监听真人的设备事件，动作进行中一旦看到真人输入就停止等待、告诉 daemon。
 (() => {
-  const T = window.__tcr;
+  const T = window.__lore;
   if (!T || T.executor) return;
   T.executor = 1;
   const TEXTY = /json|text|xml|javascript|html|x-www-form|graphql/i;
@@ -295,8 +295,8 @@
     return { url: location.href, title: document.title, total: text.length, text: text.slice(0, max) };
   };
 
-  // ---- 重放：在页面里原样发一个请求（带这个页面的登录态）。用保存下来的原始 fetch，所以不会被录制端当成页面自己发的请求 ----
-  T.exec.replay = async (req) => {
+  // ---- 发请求（action 的 request()）：在页面里原样发一个请求（带这个页面的登录态）。用保存下来的原始 fetch，所以不会被录制端当成页面自己发的请求 ----
+  T.exec.fetch = async (req) => {
     const ctl = new AbortController();
     const limit = Number(req.timeout) > 0 ? Number(req.timeout) : 20000;
     const timer = setTimeout(() => ctl.abort(), limit);

@@ -73,7 +73,7 @@ async function collectChecks(): Promise<Check[]> {
     name: "daemon",
     ok: responding,
     detail: !ping ? "无" : responding ? `alive pid=${ping.pid}` : `pid=${ping.pid} 在运行，扩展未连接`,
-    fix: "在 Chrome 中点一下 Lore 扩展的 service worker 或工具栏图标；仍无响应则在 chrome://extensions 刷新扩展",
+    fix: "在 Chrome 中点一下 lore 扩展的 service worker 或工具栏图标；仍无响应则在 chrome://extensions 刷新扩展",
     optional: true,
   });
 
@@ -104,13 +104,12 @@ async function collectChecks(): Promise<Check[]> {
   }
 
   if (ping?.extension) {
-    // 扩展的 ABI 版本不对：扩展是旧版本，刷新
+    // 扩展的 ABI 和 daemon 对不上：页面上的操作都会失败，必须刷新扩展
     add({
       name: "extension-abi",
       ok: ping.abi === ABI,
       detail: ping.abi === ABI ? `ABI ${ABI}` : `扩展的 ABI 是 ${ping.abi ?? "无"}，需要 ${ABI}`,
-      fix: "在 chrome://extensions 里刷新 Lore 扩展",
-      optional: true,
+      fix: "在 chrome://extensions 里刷新 lore 扩展",
     });
   }
 

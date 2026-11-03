@@ -3,7 +3,6 @@ import * as path from "node:path";
 import { ENDPOINTS_FLUSH_MS, LOG_LIMITS, SITES_DIR } from "../utils/constants.ts";
 import { siteDirName } from "../utils/url.ts";
 import { shapeOf, variablesOf } from "./digest.ts";
-import type { RawStore } from "./raw.ts";
 import type { RequestFile, Row } from "./types.ts";
 
 /**
@@ -24,18 +23,16 @@ export type EndpointStat = {
   count: number; firstSeq: number; lastSeq: number; lastStatus?: number;
   cmdTriggered: number; onLoad: number; idle: number; lastCause?: string;
   descriptions?: Description[];
-  /** auth 头的来源（最近一次判断）：头 → "cookie:_xsrf" 这样的来源，或 signed / static / unknown；signed 为真表示带签名头，换参数可能被拒（以 replay、run 的结果为准）。 */
+  /** auth 头的来源（最近一次判断）：头 → "cookie:_xsrf" 这样的来源，或 signed / static / unknown；signed 为真表示带签名头，换参数可能被拒（以 run 的结果为准）。 */
   auth?: Record<string, string>; signed?: boolean;
   variables: string[]; shape?: string; samples: Sample[];
-  lastTab?: number; lastRid?: string;
 };
-export type EndpointJson = Omit<EndpointStat, "samples" | "lastTab" | "lastRid"> & { replayable: boolean; samples: Array<Omit<Sample, "size"> & { available: boolean }>; action: string | null };
+export type EndpointJson = Omit<EndpointStat, "samples"> & { samples: Array<Omit<Sample, "size"> & { available: boolean }>; action: string | null };
 export type EndpointsFile = { site: string; updatedAt: number; endpoints: EndpointJson[] };
 
 export type ObserveInput = { site: string; row: Row; file: RequestFile; ref: string; bodyRef?: string; text?: string; label?: string; description?: { text: string; from: string } };
 export type IndexOptions = {
   dir?: string;
-  raw?: RawStore;
   /** 这个站点的 action 覆盖了哪些 endpoint：键是 `方法 路径`，值是 action 名。 */
   coverage?: (site: string) => Map<string, string>;
   flushMs?: number;
@@ -47,7 +44,6 @@ export type IndexOptions = {
 export class EndpointIndex {
   private readonly dir: string;
   private readonly root: string;
-  private readonly raw: RawStore | undefined;
   private readonly coverage: (site: string) => Map<string, string>;
   private readonly flushMs: number;
   private readonly now: () => number;
@@ -59,7 +55,6 @@ export class EndpointIndex {
   constructor(options: IndexOptions = {}) {
     this.dir = options.dir ?? SITES_DIR;
     this.root = path.dirname(this.dir);
-    this.raw = options.raw;
     this.coverage = options.coverage ?? (() => new Map());
     this.flushMs = options.flushMs ?? ENDPOINTS_FLUSH_MS;
     this.now = options.now ?? Date.now;
@@ -78,7 +73,7 @@ export class EndpointIndex {
     try {
       const data = JSON.parse(fs.readFileSync(this.file(site), "utf8")) as EndpointsFile;
       for (const e of data.endpoints ?? []) {
-        const { replayable: _r, action: _a, samples, ...rest } = e;
+        const { action: _a, samples, ...rest } = e;
         map.set(e.key, { ...rest, samples: (samples ?? []).map((s) => ({ seq: s.seq, file: s.file, body: s.body, t: s.t, size: this.sizeOf(s.file, s.body) })) });
       }
     } catch { /* 第一次，或文件坏了：从空开始 */ }
@@ -111,8 +106,6 @@ export class EndpointIndex {
       e.lastSeq = row.seq;
       e.lastStatus = row.status;
       e.variables = variablesOf(file);
-      e.lastTab = row.tab;
-      e.lastRid = file.rid;
     }
     if (row.phase === "load") e.onLoad++;
     else if (row.phase === "cmd") { e.cmdTriggered++; if (input.label) e.lastCause = input.label; }
@@ -184,10 +177,9 @@ export class EndpointIndex {
   snapshot(site: string): EndpointsFile {
     const covered = this.coverage(site);
     const endpoints: EndpointJson[] = [...this.load(site).values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)).map((e) => {
-      const { samples, lastTab, lastRid, ...rest } = e;
+      const { samples, ...rest } = e;
       return {
         ...rest,
-        replayable: !!(this.raw && lastRid && lastTab !== undefined && this.raw.get(lastTab, lastRid)),
         samples: samples.map((s) => ({ seq: s.seq, file: s.file, ...(s.body ? { body: s.body } : {}), t: s.t, available: fs.existsSync(this.logFile(s.file)) })),
         action: covered.get(e.key) ?? null,
       };

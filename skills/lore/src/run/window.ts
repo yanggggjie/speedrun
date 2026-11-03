@@ -39,7 +39,7 @@ export class AgentWindows {
   /** key 对应的浏览器窗口号（还没开就是 undefined）。 */
   windowIdOf(key: string): number | undefined { return this.windows.get(key); }
 
-  /** 扩展报来的页面消息带着标签页所在的浏览器窗口：是 agent 窗口、标签页又不是 Lore 开的，就记为属于那个窗口。扩展只转 Lore 开的、以及被它们打开的标签页（看 openerTabId），用户在 agent 窗口里自己开的不会报上来。 */
+  /** 扩展报来的页面消息带着标签页所在的浏览器窗口：是 agent 窗口、标签页又不是 lore 开的，就记为属于那个窗口。扩展只转 lore 开的、以及被它们打开的标签页（看 openerTabId），用户在 agent 窗口里自己开的不会报上来。 */
   adopt(tab: number, windowId: number | undefined): void {
     if (windowId === undefined || this.owned.has(tab) || this.adopted.has(tab)) return;
     for (const [key, id] of this.windows) if (id === windowId) { this.adopted.set(tab, key); if (this.adopted.size > 2_000) this.adopted.delete(this.adopted.keys().next().value!); return; }

@@ -286,7 +286,7 @@ export class RunHost {
     const detail = { method, endpoint, bareUrl: safe.bareUrl, query: safe.query, ...(a.json !== undefined ? { reqBody: JSON.stringify(this.d.ingest.sanitizer.body(a.json)).slice(0, 4000) } : {}), inherit: a.inheritFrom ?? a.inherit !== false };
     this.noteWrite(s.key, method, target.href, endpoint, a.json ?? body ?? undefined);
     return this.log(tab, "request", `${method} ${shown}`, detail, async () => {
-      const res = await withTimeout(this.callTab(tab, "replay", [{ method, url: target.href, headers, body, timeout: a.timeout ?? STEP_TIMEOUT_MS }]), (a.timeout ?? STEP_TIMEOUT_MS) + 3000, "请求");
+      const res = await withTimeout(this.callTab(tab, "fetch", [{ method, url: target.href, headers, body, timeout: a.timeout ?? STEP_TIMEOUT_MS }]), (a.timeout ?? STEP_TIMEOUT_MS) + 3000, "请求");
       if (res.ok === false) throw new Error(`请求失败：${res.error}`);
       return { ...res, source };
     }, (r: any) => ({ status: r.status, size: r.size, ms: r.ms, ...(source.inheritedFrom ? { inheritedFrom: source.inheritedFrom.endpoint } : {}) }));

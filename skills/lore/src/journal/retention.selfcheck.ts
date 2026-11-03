@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { enforce } from "./retention.ts";
 import { WindowLog } from "./windowlog.ts";
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-retention-"));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "lore-retention-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
 const log = new WindowLog({ root });
 log.open();

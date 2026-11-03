@@ -217,7 +217,7 @@ export function composeTarget(globalDir: string, code: string): string {
 
 /**
  * 存一段跑成功的 compose 代码到 file。再次成功时累加 description（最多 5 句，新的在前）和次数；代码换成这次的。
- * 头由 Lore 填：@description、@compose（代码里 action("名字") 调用的）、@params（代码里读的 lore.params.名字）、@ok（成功次数和最近时间）；下面是代码原文。
+ * 头由 lore 填：@description、@compose（代码里 action("名字") 调用的）、@params（代码里读的 lore.params.名字）、@ok（成功次数和最近时间）；下面是代码原文。
  */
 export function saveComposed(file: string, code: string, description: string, now = Date.now()): { file: string; uses: string[]; params: string[] } {
   const body = stripComposeHead(code).trim();

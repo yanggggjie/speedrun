@@ -7,7 +7,7 @@ import { Ingestor, type PageMsg } from "./ingest.ts";
 import { WindowLog } from "./windowlog.ts";
 import type { RequestFile } from "./types.ts";
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-alias-"));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "lore-alias-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true })); // 自检结束清掉临时目录
 const page = "https://www.example.com/";
 const T = Date.now() - 60_000;

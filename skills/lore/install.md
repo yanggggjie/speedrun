@@ -1,4 +1,4 @@
-# 安装与升级 Lore
+# 安装与升级 lore
 
 安装和升级使用同一套流程。以下步骤按顺序执行，每步完成后再进入下一步。
 
@@ -20,7 +20,7 @@
 ## 2. 同步 skill
 
 - 本地安装：不需要同步，安装目录就是仓库里的 `skills/lore`，直接进入第 3 步。
-- 在线安装运行 `npx skills add yanggggjie/Lore -g -y -a '*' -s lore`，再运行 `npx skills ls -g`，找到 Lore 的安装目录。
+- 在线安装运行 `npx skills add yanggggjie/lore -g -y -a '*' -s lore`，再运行 `npx skills ls -g`，找到 lore 的安装目录。
 - 下面的步骤都从安装目录运行。
 
 ## 3. 运行引导脚本
@@ -37,7 +37,7 @@ node <安装目录>/setup.js
 
 在 `setup.js` 之后运行 `~/.lore/bin/lore doctor`，只要扩展没连上，就请用户加载扩展。不要凭「已有 `~/.lore`」判断扩展装过。用 `node -p process.platform` 判断系统，把 `<扩展目录>` 换成 `setup.js` 输出的绝对路径，第 2 步只说对应系统的那一句：
 
-> 请在 Chrome 里加载 Lore 扩展：
+> 请在 Chrome 里加载 lore 扩展：
 > 1. 打开 `chrome://extensions`，打开右上角「开发者模式」
 > 2. 点「加载已解压的扩展程序」，然后：
 >    - macOS：按 `Cmd+Shift+G`，粘贴 `<扩展目录>`，选择它
@@ -58,8 +58,8 @@ node <安装目录>/setup.js
 ```
 
 - 全部通过：进入第 6 步。
-- 扩展未连接（`need-extension`）：对用户只说「请在 `chrome://extensions` 里确认 Lore 扩展是开着的，再点一下它的图标」，然后重新运行 `doctor`。
-- `extension-abi` 提示扩展 ABI 不对：对用户只说「请在 `chrome://extensions` 里点 Lore 扩展卡片上的刷新，完成后告诉我『好了』」
+- 扩展未连接（`need-extension`）：对用户只说「请在 `chrome://extensions` 里确认 lore 扩展是开着的，再点一下它的图标」，然后重新运行 `doctor`。
+- `extension-abi` 提示扩展 ABI 不对：对用户只说「请在 `chrome://extensions` 里点 lore 扩展卡片上的刷新，完成后告诉我『好了』」
 - 其它失败：按 `doctor` 输出的修复命令自己处理，再重新运行 `doctor`；处理不了时，对用户说清需要用户做的一件事。
 
 通过后进入第 6 步。可以自己做冒烟测试（例如 `lore status`、`lore tabs`）。
@@ -68,7 +68,7 @@ node <安装目录>/setup.js
 
 只告诉用户：
 
-> Lore 安装成功。
+> lore 安装成功。
 
 用户问到命令路径时再补充：命令是 `~/.lore/bin/lore`，可以用绝对路径调用，想直接用 `lore` 就把 `~/.lore/bin` 加入 PATH。不要主动报告版本、安装目录或扩展状态。
 
@@ -76,14 +76,14 @@ node <安装目录>/setup.js
 
 以下是给 agent 的背景，不要讲给用户：
 
-- Lore 完全以源码分发，没有编译产物。遇到问题先到 `~/.lore` 里找答案：`ARCHITECTURE.md` 说明各部分怎么工作（第 9 节是运行时的故障表），`AGENTS.md` 是开发约定，`src/` 是全部源码，开发脚本在 `scripts/dev`。安装、升级、迁移中遇到任何问题，都可以直接读源码定位并修复，不必等用户指点。
+- lore 完全以源码分发，没有编译产物。遇到问题先到 `~/.lore` 里找答案：`ARCHITECTURE.md` 说明各部分怎么工作（第 9 节是运行时的故障表），`AGENTS.md` 是开发约定，`src/` 是全部源码，开发脚本在 `scripts/dev`。安装、升级、迁移中遇到任何问题，都可以直接读源码定位并修复，不必等用户指点。
 - 安装类的故障：
 
   | 现象 | 处理 |
   |---|---|
   | Node 低于 24；`npm install` 失败；`doctor` 的 `home`、`src`、`deps`、`session`、`native-host`、`launcher` 失败 | 升级 Node / 解决 npm 的报错后重跑 `node <安装目录>/setup.js`（可重复执行，`npx skills ls -g` 找安装目录） |
   | `need-extension`，从没加载过扩展 | 按第 4 步请用户加载 `~/.lore/src/chrome-extension` |
-  | `need-extension`，扩展已加载 | 请用户确认 Lore 开着，点一下工具栏图标 |
+  | `need-extension`，扩展已加载 | 请用户确认 lore 开着，点一下工具栏图标 |
   | 找不到 `lore` 命令 | 用绝对路径 `~/.lore/bin/lore` |
 
 - 在线安装失败时，可以 clone 仓库，按本地安装处理（安装目录就是仓库里的 `skills/lore`）。

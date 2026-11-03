@@ -2,7 +2,7 @@
  * 命令行的全部命令都在这里：lore <argv> 原样发给 daemon，daemon 调 runCommand，返回文本和退出码，CLI 只负责打印。
  * 输出约定见 protocol.ts：第一行 ok / fail / ask，后面是「标题：内容」的几段。
  *
- * 只保留必须由 Lore 做的事：控制浏览器（learn / run）、持有不能落盘的原始请求、运维。两种窗口：
+ * 只保留必须由 lore 做的事：控制浏览器（learn / run）、持有不能落盘的原始请求、运维。两种窗口：
  * learn 窗口（lore learn）带持久的句柄，一直保留，learn 都在里面做；run 窗口（lore run）每次新开，跑完就关。
  * 读日志不是命令：日志是窗口目录里的文件（learn-windows/<句柄>/、run-windows/<名字>/），action 和 endpoints.json 在 sites/<站点>/，用 rg / node / Python 读，见 SKILL.md。
  */
@@ -14,7 +14,7 @@ import { COMPOSE_DIR, LOG_LIMITS, MB } from "../utils/constants.ts";
 import { HANDLE, type LearnWindow, type LearnWindows } from "../run/learn-windows.ts";
 import { Session, type RunHost } from "../run/host.ts";
 import { makeLearnGuide } from "../run/learn-guide.ts";
-import type { ActionRunner, JournalEntry, Outcome, Replay } from "../run/runner.ts";
+import type { ActionRunner, JournalEntry, Outcome, AskState } from "../run/runner.ts";
 import { actionSummary, composeTarget, draftActions, findAction, isComposed, parseCliParams, promoteAction, pruneUnnamed, resolveCompose, saveComposed } from "../run/actions.ts";
 import type { AgentWindows } from "../run/window.ts";
 import { looksReadOnly, normalizeSite } from "./digest.ts";
@@ -155,7 +155,7 @@ function takeSwitch(args: string[], name: string): { on: boolean; rest: string[]
   return { on: rest.length !== args.length, rest };
 }
 
-/** 关键命令都要带 --description：一句话用用户的话说这一步要做什么。Lore 把它存进时间线和 endpoints.json，当成 endpoint 的 description。 */
+/** 关键命令都要带 --description：一句话用用户的话说这一步要做什么。lore 把它存进时间线和 endpoints.json，当成 endpoint 的 description。 */
 export const DESCRIPTION_HINT = '要带 --description "一句话，用用户的话说这一步要做什么"（如"点开变更单里的 MR"，不是"click 410 421"）；它会存下来，成为这个 endpoint、action、compose 的 description';
 const SUBS = new Set(["open", "screenshot", "click", "type", "key", "scroll", "observe", "run", "close"]);
 const NEEDS_DESCRIPTION = new Set(["open", "click", "type", "key", "scroll", "run"]);
@@ -518,9 +518,9 @@ async function runActionCommand(args: string[], ctx: Ctx, out: Output): Promise<
     if (!rec) return out.fail(`恢复编号 ${resume} 不存在（daemon 重启过、已经恢复过，或超过 30 分钟）：重新 run 一次`);
     if (!answers.length) return out.fail(`--resume 要带 --answer '<json>'，回答：${rec.question}`);
     await ctx.ensureExtension();
-    const replay: Replay = { journal: rec.journal, answers: [...rec.answers, ...answers.map(parseAnswer)] };
+    const askState: AskState = { journal: rec.journal, answers: [...rec.answers, ...answers.map(parseAnswer)] };
     // 存 compose 用第一次 run 的 --description（用户要做的事）；恢复时的 --description 可省
-    const o = { description: rec.description, params: rec.params, timeoutSec: rec.timeoutSec, replay, resumed: resume, priorDrafts: rec.drafts };
+    const o = { description: rec.description, params: rec.params, timeoutSec: rec.timeoutSec, askState, resumed: resume, priorDrafts: rec.drafts };
     return rec.code !== undefined ? composeRun(ctx, out, { ...o, code: rec.code }) : runNamed(ctx, out, { ...o, actionName: rec.action! });
   }
   if (answers.length) return out.fail("--answer 只配 --resume：lore run --resume <编号> --answer '<json>'");
@@ -546,7 +546,7 @@ async function runActionCommand(args: string[], ctx: Ctx, out: Output): Promise<
 /** 一个真跑成功的 draft，和它在哪个 run 窗口里跑的（变成 verified 时按那个窗口的请求检查多行 @endpoint 的顺序）。 */
 type DraftRun = { file: string; window: string };
 /** priorDrafts：停在 lore.ask 之前那几次 run 里已经成功的 draft（恢复时不会再执行，最终成功时一起变成 verified）。 */
-type RunOpts = { description: string; params: Record<string, string>; timeoutSec?: number; replay?: Replay; resumed?: string; priorDrafts?: DraftRun[] };
+type RunOpts = { description: string; params: Record<string, string>; timeoutSec?: number; askState?: AskState; resumed?: string; priorDrafts?: DraftRun[] };
 
 /** 恢复记录：停在 lore.ask 的 run，只在 daemon 内存里（重启就没了），最多 ASK_KEEP 条、ASK_TTL_MS 过期。 */
 type AskRecord = { t: number; question: string; description: string; code?: string; action?: string; params: Record<string, string>; timeoutSec?: number; journal: JournalEntry[]; answers: unknown[]; drafts: DraftRun[] };
@@ -591,7 +591,7 @@ function handleAsk(ctx: Ctx, out: Output, outcome: Outcome, o: RunOpts, target: 
   if (outcome.status !== "failure" && o.resumed) pendingAsks.delete(o.resumed);
   if (outcome.status !== "ask") return false;
   const id = `AS-${randomBytes(4).toString("hex")}`;
-  pendingAsks.set(id, { t: Date.now(), question: outcome.question, description: o.description, ...target, params: o.params, timeoutSec: o.timeoutSec, journal: outcome.journal, answers: o.replay?.answers ?? [], drafts: [...(o.priorDrafts ?? []), ...(outcome.drafts ?? []).map((file) => ({ file, window: outcome.runWindow ?? "" }))] });
+  pendingAsks.set(id, { t: Date.now(), question: outcome.question, description: o.description, ...target, params: o.params, timeoutSec: o.timeoutSec, journal: outcome.journal, answers: o.askState?.answers ?? [], drafts: [...(o.priorDrafts ?? []), ...(outcome.drafts ?? []).map((file) => ({ file, window: outcome.runWindow ?? "" }))] });
   while (pendingAsks.size > ASK_KEEP) pendingAsks.delete(pendingAsks.keys().next().value!);
   out.code = EXIT.wait;
   out.line(`ask ${outcome.question}`);
@@ -617,7 +617,7 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts): string[] {
     const sentOf = new Map<string, string[]>();
     const sent = (w: string): string[] => {
       let list = sentOf.get(w);
-      if (!list) { list = (w ? ctx.log.readRows(w, { limit: 5000 }) : []).filter((r) => (r.type === "cmd" && r.kind === "request") || (r.type === "request" && !r.noise && r.requestType !== "replay")).map((r) => (r.type === "cmd" ? String(r.detail?.endpoint ?? "") : r.endpoint ?? "")); sentOf.set(w, list); }
+      if (!list) { list = (w ? ctx.log.readRows(w, { limit: 5000 }) : []).filter((r) => (r.type === "cmd" && r.kind === "request") || (r.type === "request" && !r.noise)).map((r) => (r.type === "cmd" ? String(r.detail?.endpoint ?? "") : r.endpoint ?? "")); sentOf.set(w, list); }
       return list;
     };
     const promoted: string[] = [], kept: string[] = [], seen = new Set<string>();
@@ -633,7 +633,7 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts): string[] {
     if (kept.length) lines.push(`没有变成 verified：${kept.join("；")}`);
   }
   const open = ctx.learn.opened();
-  if (outcome.status === "failure" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => w.id).join("、")} 还开着：失败的请求如果在那里重放成功过，多半是 action 缺了进入那个页面状态的前置步骤（先 goto 哪个页面、少了哪个前置请求），或者 auth 头没声明来源（看观察里的"auth 来源"，写进 request 的 auth）；对比两个窗口的 timeline.jsonl`);
+  if (outcome.status === "failure" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => w.id).join("、")} 还开着：失败的 action 如果在那里 run 成功过，多半是 action 缺了进入那个页面状态的前置步骤（先 goto 哪个页面、少了哪个前置请求），或者 auth 头没声明来源（看观察里的"auth 来源"，写进 request 的 auth）；对比两个窗口的 timeline.jsonl`);
   if (outcome.status === "success" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => `${w.id}（空闲 ${idleMin(w)} 分钟）`).join("、")} 还开着，事情做完就 lore learn <句柄> close`);
   return lines;
 }
@@ -641,7 +641,7 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts): string[] {
 async function runNamed(ctx: Ctx, out: Output, o: RunOpts & { actionName: string }): Promise<void> {
   const { actionName, description } = o;
   const found = findAction(ctx.log.dir, actionName, composeDirOf(ctx));
-  const outcome = await ctx.runner.runAction(actionName, o.params, undefined, { replay: o.replay });
+  const outcome = await ctx.runner.runAction(actionName, o.params, undefined, { askState: o.askState });
   if (handleAsk(ctx, out, outcome, o, { action: actionName })) return;
   if (outcome.status !== "success") out.code = EXIT.fail;
   if (found && outcome.status === "success") {
@@ -655,7 +655,7 @@ async function runNamed(ctx: Ctx, out: Output, o: RunOpts & { actionName: string
 
 async function composeRun(ctx: Ctx, out: Output, o: RunOpts & { code: string }): Promise<void> {
   const globalDir = composeDirOf(ctx);
-  const outcome = await ctx.runner.runCompose(o.code, (o.timeoutSec ?? 115) * 1000, o.params, o.replay, "compose");
+  const outcome = await ctx.runner.runCompose(o.code, (o.timeoutSec ?? 115) * 1000, o.params, o.askState, "compose");
   if (handleAsk(ctx, out, outcome, o, { code: o.code })) return;
   if (outcome.status !== "success") out.code = EXIT.fail;
   for (const line of outcomeLines("compose", outcome)) out.line(line);

@@ -8,9 +8,9 @@ export type JsonRpcResponse = { jsonrpc: "2.0"; id: string; result: unknown } | 
 export const RPC_ERRORS = { PARSE: -32700, INVALID_REQUEST: -32600, METHOD_NOT_FOUND: -32601, INVALID_PARAMS: -32602, INTERNAL: -32603, HANDSHAKE: -32010 } as const;
 
 export const HANDSHAKE_GUIDES: Record<HandshakeStatus, string> = {
-  "need-install": "Lore 还没有安装完成：扩展或 native messaging 注册缺失。",
+  "need-install": "lore 还没有安装完成：扩展或 native messaging 注册缺失。",
   "need-chrome": "没检测到正在运行的 Google Chrome。",
-  "need-extension": "Lore 的 Chrome 扩展没有连上。",
+  "need-extension": "lore 的 Chrome 扩展没有连上。",
 };
 
 export function isHandshakeStatus(status: string): status is HandshakeStatus {

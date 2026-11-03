@@ -17,7 +17,7 @@ const link = {
     }
     if (name === "call") {
       const req = (args.args as Array<{ url: string; headers: Record<string, string> }>)[0]!;
-      if (args.fn === "replay") sent.push({ url: req.url, headers: req.headers });
+      if (args.fn === "fetch") sent.push({ url: req.url, headers: req.headers });
       return { v: { ok: true, status: 200, ct: "application/json", size: 2, text: "{}", ms: 1 } };
     }
     return {};

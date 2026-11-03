@@ -4,7 +4,7 @@ description: >-
   触发词 lore；用用户本机已登录的 Google Chrome 完成网站上的事。先找已有的 action 和 compose（~/.lore/sites/*/actions/、~/.lore/compose/）直接 run；缺的 action 就开一个 learn 窗口学会，再用 run 在新开的 run 窗口里交付。
 ---
 
-# Lore
+# lore
 
 你在单独的 Chrome 窗口里替用户做事，用的是用户 Chrome 的登录态。用户只说要做什么（可以给链接，或说"我的某某页面"），以及做要输入账号密码、扫码的登录；其余你自己来。
 
@@ -19,12 +19,12 @@ description: >-
 
 ## 2. 原则
 
-1. **结果只来自 `lore run`**：learn 窗口里看到的东西不能直接交给用户。compose 和 description 由 Lore 自动存，你不做单独的保存。
+1. **结果只来自 `lore run`**：learn 窗口里看到的东西不能直接交给用户。compose 和 description 由 lore 自动存，你不做单独的保存。
 2. **有 action 先用 action。**
 3. **先拆分；同一种操作只学一次**：只是作用对象不同的操作，只在最容易的那个对象上学，对象换成参数。
 4. **network 优先，DOM 兜底。** 读不了响应体（流式、二进制）时，DOM 是正当的结果。
 5. **成本顺序**：读文件 < 在 learn 窗口里 run 一次 action < 一次页面操作 < 继续 learn。
-6. **写请求你判断严重程度**：Lore 不拦写请求，learn 窗口里页面发什么就真的发什么，`run` 带 `@write` 的 action 也直接发。点赞、收藏这类轻量可撤销的直接做；删除、支付、下单、发布或发给别人、改设置、不可撤销的先问用户。批量写先跑读的 action 拿到目标，用 `lore.ask` 停下来确认，再跑写的 action。`run` 输出里的「已发出的 write 请求」就是这次真发了什么，要告诉用户。
+6. **写请求你判断严重程度**：lore 不拦写请求，learn 窗口里页面发什么就真的发什么，`run` 带 `@write` 的 action 也直接发。点赞、收藏这类轻量可撤销的直接做；删除、支付、下单、发布或发给别人、改设置、不可撤销的先问用户。批量写先跑读的 action 拿到目标，用 `lore.ask` 停下来确认，再跑写的 action。`run` 输出里的「已发出的 write 请求」就是这次真发了什么，要告诉用户。
 
 ## 3. 流程
 
@@ -99,4 +99,4 @@ for (const e of d.endpoints.filter((e) => !e.action && e.cmdTriggered > 0))
 ## 6. 对用户、遇到问题
 
 - 对用户只说要做的操作、需要用户做的（账号密码、扫码登录，确认删除这类写操作）和最终结果；不提 action、learn 窗口这些内部结构。
-- Lore 以源码分发在 `~/.lore`：`ARCHITECTURE.md` 讲各部分怎么工作（第 9 节是故障表），`src/` 可以直接读、改，升级会覆盖。`lore doctor` 报失败从这里开始；扩展升级后要在 `chrome://extensions` 里刷新 Lore。
+- lore 以源码分发在 `~/.lore`：`ARCHITECTURE.md` 讲各部分怎么工作（第 9 节是故障表），`src/` 可以直接读、改，升级会覆盖。`lore doctor` 报失败从这里开始；扩展升级后要在 `chrome://extensions` 里刷新 lore。

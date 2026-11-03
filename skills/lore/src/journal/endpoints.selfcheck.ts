@@ -1,4 +1,4 @@
-// endpoints.json：按 phase 统计动作引发 / 加载期 / 其它（只有 learn 窗口的记录）、样本受保护（路径相对 ~/.lore）、action 覆盖标记、重启后读回、不含 token 真值；
+// endpoints.json：按 phase 统计动作引发 / 加载期 / 其它（只有 learn 窗口的记录）、样本受保护（路径相对 ~/.lore）、action 覆盖标记、重启后读回；
 // endpoint 名：同一路径上请求体里的 operationName / action 把不同操作拆开；站点按页面 host。
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -6,7 +6,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { endpointOf, normalizeSite, siteOf } from "./digest.ts";
 import { EndpointIndex, SAMPLES_PER_ENDPOINT, type ObserveInput } from "./endpoints.ts";
-import { RawStore } from "./raw.ts";
 import type { Phase, RequestFile, Row } from "./types.ts";
 
 // ---- 站点与 endpoint 名 ----
@@ -28,14 +27,12 @@ assert.equal(endpointOf("https://a.com/api/users/12345678/posts").name, "/api/us
 assert.equal(endpointOf("https://a.com/api/search", { q: "x" }).name, "/api/search", "没有操作名字段就只用路径");
 
 // ---- 聚合 ----
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-endpoints-"));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "lore-endpoints-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
 const dir = path.join(root, "sites");
 const SITE = "x.com";
-const raw = new RawStore();
-raw.put(5, "d:9", { method: "POST", url: "https://x.com/a", headers: { authorization: "Bearer REAL-TOKEN-0123456789abcdef" }, body: null, page: "https://x.com/", t: 1 });
 let covered = new Map<string, string>();
-const index = new EndpointIndex({ dir, raw, coverage: () => covered, flushMs: 5 });
+const index = new EndpointIndex({ dir, coverage: () => covered, flushMs: 5 });
 let seq = 100;
 function observe(endpoint: string, phase: Phase, over: { win?: string; status?: number; label?: string; text?: string; body?: unknown; rid?: string; query?: Record<string, string> } = {}): ObserveInput {
   const s = ++seq;
@@ -73,12 +70,10 @@ assert.equal(like.onLoad, 0);
 assert.equal(like.lastCause, "agent cmd click button[Like]");
 assert.deepEqual(like.variables, ["tweet_id"]);
 assert.equal(like.shape, "data.favorite_tweet");
-assert.equal(like.replayable, true, "原始请求还在内存里");
 assert.equal(home.onLoad, 2); assert.equal(home.idle, 5); assert.equal(home.cmdTriggered, 1);
 assert.equal(home.count, 8);
 assert.deepEqual(home.variables, ["variables.count", "variables.cursor"]);
 assert.match(home.shape!, /^data\.home\.\{a,b\}$/);
-assert.equal(home.replayable, false, "没有原始请求就不能直接重放");
 assert.equal(like.action, null);
 
 // 样本：每个 endpoint 最近 5 个成功请求，受保护；失败的不是样本
@@ -99,16 +94,14 @@ const gone = home.samples[0]!;
 fs.rmSync(path.join(root, gone.file));
 assert.equal(index.snapshot(SITE).endpoints.find((e) => e.key === "GET graphql HomeTimeline")!.samples.find((s) => s.seq === gone.seq)!.available, false);
 
-// 写盘与重启读回（原子写）；文件里没有 token 真值
+// 写盘与重启读回（原子写）
 index.flush();
 const file = path.join(dir, SITE, "endpoints.json");
 assert.ok(fs.existsSync(file) && !fs.readdirSync(path.join(dir, SITE)).some((n) => n.endsWith(".tmp")));
-assert.ok(!fs.readFileSync(file, "utf8").includes("REAL-TOKEN"));
 const reborn = new EndpointIndex({ dir, coverage: () => covered });
 const back = reborn.snapshot(SITE).endpoints.find((e) => e.key === "GET graphql HomeTimeline")!;
 assert.equal(back.count, 8);
 assert.equal(back.samples.length, SAMPLES_PER_ENDPOINT);
-assert.equal(back.replayable, false);
 reborn.observe({ ...observe("GET graphql HomeTimeline", "idle"), row: { seq: 999, t: 1, win: "x.com-20261101-120000", src: "agent", tab: 5, type: "request", method: "GET", endpoint: "GET graphql HomeTimeline", phase: "idle", status: 200, file: "requests/000999-GET-x.json" } });
 assert.equal(reborn.snapshot(SITE).endpoints.find((e) => e.key === "GET graphql HomeTimeline")!.count, 9, "读回后接着计数");
 // description：动作带的一句 description，只收成功的请求，同一句只留一份，最多 5 句（新的在前）；describe 只记到已有的 endpoint

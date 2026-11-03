@@ -1,6 +1,6 @@
 import { getDomain } from "tldts";
 
-export type LoreUrl = {
+export type ParsedUrl = {
   /** origin + pathname, no `?` or `#` */
   bareUrl: string;
   /** decoded query values */
@@ -8,7 +8,7 @@ export type LoreUrl = {
 };
 
 /** Parse http(s) URL; query values stored decoded. */
-export function parseUrl(raw: string): LoreUrl {
+export function parseUrl(raw: string): ParsedUrl {
   try {
     const u = new URL(raw);
     const query: Record<string, string> = {};
@@ -20,7 +20,7 @@ export function parseUrl(raw: string): LoreUrl {
 }
 
 /** Registrable domain (eTLD+1); falls back to hostname. */
-export function registrableDomain(u: LoreUrl): string {
+export function registrableDomain(u: ParsedUrl): string {
   try {
     const host = new URL(u.bareUrl).hostname;
     return getDomain(host) ?? host;
@@ -29,7 +29,7 @@ export function registrableDomain(u: LoreUrl): string {
   }
 }
 
-export function isSameSite(a: LoreUrl, b: LoreUrl): boolean {
+export function isSameSite(a: ParsedUrl, b: ParsedUrl): boolean {
   const da = registrableDomain(a);
   const db = registrableDomain(b);
   return da !== "" && da === db;

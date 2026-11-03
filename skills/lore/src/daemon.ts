@@ -23,7 +23,7 @@ import { ALIAS_SALT_FILE, DAEMON_IDLE_EXIT_MS, DAEMON_READY_MS, SESSION_DIR, LOR
 import { createLogger, setLogFile } from "./utils/logger.ts";
 
 /**
- * daemon：本机常驻 daemon，唯一的大脑。收扩展推来的页面消息写日志，执行命令行发来的命令（agent 窗口、action 运行、重放、查询都在这里）。
+ * daemon：本机常驻 daemon，唯一的大脑。收扩展推来的页面消息写日志，执行命令行发来的命令（agent 窗口、action 运行、查询都在这里）。
  * 扩展只是管道，CLI 只是把参数发过来、把文本打印出去。
  */
 const logger = createLogger("daemon");
@@ -41,7 +41,7 @@ const link = new ExtensionLink();
 const win = new AgentWindows(link);
 const raw = new RawStore();
 const log = new WindowLog();
-const index = new EndpointIndex({ raw, coverage: (site) => coveredEndpoints(log.dir, site) });
+const index = new EndpointIndex({ coverage: (site) => coveredEndpoints(log.dir, site) });
 let ingest: Ingestor | undefined;
 let adblock: FiltersEngine | undefined;
 let host: RunHost | undefined;
@@ -94,7 +94,7 @@ async function ensureExtension(): Promise<void> {
     while (!extSocket && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
     if (!extSocket) throw new NeedExtensionError();
   }
-  if (!link.compatible()) throw new Error(`Chrome 里的 Lore 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 Lore 扩展`);
+  if (!link.compatible()) throw new Error(`Chrome 里的 lore 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 lore 扩展`);
 }
 
 async function listTabs(): Promise<TabInfo[]> {

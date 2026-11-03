@@ -1,18 +1,18 @@
-// 页面里（MAIN world）的共用部分：命名空间 window.__tcr、发消息、前台判断、元素描述与快照、DOM 变化计数。
-// 录制（recorder.js）和执行（executor.js）都建立在它上面，但互相不依赖。由 daemon 在扩展连接时下发，不放在扩展里。
+// 页面里（MAIN world）的共用部分：命名空间 window.__lore、发消息、前台判断、元素描述与快照、DOM 变化计数。
+// 录制（recorder.js）和执行（executor.js）都建立在它上面，但互相不依赖。是扩展包里的静态内容脚本（manifest 的 content_scripts）。
 (() => {
-  if (window.__tcr) return;
-  const T = (window.__tcr = { exec: {} });
-  T.origFetch = window.fetch; // 原始 fetch：重放用它发请求，不会被录制端当成页面自己发的请求
+  if (window.__lore) return;
+  const T = (window.__lore = { exec: {} });
+  T.origFetch = window.fetch; // 原始 fetch：action 的 request() 用它发请求，不会被录制端当成页面自己发的请求
 
   // ---- 发消息：经 bridge.js 交给扩展，再到 daemon。限流，防止异常页面把日志刷爆 ----
-  // 只有 Lore 开的（以及被它们打开的）标签页才上报：bridge 问过扩展之前先缓存（有上限，加载期的请求不能漏），
+  // 只有 lore 开的（以及被它们打开的）标签页才上报：bridge 问过扩展之前先缓存（有上限，加载期的请求不能漏），
   // 答"录"就发出缓存并放行，答"不录"（用户的窗口）就清空缓存，之后一条都不发。
   const PENDING_MAX = 500;
   let sent = 0, windowStart = Date.now(), gate = "ask", pending = [];
   const send = (m) => { try { window.postMessage(m, "*"); } catch {} };
   window.addEventListener("message", (e) => {
-    if (e.source !== window || !e.data || e.data.__tcrg !== 1 || gate !== "ask") return;
+    if (e.source !== window || !e.data || e.data.__loreGate !== 1 || gate !== "ask") return;
     gate = e.data.on ? "on" : "off";
     const queued = pending; pending = [];
     if (gate === "on") for (const m of queued) send(m);
@@ -23,7 +23,7 @@
     const now = Date.now();
     if (now - windowStart > 60000) { windowStart = now; sent = 0; }
     if (o.k !== "res" && ++sent > 3000) return;
-    const m = { __tcrl: 1, t: now, ...o };
+    const m = { __loreMsg: 1, t: now, ...o };
     if (gate === "on") send(m);
     else if (pending.length < PENDING_MAX) pending.push(m);
   };

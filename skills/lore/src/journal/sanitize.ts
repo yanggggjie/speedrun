@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { parseUrl, type LoreUrl } from "../utils/url.ts";
+import { parseUrl, type ParsedUrl } from "../utils/url.ts";
 
 /** 秘密的名字：加了边界，author、design 这类不会误伤。用在请求头名、查询参数名、JSON 的 key 上。 */
 // 连写的名字也算：x-xsrftoken、csrftoken、accesstoken、authtoken（xsrf / csrf 出现在任何位置，或以 token 结尾）
@@ -50,7 +50,7 @@ export class Sanitizer {
     });
   }
 
-  url(urlText: string): LoreUrl {
+  url(urlText: string): ParsedUrl {
     const parsed = parseUrl(urlText);
     for (const [name, value] of Object.entries(parsed.query)) {
       if (SECRET_NAME.test(name) || JWT.test(value)) parsed.query[name] = this.redact(value);

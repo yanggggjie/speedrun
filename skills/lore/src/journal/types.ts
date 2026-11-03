@@ -1,5 +1,5 @@
 /**
- * 事件来源：只录 agent 的窗口，所以几乎都是 agent（Lore 的动作，以及 agent 窗口里页面脚本触发的请求和导航）；
+ * 事件来源：只录 agent 的窗口，所以几乎都是 agent（lore 的动作，以及 agent 窗口里页面脚本触发的请求和导航）；
  * user 只在有人在 agent 窗口里真的动了一下时出现（isTrusted 为真）。page 只在摄入时用（页面脚本触发的），写入时记为 agent。
  */
 export type Src = "user" | "agent" | "page";
@@ -61,7 +61,8 @@ export type Row = {
   file?: string;
 };
 
-export type ParsedUrl = { bareUrl: string; query: Record<string, string> };
+export type { ParsedUrl } from "../utils/url.ts";
+import type { ParsedUrl } from "../utils/url.ts";
 
 /** 一次请求的完整元数据，一个请求一个 JSON 文件：seq / win / 因果 / endpoint 名 / rid 之外是请求本身。秘密都是别名。 */
 export type RequestFile = {

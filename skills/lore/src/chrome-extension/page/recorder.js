@@ -2,7 +2,7 @@
 // 只在 lore agent 窗口里上报（common.js 的 T.post 按扩展的回答放行）；只如实上报发生的事，不改变页面行为。来源只看 isTrusted。
 // 不录 WebSocket、sendBeacon、Worker 里的请求。
 (() => {
-  const T = window.__tcr;
+  const T = window.__lore;
   if (!T || T.recorder) return;
   T.recorder = 1;
 
@@ -10,7 +10,7 @@
   const BODY_MAX = 16 * 1024 * 1024;
   const REQ_BODY_MAX = 256 * 1024;
   const TEXTY = /json|text|xml|javascript|html|x-www-form|graphql/i;
-  const SENSITIVE_HEADER = /^(cookie|set-cookie)$/i; // 页面脚本看不到 cookie；其余请求头的真值也交给 daemon（只在内存里用来重放）
+  const SENSITIVE_HEADER = /^(cookie|set-cookie)$/i; // 页面脚本看不到 cookie；其余请求头的真值也交给 daemon（只在内存里，用来给 request() 继承请求头）
   const post = T.post;
 
   // ---- 同站的粗判断（只决定读不读响应体，最终判断在 daemon）----

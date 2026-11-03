@@ -1,6 +1,6 @@
 # ARCHITECTURE
 
-Lore 的目标、设计原则和运行时实现：每一部分是谁实现的、在哪个文件、保证什么。agent 怎么用见 `SKILL.md`；安装见 `install.md`；开发、验证、发布见 `AGENTS.md`。
+lore 的目标、设计原则和运行时实现：每一部分是谁实现的、在哪个文件、保证什么。agent 怎么用见 `SKILL.md`；安装见 `install.md`；开发、验证、发布见 `AGENTS.md`。
 
 ## 1. 目标与原则
 
@@ -9,13 +9,13 @@ Lore 的目标、设计原则和运行时实现：每一部分是谁实现的、
 - **用户只做两件事**：说要做什么，以及要输入账号密码、扫码的登录。其余全靠 agent 自己 learn，没有用户示范。
 - **录制的用途**：① 拿到 endpoint，用请求代替页面操作大幅提速；② endpoint 没法直接发时，给 DOM 操作提供依据（持久定位、该步之后出现了哪个请求）；③ 作为请求头的来源（`request` 继承 agent 窗口里同站点页面最近的请求头）；④ run 出问题时反查。
 
-**action** 是 Lore 的基本单位：学出来、带参数、能复用的业务动作，由一个或几个 endpoint（录到的一个请求，写成 `方法 路径`）实现，或用 DOM 实现。**compose** 是用 action 串成的流程，只能调用 action 和别的 compose，不能碰页面；它是 action 的使用者，不是 action 的一种。
+**action** 是 lore 的基本单位：学出来、带参数、能复用的业务动作，由一个或几个 endpoint（录到的一个请求，写成 `方法 路径`）实现，或用 DOM 实现。**compose** 是用 action 串成的流程，只能调用 action 和别的 compose，不能碰页面；它是 action 的使用者，不是 action 的一种。
 
 设计原则（agent 的使用原则在 `SKILL.md` 第 2 节）：
-1. **唯一目标：更快完成眼前的任务。** 结果只来自 `lore run`（毫秒级）。存下来的东西（action、compose、description）是顺带的，由 Lore 自动存，agent 不做单独的保存、维护。这是 SKILL 里的约定，没有强制检查。
+1. **唯一目标：更快完成眼前的任务。** 结果只来自 `lore run`（毫秒级）。存下来的东西（action、compose、description）是顺带的，由 lore 自动存，agent 不做单独的保存、维护。这是 SKILL 里的约定，没有强制检查。
 2. **只录 agent 的窗口。** 用户的窗口和标签页不录、不碰，只读标签页列表（地址、标题）；要看用户手上的页面，就在 learn 窗口里重新打开它，从加载开始录。用户很久以前做的操作，agent 不知道请求的来源和意图；只学 agent 自己做出来的请求才准。
 3. **秘密不落盘。** 原始请求（含 token 真值）只在 daemon 内存里；日志里是别名，agent 拿不到真值。
-4. **日志和 action 都是文件。** 能读文件的不做命令，agent 用 `rg`、`node`、Python 直接读；Lore 的命令只做必须由它做的事（控制浏览器、持有不能落盘的原始请求）。
+4. **日志和 action 都是文件。** 能读文件的不做命令，agent 用 `rg`、`node`、Python 直接读；lore 的命令只做必须由它做的事（控制浏览器、持有不能落盘的原始请求）。
 5. **命令面最小，显式区分优于隐式区分。** 同一条命令不因为 agent 看不到的状态做不同的事。run 窗口每次从空白开始、`run` 的 `--action` / `--compose` / `--compose-code` 三选一，都是为此。
 
 ## 2. 两种窗口与它们的保证
@@ -37,7 +37,7 @@ Lore 的目标、设计原则和运行时实现：每一部分是谁实现的、
 - **参数**（`run/actions.ts` 的 `checkParams`、`coerceParams`）：对照文件头 `@param 名字[?][:类型]` 检查缺的、多的，再按类型（`number`、`boolean`、`json`，默认字符串）转换后交给 action；compose 里 `action()` 传的参数也一样。
 - **`@start`**（`run/runner.ts` 的 `startThenWork`）：run 时先打开这个页面再执行，打不开就失败。
 - **`--description`**：打开 learn 窗口、页面操作、`run` 必须带，没带就拒绝（不占操作次数）。存进时间线 cmd 行（它引发的请求经 `cause` 指向它）、`endpoints.json` 每个 endpoint 的 `descriptions`（只收成功的，最近 5 句，`journal/endpoints.ts`）、compose 文件头。学出来的 action 文件不自动改。
-- **compose 存下来**（`run/actions.ts` 的 `composeTarget`、`saveComposed`、`pruneUnnamed`）：`--compose-code` 跑通后按代码哈希前 12 位存进 `~/.lore/compose/`（`--compose` 认唯一前缀，`resolveCompose`），头由 Lore 填（`// 描述`、`@description` 最多 5 句、`@compose`、`@params`、`@ok` 次数和最近时间）；按名字 `run` 成功也累加 description 和次数，代码以文件当前内容为准（哈希名只在第一次存时算）。淘汰：`@ok` ≥2 次的永远保留且不占名额；只跑过一次的超过 30 天删，最多留 300 个。失败的不存。
+- **compose 存下来**（`run/actions.ts` 的 `composeTarget`、`saveComposed`、`pruneUnnamed`）：`--compose-code` 跑通后按代码哈希前 12 位存进 `~/.lore/compose/`（`--compose` 认唯一前缀，`resolveCompose`），头由 lore 填（`// 描述`、`@description` 最多 5 句、`@compose`、`@params`、`@ok` 次数和最近时间）；按名字 `run` 成功也累加 description 和次数，代码以文件当前内容为准（哈希名只在第一次存时算）。淘汰：`@ok` ≥2 次的永远保留且不占名额；只跑过一次的超过 30 天删，最多留 300 个。失败的不存。
 - **`lore.ask`**（`run/runner.ts` 的 `work()`、`journal/commands.ts` 的 `handleAsk`）：run 停下输出 `ask <问题>`、`数据`、`恢复`（`lore run --resume <编号> --answer …`），不存 compose；`--resume` 恢复时新开 run 窗口、从头重跑代码，最外层 compose 里记下的 `action()` 直接返回上次的结果，第 i 次 ask 返回第 i 个回答。恢复时核对每次调用的名字和参数，不同就失败。只有最外层的 compose 能 ask；`data` 超过 100KB 失败。恢复记录只在 daemon 内存里，最多 20 条、30 分钟过期，用过就作废（恢复失败时保留）。
 
 ## 3. 进程与分层
@@ -72,14 +72,14 @@ CLI（argv→RPC→打印） ──socket──▶ daemon（唯一的大脑） �
 
 `src/chrome-extension/background.js` 没有业务逻辑，是一个固定 ABI 的管道；页面脚本是扩展包里的静态内容脚本（`page/`）。`manifest.json` 有固定的 `key`，扩展 ID 是 `dkjmgdhelenchaippejoppbcfbjfgppl`（和 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）；权限 `tabs`、`nativeMessaging`、`alarms`、`scripting`、`storage`、`<all_urls>`，Chrome 135 起。
 
-- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 9）：`call`（在页面 MAIN world 调 `window.__tcr.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`openWindow`、`openTab`、`activateTab`、`closeTab`、`closeWindow`、`screenshot`。帧是 4 字节小端长度加 UTF-8 JSON；`hello` 带 `abi`，和 daemon 不一致时不工作，提示用户刷新扩展。只有改 ABI 或权限才需要用户刷新扩展。
+- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 10）：`call`（在页面 MAIN world 调 `window.__lore.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`openWindow`、`openTab`、`activateTab`、`closeTab`、`closeWindow`、`screenshot`。帧是 4 字节小端长度加 UTF-8 JSON；`hello` 带 `abi`，和 daemon 不一致时不工作，提示用户刷新扩展。只有改 ABI 或权限才需要用户刷新扩展。
 - 页面消息：页面脚本 `postMessage` → `bridge.js` → `chrome.runtime.sendMessage` → 扩展补上 tab、frame 转给 daemon。页面自己的脚本也能发，所以日志只是观察记录，不能当权限依据。
 - 连接：Chrome 拉起的 relay 无状态，只转发字节；断开后扩展指数退避重连（上限 30 秒），点工具栏图标立即重连。daemon 不随扩展刷新退出。
 
 ## 5. 页面脚本
 
 - `recorder.js` 只如实上报发生的事，不改变页面行为：HTML 文档、XHR、fetch（不录 WebSocket、`sendBeacon`、Worker、事件流）、用户输入、导航、页面快照、渲染后的 DOM。`executor.js` 执行 daemon 下发的动作（按持久定位、按屏幕坐标、取文字、`query`、`eval`）。录制和执行互相独立，没有共享状态。细节见两个文件的注释。
-- **只录 agent 的标签页（两层，安全相关）**：① 扩展：agent 标签页是 Lore 开的，以及被它们打开的（`openerTabId`；创建时是 `chrome://` 地址的 Cmd+T 新标签页不算），集合存在 `chrome.storage.session`。页面脚本在 `document_start` 装钩子、先缓存消息，`bridge.js` 问到「是 agent 标签页」才放行，否则清空缓存、之后一条都不发；`call`、补注入也只对 agent 标签页。② daemon：`Ingestor.handle` 按 `AgentWindows.winOf` 丢弃不属于 agent 窗口的一切，窗口没在 `WindowLog` 登记的也丢；扩展 ABI 不对时一条页面消息都不收。
+- **只录 agent 的标签页（两层，安全相关）**：① 扩展：agent 标签页是 lore 开的，以及被它们打开的（`openerTabId`；创建时是 `chrome://` 地址的 Cmd+T 新标签页不算），集合存在 `chrome.storage.session`。页面脚本在 `document_start` 装钩子、先缓存消息，`bridge.js` 问到「是 agent 标签页」才放行，否则清空缓存、之后一条都不发；`call`、补注入也只对 agent 标签页。② daemon：`Ingestor.handle` 按 `AgentWindows.winOf` 丢弃不属于 agent 窗口的一切，窗口没在 `WindowLog` 登记的也丢；扩展 ABI 不对时一条页面消息都不收。
 - agent 窗口里页面脚本触发的一切记为 `src: agent`；有人在 agent 窗口里真的动了一下（`isTrusted`）记为 `user`。
 
 ## 6. 日志（journal）
@@ -107,15 +107,15 @@ CLI（argv→RPC→打印） ──socket──▶ daemon（唯一的大脑） �
 |---|---|
 | `seq` `t` `win` `site` `tab` | 编号、毫秒时间戳、窗口（句柄或 run 名字）、站点、标签页 |
 | `description` | cmd 行：这一步带的 `--description`（用户的话，description）；它引发的请求经 `cause` 指向这一行 |
-| `src` | `agent`（Lore 的操作，以及 agent 窗口里页面脚本触发的请求和导航）；`user` 只在有人在 agent 窗口里真的动了一下时出现 |
+| `src` | `agent`（lore 的操作，以及 agent 窗口里页面脚本触发的请求和导航）；`user` 只在有人在 agent 窗口里真的动了一下时出现 |
 | `type` | `request` `input`（页面里的点击、输入、按键、滚动）`nav` `cmd` `doc` `snap` `tab` |
 | input / cmd | `kind`（input 是 click、input、key、scroll、change、submit；cmd 是 goto、request、click、fill……）、`target`（如 `button[Like]`）、`role` `name` `selector` `key` `deltaY`；cmd 有 `ok` `error` `detail`（`request` 命令的 `detail.endpoint` 是它发的 endpoint） |
 | request | `requestType`（fetch / xhr）、`method` `url`（不含参数）`status` `size`、`endpoint`（`方法 路径`，就是 `@endpoint` 的写法）、`file`（请求文件，相对窗口目录）、`noise: 1`（埋点广告，默认别看） |
 | 因果 | `cause`：引发这个请求的命令的 `seq`（同一标签页 2 秒内最近一次 agent 命令）；`causeDt`：相隔毫秒；`phase`：`load`（页面或单页路由刚开始的几秒）、`cmd`（命令引发）、`idle`（轮询等） |
 
-**请求文件**：`method`，`url{bareUrl, query}`（查询参数已解析），`frameUrl`，`headers`，`requestBody`（JSON 和表单已解析成对象），`status`，`responseHeaders`，`responseBodyPath`（相对窗口目录），`startedAt` `endedAt`；Lore 另加 `seq` `win` `endpoint` `requestType` `tab` `rid` `cause` `causeDt` `phase`，失败的有 `error`，被截断的有 `truncated`，没存响应体的有 `bodyOmitted`（原因：`noise` `cross-site` `large-error` `no-body` `error`）。**token、Cookie、密码是别名 `⟨secret_…⟩`**，真值只在 daemon 内存里，agent 拿不到。
+**请求文件**：`method`，`url{bareUrl, query}`（查询参数已解析），`frameUrl`，`headers`，`requestBody`（JSON 和表单已解析成对象），`status`，`responseHeaders`，`responseBodyPath`（相对窗口目录），`startedAt` `endedAt`；lore 另加 `seq` `win` `endpoint` `requestType` `tab` `rid` `cause` `causeDt` `phase`，失败的有 `error`，被截断的有 `truncated`，没存响应体的有 `bodyOmitted`（原因：`noise` `cross-site` `large-error` `no-body` `error`）。**token、Cookie、密码是别名 `⟨secret_…⟩`**，真值只在 daemon 内存里，agent 拿不到。
 
-**endpoints.json**：`{ site, updatedAt, endpoints: [{ key, method, host, name, count, firstSeq, lastSeq, lastStatus, cmdTriggered, onLoad, idle, lastCause, descriptions, variables, shape, replayable, samples, action }] }`。只由 learn 窗口的记录累积。`key` 是 `方法 路径`；`cmdTriggered` / `onLoad` / `idle` 按 `phase` 统计；`variables` 是能改的参数，`shape` 是响应结构；`replayable` 为真表示原始请求还在 daemon 内存里（能继承它的请求头、给出草稿；重启就没了）；`samples` 是最近 5 次成功请求（`file`、`body` 相对 `~/.lore`，`available` 为假表示文件已被淘汰）；`action` 是覆盖它的 action 名（多行 `@endpoint` 每一行都算）；`auth` 是 auth 头的来源（`cookie:_xsrf`、`local:…`，或 `signed` / `static` / `unknown`），`signed` 为真表示带签名头、换参数可能被拒（以 run 的结果为准）；`descriptions` 是这个 endpoint 的**description**：引发它的操作、跑覆盖它的 action 时带的 `--description`（`{ text, from, t }`，只收成功的，最近 5 句，新的在前）。不排序，由你筛。文件可能比日志晚两秒，要最新就读时间线。
+**endpoints.json**：`{ site, updatedAt, endpoints: [{ key, method, host, name, count, firstSeq, lastSeq, lastStatus, cmdTriggered, onLoad, idle, lastCause, descriptions, variables, shape, auth, samples, action }] }`。只由 learn 窗口的记录累积。`key` 是 `方法 路径`；`cmdTriggered` / `onLoad` / `idle` 按 `phase` 统计；`variables` 是能改的参数，`shape` 是响应结构；`samples` 是最近 5 次成功请求（`file`、`body` 相对 `~/.lore`，`available` 为假表示文件已被淘汰）；`action` 是覆盖它的 action 名（多行 `@endpoint` 每一行都算）；`auth` 是 auth 头的来源（`cookie:_xsrf`、`local:…`，或 `signed` / `static` / `unknown`），`signed` 为真表示带签名头、换参数可能被拒（以 run 的结果为准）；`descriptions` 是这个 endpoint 的**description**：引发它的操作、跑覆盖它的 action 时带的 `--description`（`{ text, from, t }`，只收成功的，最近 5 句，新的在前）。不排序，由你筛。文件可能比日志晚两秒，要最新就读时间线。
 
 
 ## 7. 执行
@@ -129,7 +129,7 @@ CLI（argv→RPC→打印） ──socket──▶ daemon（唯一的大脑） �
 
 ## 8. 存储与安装
 
-- 用户数据：`~/.lore/learn-windows`、`~/.lore/run-windows`（日志）、`~/.lore/sites`（`endpoints.json`、`actions/`、`.seq`）、`~/.lore/compose`、`~/.lore/helpers`、`~/.lore/alias-salt`；Lore 维护的 `~/.lore/lib`；运行时状态 `~/.lore/session`；运行时代码 `~/.lore/src`。
+- 用户数据：`~/.lore/learn-windows`、`~/.lore/run-windows`（日志）、`~/.lore/sites`（`endpoints.json`、`actions/`、`.seq`）、`~/.lore/compose`、`~/.lore/helpers`、`~/.lore/alias-salt`；lore 维护的 `~/.lore/lib`；运行时状态 `~/.lore/session`；运行时代码 `~/.lore/src`。
 - `setup.js` 把 skill 目录镜像到 `~/.lore`（只排除 `node_modules`、`.DS_Store`；本机数据目录不碰）、装依赖、注册 native host、生成命令、让过期的 daemon 换成新代码、运行 `doctor`；从旧名字（TabBot、Deft、Silt）迁移由 `store/deploy.ts` 的 `migrateHome` 做。
 - 版本：`~/.lore/src/.version` 的 `build`；只有 `setup.js` 发现 `build` 不同、或用户 `lore daemon restart` 时才换代码。`lore doctor` 只读。
 
@@ -139,15 +139,15 @@ CLI（argv→RPC→打印） ──socket──▶ daemon（唯一的大脑） �
 
 | 现象 | 处理 |
 |---|---|
-| `extension-abi` 不对，或"扩展是旧版本" | 在 `chrome://extensions` 里刷新 Lore |
-| `need-extension` | 请用户确认 Chrome 里的 Lore 扩展开着，点一下工具栏图标；从没加载过的属于安装问题 |
-| `need-install` | Lore 没装好或 native host 丢了：告诉用户需要重新安装 Lore |
+| `extension-abi` 不对，或"扩展是旧版本" | 在 `chrome://extensions` 里刷新 lore |
+| `need-extension` | 请用户确认 Chrome 里的 lore 扩展开着，点一下工具栏图标；从没加载过的属于安装问题 |
+| `need-install` | lore 没装好或 native host 丢了：告诉用户需要重新安装 lore |
 | `need-chrome` | 启动 Google Chrome |
 | 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |
 | 升级后旧 daemon 还在跑 | `lore daemon restart` |
 | `run` 报"没有可继承的请求头" | 已经自动打开过该站点首页仍没有带 auth 头的请求：这个站点的 endpoint 可能不需要（去掉 `inherit`），或 action 要先 `goto` 到会发这个请求的页面 |
 | learn 窗口的操作说"重新打开" | Chrome 窗口之前关了（close、空闲 30 分钟、daemon 重启），页面状态没了；回到了上次的 URL，需要的话重新点到那个状态 |
-| `learn <句柄> click`、`type`、`key`、`scroll` 报"页面里没有 Lore 的脚本" | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
+| `learn <句柄> click`、`type`、`key`、`scroll` 报"页面里没有 lore 的脚本" | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
 | run 成功了 draft 却没变成 verified | 输出写了原因：多行 `@endpoint` 没按顺序发出（前置请求漏了，或顺序写错） |
 | 日志里没有某个站点的事件 | 只录 agent 窗口：用户自己窗口里的浏览不会有记录，要用 `learn new --url` 在 learn 窗口里重新打开；用户在 agent 窗口里自己开的标签页（Cmd+T）也不录；看对应窗口目录里的 `timeline.jsonl`，按 `site` 字段筛 |
 | 磁盘上 `~/.lore/learn-windows` 太大 | 按额度自动淘汰（`lore status` 看占用）；要手动清就删关掉的旧窗口目录，别删 `sites/*/actions/` |

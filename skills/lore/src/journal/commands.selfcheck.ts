@@ -15,7 +15,7 @@ import { Ingestor, type PageMsg } from "./ingest.ts";
 import { RawStore } from "./raw.ts";
 import { WindowLog } from "./windowlog.ts";
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-cmd-"));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "lore-cmd-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
 
 // ---- 参数解析 ----
@@ -31,7 +31,7 @@ assert.match(bad("click", ["@e12"]), /用法：lore learn <句柄> click <x> <y>
 const log = new WindowLog({ root });
 log.open();
 const raw = new RawStore();
-const index = new EndpointIndex({ dir: log.dir, raw, flushMs: 5 });
+const index = new EndpointIndex({ dir: log.dir, flushMs: 5 });
 const WINS: Record<number, string> = {};
 const ingest = new Ingestor(log, { aliasKey: "k", raw, index, winOf: (tab) => WINS[tab] ?? "user" });
 const page = "https://www.x.com/home";

@@ -52,10 +52,10 @@ export function makeLearnGuide(info: LearnInfo): string {
 页面发什么就真的发什么（learn 窗口不拦）。做会引发写请求的操作之前先判断：
 - 轻量、可撤销、只影响用户自己的（点赞、收藏、关注、标已读）：直接做；
 - 删除、支付、下单、发布或发给别人、改设置、不可撤销的：先问用户，同意了再做。
-在 learn 窗口里 \`run\` 带 \`@write\` 的 action 也一样：Lore 不拦，输出最后的「已发出的 write 请求」列出这次真发了什么。真发过的写操作要在最终回复里告诉用户。
+在 learn 窗口里 \`run\` 带 \`@write\` 的 action 也一样：lore 不拦，输出最后的「已发出的 write 请求」列出这次真发了什么。真发过的写操作要在最终回复里告诉用户。
 批量写（给 10 条点赞、删一批记录）在 compose 里先跑读的 action 拿到目标，用 \`lore.ask\` 停下来确认（严重的交给用户确认），再循环跑写的 action。
 
-## 文件在哪（用 rg / node / Python 读；没有读日志的 Lore 命令）
+## 文件在哪（用 rg / node / Python 读；没有读日志的 lore 命令）
 - 每个窗口：${info.learnDir}/<句柄>/
   - timeline.jsonl：这个窗口发生的一切，一行一条，按编号递增；type 是 request / input / nav / cmd / doc / snap / tab；site 是这一行属于的站点；request 行的 cause 是引发它的命令的编号，phase 是 load / cmd / idle。
   - requests/<编号>-<方法>-<endpoint 名>.json（url.query 和 requestBody 已解析，秘密是 ⟨secret_…⟩ 别名），响应体同名加 .response.json；pages/（页面 HTML、快照）、screenshots/（截图）。

@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { ActionRunner, looksLoggedOut, type Outcome, type RunWindows } from "./runner.ts";
 import { saveComposed, syncActionLib } from "./actions.ts";
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-runner-"));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "lore-runner-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
 const sitesDir = path.join(root, "sites"), libDir = path.join(root, "lib"), composeDir = path.join(root, "compose"), tmpDir = path.join(root, "session");
 const dir = path.join(sitesDir, "example.com", "actions");

@@ -6,7 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { composeTarget, pruneUnnamed, resolveCompose, saveComposed } from "./actions.ts";
 
-const composeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-actions-"));
+const composeDir = fs.mkdtempSync(path.join(os.tmpdir(), "lore-actions-"));
 process.on("exit", () => fs.rmSync(composeDir, { recursive: true, force: true }));
 
 assert.match(composeTarget(composeDir, "return 1"), /[0-9a-f]{12}\.js$/);

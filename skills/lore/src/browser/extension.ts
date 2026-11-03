@@ -1,5 +1,5 @@
 /**
- * 扩展通道：daemon 经 relay（Chrome 拉起的 native messaging host，只转发字节）与 Lore Chrome 扩展说话。
+ * 扩展通道：daemon 经 relay（Chrome 拉起的 native messaging host，只转发字节）与 lore Chrome 扩展说话。
  * 帧：4 字节小端长度前缀 + UTF-8 JSON。
  *
  * daemon → 扩展：{ id, name, args }   name：call / tabs / goto / openWindow / openTab / activateTab / closeTab / closeWindow，见 chrome-extension/background.js
@@ -10,7 +10,7 @@
 import { EXTENSION_COMMAND_TIMEOUT_MS } from "../utils/constants.ts";
 
 /** 扩展 ABI 版本：daemon 和扩展之间的操作集合（call、tabs、goto、openWindow、screenshot 等）。只有改 ABI 才加一，用户才需要刷新扩展。 */
-export const ABI = 9;
+export const ABI = 10;
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
 

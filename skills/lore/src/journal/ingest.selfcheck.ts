@@ -10,12 +10,12 @@ import { RawStore } from "./raw.ts";
 import { WindowLog } from "./windowlog.ts";
 import type { RequestFile, Row } from "./types.ts";
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-ingest-"));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lore-ingest-"));
 process.on("exit", () => fs.rmSync(dir, { recursive: true, force: true })); // 自检结束清掉临时目录
 const log = new WindowLog({ root: dir });
 log.open();
 const raw = new RawStore();
-const index = new EndpointIndex({ dir: log.dir, raw });
+const index = new EndpointIndex({ dir: log.dir });
 const W = "example.com-20261101-120000"; // tab 5、6 在 learn 窗口里，tab 9 在 run 窗口里，其余是用户自己的窗口
 const R = "save-20261101-120500";
 log.openWindow(W, "learn");

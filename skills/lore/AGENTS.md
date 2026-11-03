@@ -1,8 +1,8 @@
 # AGENTS
 
-agent 使用 Lore 的流程见 `skills/lore/SKILL.md`。本文只规定仓库边界、开发验证、分发发布和运行时实现。
+agent 使用 lore 的流程见 `skills/lore/SKILL.md`。本文只规定仓库边界、开发验证、分发发布和运行时实现。
 
-Lore 完全以原始源码分发：`skills/lore/` 整个目录（源码、`scripts/dev`、文档）安装后原样镜像到 `~/.lore`，本文在 `~/.lore/AGENTS.md`。文中以仓库为基准的路径，在本机去掉 `skills/lore/` 前缀即可，如 `skills/lore/src` → `~/.lore/src`、`skills/lore/scripts/dev` → `~/.lore/scripts/dev`。目标、角色分工、运行时架构和故障排查都在 `ARCHITECTURE.md`。遇到问题可以直接读源码并修改；下次升级会覆盖 `~/.lore/src` 与 `~/.lore/scripts`。
+lore 完全以原始源码分发：`skills/lore/` 整个目录（源码、`scripts/dev`、文档）安装后原样镜像到 `~/.lore`，本文在 `~/.lore/AGENTS.md`。文中以仓库为基准的路径，在本机去掉 `skills/lore/` 前缀即可，如 `skills/lore/src` → `~/.lore/src`、`skills/lore/scripts/dev` → `~/.lore/scripts/dev`。目标、角色分工、运行时架构和故障排查都在 `ARCHITECTURE.md`。遇到问题可以直接读源码并修改；下次升级会覆盖 `~/.lore/src` 与 `~/.lore/scripts`。
 
 ## 1. 职责边界
 
@@ -46,9 +46,9 @@ npm run verify:pack
 
 ### 2.3 真实 Chrome 里的验证：用 Claude in Chrome
 
-**不再模拟扩展**：没有假扩展、没有桩 `chrome.*`、没有起 Chrome for Testing 的端到端脚本。改了扩展、页面脚本、agent 窗口、action 运行时之后，用真实的 Chrome 验证。Lore 只录 agent 自己的窗口，所以录制要在 learn 窗口里触发（`lore learn new --url …` 拿到句柄，`lore learn <句柄> <操作>`），再读 `~/.lore/learn-windows/<句柄>/` 下的 `timeline.jsonl`、`requests/` 和 `~/.lore/sites/<站点>/endpoints.json`（格式见 `ARCHITECTURE.md` 第 6 节）；Claude in Chrome 只用来在用户窗口里浏览（确认不产生记录），以及开出被 `--url tab号` 引用的页面：
+**不再模拟扩展**：没有假扩展、没有桩 `chrome.*`、没有起 Chrome for Testing 的端到端脚本。改了扩展、页面脚本、agent 窗口、action 运行时之后，用真实的 Chrome 验证。lore 只录 agent 自己的窗口，所以录制要在 learn 窗口里触发（`lore learn new --url …` 拿到句柄，`lore learn <句柄> <操作>`），再读 `~/.lore/learn-windows/<句柄>/` 下的 `timeline.jsonl`、`requests/` 和 `~/.lore/sites/<站点>/endpoints.json`（格式见 `ARCHITECTURE.md` 第 6 节）；Claude in Chrome 只用来在用户窗口里浏览（确认不产生记录），以及开出被 `--url tab号` 引用的页面：
 
-1. `node skills/lore/setup.js` 重装到 `~/.lore`；改了 `background.js`、`manifest.json`、`page/` 下的页面脚本要在 `chrome://extensions` 里刷新 Lore；只改了 daemon、CLI、`src/run/` 的 `lore daemon restart` 即可。`lore doctor` 的 `extension-abi` 提示扩展是否太旧。
+1. `node skills/lore/setup.js` 重装到 `~/.lore`；改了 `background.js`、`manifest.json`、`page/` 下的页面脚本要在 `chrome://extensions` 里刷新 lore；只改了 daemon、CLI、`src/run/` 的 `lore daemon restart` 即可。`lore doctor` 的 `extension-abi` 提示扩展是否太旧。
 2. 只录 agent 窗口：用 Claude in Chrome 在用户窗口里浏览、点击几个站点，`~/.lore` 下不产生任何新行和新文件。
 3. 走一遍 learn 窗口，至少在三个站点上试：一个公共站点、一个 GraphQL 站点、一个公司内部多子域站点：
    - `lore learn new --url <链接|tab 号> --description "…"`（`tab 号` 用 `lore tabs` 按标题对出来）：第一行 `ok`，拿到句柄 `<站点>-<时间>`，输出里有窗口目录、learn 指引的路径（第一次或有更新时附全文，写在 `~/.lore/learn-guide.md`）、起点的观察结果。
@@ -71,8 +71,9 @@ npm run verify:pack
 
 ### 2.5 命名与约定
 
-- **要书写、打字、匹配的地方一律小写 `lore`**（命令、skill 名和触发词、数据目录 `~/.lore`、native host `com.lore.connect`）；**给用户看的地方写 `Lore`**（产品名、文档正文、扩展显示名、提示文案）。
-- GitHub 仓库 `yanggggjie/Lore`（私有，Apache-2.0；先后叫过 TabBot、Deft、Silt，GitHub 会把旧地址转到新地址）。部分代码最初来自 yodo，历史已清空，与 yodo 仓库无关联。
+- **任何地方都写小写 `lore`**：命令、skill 名和触发词、数据目录 `~/.lore`、native host `com.lore.connect`、产品名、文档正文、扩展显示名、提示文案、代码里的名字，不写 `lore`。
+- GitHub 仓库 `yanggggjie/lore`（私有，Apache-2.0；先后叫过 TabBot、Deft、Silt，GitHub 会把旧地址转到新地址）。部分代码最初来自 yodo，历史已清空，与 yodo 仓库无关联。
+- **不写兼容代码**：lore 还没对外发布，没有要兼容的旧版本。改了命令、参数、文件格式、SDK 写法，就直接删掉旧的，不留迁移、不留「已经去掉」的专门报错；本机 `~/.lore` 里的 action、compose 一起改成新格式。
 - 本机的 8766 端口曾被一个无关服务占用；产品不用固定端口，走 Unix socket 和 native messaging。
 
 ## 3. 分发与发布
@@ -105,7 +106,7 @@ skills/lore/
 
 用户明确要求“发布分支”时，创建 `release/vX.Y.Z`，不修改 `main`，也不 push。然后：
 
-1. 把本次版本号改成一致：`skills/lore/src/package.json`，以及 `skills/lore/src/package-lock.json` 里 Lore 包自己的 `version`（两处）。根 `package.json` 没有版本号。
+1. 把本次版本号改成一致：`skills/lore/src/package.json`，以及 `skills/lore/src/package-lock.json` 里 lore 包自己的 `version`（两处）。根 `package.json` 没有版本号。
 2. 把本次发布里用户能感知的变化写入 `CHANGELOG.md`，版本号与上面相同。
 
 完成后停下来，等用户测试和检查。用户自己 push。
