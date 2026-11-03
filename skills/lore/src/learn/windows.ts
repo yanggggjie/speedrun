@@ -1,5 +1,7 @@
 import { siteDirName } from "../utils/url.ts";
-import type { WindowLog } from "../journal/windowlog.ts";
+import type { WindowLog } from "../record/windowlog.ts";
+import { Session, type RunHost } from "../browser/host.ts";
+import type { AgentWindows } from "../browser/window.ts";
 
 /** 一个 learn 窗口最多这么多次页面操作（防止失控地翻页面）。 */
 export const LEARN_MAX_OPS = 200;
@@ -13,26 +15,25 @@ export const LEARN_IDLE_MS = 30 * 60_000;
  */
 export type LearnWindow = { id: string; site: string; description: string; url: string; title: string; cursor: number; ops: number; open: boolean; createdAt: number; lastActive: number };
 
-const pad = (n: number): string => String(n).padStart(2, "0");
-/** 句柄里的时间：本地时间 20261101-130245。 */
-export function stamp(t: number): string {
-  const d = new Date(t);
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-}
 /** 句柄的样子：站点目录名加 8 位日期加 6 位时间（可能带 -2 这样的重名后缀）。 */
 export const HANDLE = /^[A-Za-z0-9._-]+-\d{8}-\d{6}(?:-\d+)?$/;
 
-export class LearnWindows {
-  private readonly log: WindowLog;
-  private readonly map = new Map<string, LearnWindow>();
+export type LearnDeps = { log: WindowLog; host: Pick<RunHost, "op" | "end">; win: Pick<AgentWindows, "isOpen" | "dispose"> };
 
-  constructor(log: WindowLog) { this.log = log; }
+/**
+ * learn 窗口的登记：持久的部分（meta.json）和这个 daemon 里的页面（Session，daemon 重启后为空，下次操作时从上次的 URL 重开）都归这里管。
+ */
+export class LearnWindows {
+  private readonly d: LearnDeps;
+  private readonly map = new Map<string, LearnWindow>();
+  private readonly sessions = new Map<string, Session>();
+
+  constructor(deps: LearnDeps) { this.d = deps; }
+  private get log(): WindowLog { return this.d.log; }
 
   /** 开一个新的 learn 窗口（登记、建目录、写 meta）。 */
   create(info: { site: string; description: string; url: string }, now = Date.now()): LearnWindow {
-    const base = `${siteDirName(info.site)}-${stamp(now)}`;
-    let id = base;
-    for (let i = 2; this.map.has(id) || this.log.kindOf(id); i++) id = `${base}-${i}`;
+    const id = this.log.freshName(siteDirName(info.site), now);
     const w: LearnWindow = { id, ...info, title: "", cursor: this.log.lastSeq(), ops: 0, open: false, createdAt: now, lastActive: now };
     this.map.set(id, w);
     this.log.openWindow(id, "learn", w);
@@ -56,14 +57,42 @@ export class LearnWindows {
     this.log.writeMeta(w.id, { ...(old ?? {}), ...w, kind: "learn" });
   }
 
-  /** 一次页面操作：计数（超过上限拒绝）。 */
-  use(id: string): LearnWindow | { error: string } {
+  /** 要做页面操作的窗口：不存在、操作次数用完都拒绝。不计数：操作成功后由调用方 w.ops++。 */
+  forOp(id: string): LearnWindow | { error: string } {
     const w = this.get(id);
     if (!w) return { error: `没有 learn 窗口 ${id}：lore learn list 列出有哪些，或 lore learn new --url <链接|tab 号> --description "…" 开一个` };
     if (w.ops >= LEARN_MAX_OPS) return { error: `learn 窗口 ${id} 的页面操作用完了（${LEARN_MAX_OPS} 次）：卡在登录页：点一下能登录的自己点，要账号密码、二维码的请用户登录；学不会的 action 在文件头写 @status blocked 和 @note` };
-    w.ops++;
-    w.lastActive = Date.now();
     return w;
+  }
+
+  /** 这个窗口当前的页面（Chrome 窗口没开就是 undefined）。 */
+  session(id: string): Session | undefined { return this.sessions.get(id); }
+
+  /**
+   * learn 窗口的 Chrome 窗口开着就直接用它当前的页面；没开（刚创建、close 过、空闲关了、daemon 重启过）就打开窗口，到上次的 URL。
+   * 返回 opened 表示这次新打开了（页面状态没了）。
+   */
+  async page(w: LearnWindow): Promise<{ sess: Session; opened?: { url: string; title: string } }> {
+    let sess = this.sessions.get(w.id);
+    if (sess && w.open && sess.tab !== undefined && await this.d.win.isOpen(w.id)) return { sess };
+    this.log.openWindow(w.id, "learn");
+    sess = new Session(w.id);
+    this.sessions.set(w.id, sess);
+    const res = (await this.d.host.op(sess, "goto", { url: w.url || `https://${w.site}/` })) as { url: string; title: string };
+    w.open = true;
+    w.url = res.url;
+    w.title = res.title;
+    return { sess, opened: res };
+  }
+
+  /** 关掉 Chrome 窗口（agent 显式 close，或空闲太久）；句柄和目录保留。 */
+  async close(w: LearnWindow): Promise<void> {
+    const sess = this.sessions.get(w.id);
+    this.sessions.delete(w.id);
+    if (sess) await this.d.host.end(sess);
+    await this.d.win.dispose(w.id);
+    w.open = false;
+    this.save(w);
   }
 
   /** 这个 daemon 里 Chrome 窗口开着的。 */

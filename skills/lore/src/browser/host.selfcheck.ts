@@ -2,7 +2,7 @@
 // run 输出的「已发出的 write 请求」：查询用的 POST 不算，写请求按 endpoint 计数（漏了 agent 就不知道自己真发了什么）。用最小的假依赖。
 import assert from "node:assert/strict";
 import { RunHost, Session } from "./host.ts";
-import { RawStore } from "../journal/raw.ts";
+import { RawStore } from "../record/raw.ts";
 
 const raw = new RawStore();
 const sent: Array<{ url: string; headers: Record<string, string> }> = [];

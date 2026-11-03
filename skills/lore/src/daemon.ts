@@ -1,21 +1,20 @@
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
-import * as path from "node:path";
-import { ABI, ExtensionLink, frame, parseFrames } from "./browser/extension.ts";
+import { ABI, ExtensionLink, frame, parseFrames, type TabInfo } from "./browser/extension.ts";
 import { NeedExtensionError, handshakeError, missingStatus } from "./browser/connect.ts";
-import { loadAdblockEngine } from "./journal/filter.ts";
-import { EndpointIndex } from "./journal/endpoints.ts";
-import { enforce } from "./journal/retention.ts";
-import { WindowLog } from "./journal/windowlog.ts";
-import { closeLearnWindow, runCommand, type Ctx, type TabInfo } from "./journal/commands.ts";
-import { RunHost, Session } from "./run/host.ts";
-import { LearnWindows, stamp } from "./run/learn-windows.ts";
-import { ActionRunner, type RunWindows } from "./run/runner.ts";
+import { loadAdblockEngine } from "./record/filter.ts";
+import { EndpointIndex } from "./record/endpoints.ts";
+import { enforce } from "./record/retention.ts";
+import { WindowLog } from "./record/windowlog.ts";
+import { runCommand, type Ctx } from "./commands/index.ts";
+import { RunHost } from "./browser/host.ts";
+import { LearnWindows } from "./learn/windows.ts";
+import { ActionRunner, runWindowsOf } from "./run/runner.ts";
 import { coveredEndpoints, syncActionLib } from "./run/actions.ts";
-import { AgentWindows } from "./run/window.ts";
-import { Ingestor, type PageMsg } from "./journal/ingest.ts";
-import { RawStore } from "./journal/raw.ts";
+import { AgentWindows } from "./browser/window.ts";
+import { Ingestor, type PageMsg } from "./record/ingest.ts";
+import { RawStore } from "./record/raw.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
 import { readVersion } from "./store/version.ts";
 import { HANDSHAKE_GUIDES, RPC_ERRORS, handshakeStatusFromError, type JsonRpcRequest, type JsonRpcResponse } from "./protocol.ts";
@@ -38,29 +37,6 @@ let lastActivity = Date.now();
 const startupBuild = readVersion()?.build ?? "";
 
 const link = new ExtensionLink();
-const win = new AgentWindows(link);
-const raw = new RawStore();
-const log = new WindowLog();
-const index = new EndpointIndex({ coverage: (site) => coveredEndpoints(log.dir, site) });
-let ingest: Ingestor | undefined;
-let adblock: FiltersEngine | undefined;
-let host: RunHost | undefined;
-let runner: ActionRunner | undefined;
-const learn = new LearnWindows(log);
-const sessions = new Map<string, Session>();
-
-/** run 窗口：每次 run 一个，名字是 <action 或 compose 名>-<时间>，日志在 run-windows/<名字>/，跑完关掉浏览器窗口。 */
-const runWindows: RunWindows = {
-  open(label, meta) {
-    const base = `${label}-${stamp(Date.now())}`;
-    let key = base;
-    for (let i = 2; log.kindOf(key); i++) key = `${base}-${i}`;
-    log.openWindow(key, "run", meta);
-    return key;
-  },
-  close: (key) => win.dispose(key),
-  failureFile: (key) => path.join(log.winDir(key), "screenshots", "failure"),
-};
 
 function aliasSalt(): string {
   try { return fs.readFileSync(ALIAS_SALT_FILE, "utf8").trim(); } catch { /* 第一次 */ }
@@ -71,6 +47,28 @@ function aliasSalt(): string {
 }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
 
+/** daemon 的全部部件，启动时按依赖顺序一次建好（构造函数都不碰磁盘，除了别名的盐）。 */
+function build() {
+  const win = new AgentWindows(link);
+  const raw = new RawStore();
+  const log = new WindowLog();
+  const index = new EndpointIndex({ coverage: (site) => coveredEndpoints(log.dir, site) });
+  let adblock: FiltersEngine | undefined;
+  const ingest = new Ingestor(log, { engine: () => adblock, aliasKey: aliasSalt(), raw, winOf: (tab) => win.winOf(tab), index });
+  const host = new RunHost({ link, win, ingest, raw });
+  const runner = new ActionRunner(host, {}, runWindowsOf(log, win));
+  const learn = new LearnWindows({ log, host, win });
+  const ctx: Ctx = {
+    ensureExtension,
+    tabs: async () => ((await link.request("tabs")) as { tabs: TabInfo[] }).tabs,
+    host, runner, win, learn, log, index, ingest, raw,
+    daemon: () => ({ extension: extSocket !== null, pid: process.pid }),
+  };
+  return { ctx, setAdblock: (engine: FiltersEngine) => { adblock = engine; } };
+}
+const { ctx, setAdblock } = build();
+const { ingest, index, log, learn, win } = ctx;
+
 /** 页面消息：写日志。lore agent 窗口里的标签页记为 agent 的（Ingestor 按 win.winOf 判断是哪个窗口）。扩展是旧版本时一条都不收（旧扩展会转用户在 agent 窗口里自己开的标签页）。 */
 link.on("page", (m) => {
   if (!link.compatible()) return;
@@ -78,7 +76,7 @@ link.on("page", (m) => {
   const msg = { ...inner, k: String(inner.k ?? ""), t: typeof inner.t === "number" ? inner.t : Date.now(), tab: Number(m.tab), frame: Number(m.frame ?? 0), top: m.top === true, page: typeof m.page === "string" ? m.page : undefined } as PageMsg;
   win.adopt(msg.tab, typeof m.win === "number" ? m.win : undefined); // 页面在 agent 窗口里自己开的标签页也属于那个窗口
   lastActivity = Date.now();
-  ingest?.push(msg);
+  ingest.push(msg);
 });
 
 function pingBody() {
@@ -97,32 +95,13 @@ async function ensureExtension(): Promise<void> {
   if (!link.compatible()) throw new Error(`Chrome 里的 lore 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 lore 扩展`);
 }
 
-async function listTabs(): Promise<TabInfo[]> {
-  return ((await link.request("tabs")) as { tabs: TabInfo[] }).tabs;
-}
-
-const ctx: Ctx = {
-  ensureExtension,
-  tabs: listTabs,
-  get host() { return host!; },
-  get runner() { return runner!; },
-  win,
-  learn,
-  sessions,
-  log,
-  index,
-  get ingest() { return ingest!; },
-  get raw() { return raw; },
-  daemon: () => ({ extension: extSocket !== null, pid: process.pid }),
-};
-
 async function dispatch(req: JsonRpcRequest): Promise<unknown> {
   lastActivity = Date.now();
   if (req.method === "ping") return pingBody();
   if (req.method === "run") {
     const argv = req.params?.argv;
     if (!Array.isArray(argv) || !argv.every((x) => typeof x === "string")) throw Object.assign(new Error("run 需要字符串数组 argv"), { code: RPC_ERRORS.INVALID_PARAMS });
-    ingest?.flush();
+    ingest.flush();
     return runCommand(argv as string[], ctx);
   }
   throw Object.assign(new Error(`未知 method：${String(req.method)}`), { code: RPC_ERRORS.METHOD_NOT_FOUND });
@@ -164,7 +143,7 @@ async function shutdown(code: number): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("daemon exit", { code });
-  try { ingest?.flush(); index.flush(); log.close(); } catch (error) { warnCatch("flush on exit")(error); }
+  try { ingest.flush(); index.flush(); log.close(); } catch (error) { warnCatch("flush on exit")(error); }
   server?.close();
   extServer?.close();
   extSocket?.destroy();
@@ -247,18 +226,15 @@ export async function runDaemon(): Promise<void> {
   server = await listenUnique(SESSION_SOCK, onConnection);
   if (!server) { logger.warn("CLI socket 被占用，本进程退出"); extServer.close(); if (SESSION_SOCK_IS_FILE) fs.rmSync(SESSION_EXT_SOCK, { force: true }); process.exit(0); }
   log.open();
-  ingest = new Ingestor(log, { engine: () => adblock, aliasKey: aliasSalt(), raw, winOf: (tab) => win.winOf(tab), index });
-  host = new RunHost({ link, win, ingest, raw });
-  runner = new ActionRunner(host, {}, runWindows);
   try { syncActionLib(); } catch (error) { warnCatch("sync action lib")(error); }
-  loadAdblockEngine().then((engine) => { adblock = engine; }).catch(warnCatch("adblock engine"));
+  loadAdblockEngine().then(setAdblock).catch(warnCatch("adblock engine"));
   // 没有扩展连接、也没有命令请求超过 DAEMON_IDLE_EXIT_MS 就退出；下次需要时由 relay 或 CLI 重新拉起
   // 日志按窗口目录淘汰（run 窗口只留最近的；learn 窗口先只删响应体、页面和截图的旧文件，再删整个旧窗口；开着的和 endpoint 样本不动）
   const retain = (): void => { try { enforce(log, { protect: () => index.protect(), isOpen: (w) => learn.get(w)?.open === true, changed: () => index.touchAll() }); } catch (error) { warnCatch("retention")(error); } };
   retain();
   setInterval(retain, 10_000).unref();
   // 空闲太久的 learn 窗口关掉 Chrome 窗口（句柄和目录保留）
-  setInterval(() => { for (const w of learn.idle()) void closeLearnWindow(ctx, w).catch(warnCatch("close learn window")); }, 60_000).unref();
+  setInterval(() => { for (const w of learn.idle()) void learn.close(w).catch(warnCatch("close learn window")); }, 60_000).unref();
   setInterval(() => { if (!extSocket && Date.now() - lastActivity > DAEMON_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();
   process.on("SIGINT", () => void shutdown(0));
   process.on("SIGTERM", () => void shutdown(0));

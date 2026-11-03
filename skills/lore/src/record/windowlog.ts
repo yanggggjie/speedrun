@@ -27,6 +27,13 @@ const KIND_DIR: Record<WinKind, string> = { learn: "learn-windows", run: "run-wi
 
 export const seqPrefix = (seq: number): string => String(seq).padStart(6, "0");
 
+const pad = (n: number): string => String(n).padStart(2, "0");
+/** 窗口名里的时间：本地时间 20261101-130245。 */
+export function stamp(t: number): string {
+  const d = new Date(t);
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
 /** 响应体、页面、截图是响应体、页面和截图；meta、时间线、请求文件是时间线和请求文件。参数是窗口内的相对路径。 */
 export function tierOf(rel: string): Tier {
   return /\.response\.|^pages\/|^screenshots\//.test(rel) ? "heavy" : "light";
@@ -105,6 +112,14 @@ export class WindowLog {
     if (!this.wins.has(win)) this.scan(win, kind);
     const old = this.readMeta(win);
     this.writeMeta(win, { ...(old ?? { id: win, kind, createdAt: this.now() }), ...meta, id: win, kind });
+  }
+
+  /** `<前缀>-<时间>` 形式的新窗口名：同一秒重名加 -2、-3。 */
+  freshName(prefix: string, now = this.now()): string {
+    const base = `${prefix}-${stamp(now)}`;
+    let name = base;
+    for (let i = 2; this.kindOf(name); i++) name = `${base}-${i}`;
+    return name;
   }
 
   kindOf(win: string): WinKind | undefined {

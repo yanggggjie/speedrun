@@ -1,4 +1,4 @@
-import { LEARN_IDLE_MS, LEARN_MAX_OPS } from "./learn-windows.ts";
+import { LEARN_IDLE_MS, LEARN_MAX_OPS } from "./windows.ts";
 
 export type LearnInfo = {
   /** learn 窗口的目录都在这下面：<句柄>/meta.json、timeline.jsonl、requests/、pages/、screenshots/。 */

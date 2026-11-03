@@ -1,5 +1,6 @@
 import type { FiltersEngine } from "@ghostery/adblocker";
 import { isSameSite, parseUrl, siteOfUrl } from "../utils/url.ts";
+import { createLogger } from "../utils/logger.ts";
 import { causeLabel, endpointOf } from "./digest.ts";
 import type { EndpointIndex } from "./endpoints.ts";
 import { noiseReason, shouldStoreBody } from "./filter.ts";
@@ -13,6 +14,7 @@ import { USER_WIN, type ParsedUrl, type Phase, type RequestFile, type Row, type 
 export type PageMsg = { k: string; t: number; tab: number; frame?: number; top?: boolean; page?: string } & Record<string, unknown>;
 
 /** 人的事件或 agent 的命令之后这段时间内开始的请求，记为它引发的。 */
+const logger = createLogger("ingest");
 const CAUSE_MS = 2_000;
 /** 页面在 agent 窗口里新开的标签页（点了 target=_blank 的链接）：它的请求算这个窗口这么久之内最近一条命令引发的。 */
 const NEW_TAB_MS = 10_000;
@@ -88,7 +90,8 @@ export class Ingestor {
   /** 收一条页面消息：攒一小会儿，一批放进一次写入。 */
   push(msg: PageMsg): void {
     this.queue.push(msg);
-    this.timer ??= setTimeout(() => this.flush(), FLUSH_MS);
+    // 定时写盘出错（磁盘满、没权限）只记下来：抛到定时器外面会让 daemon 退出，内存里的原始请求、ask 恢复记录、learn 窗口的页面全丢
+    this.timer ??= setTimeout(() => { try { this.flush(); } catch (error) { logger.warn("写日志失败", { err: error instanceof Error ? error.message : String(error) }); } }, FLUSH_MS);
   }
 
   flush(): void {

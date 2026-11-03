@@ -1,4 +1,4 @@
-import type { ExtensionLink } from "../browser/extension.ts";
+import type { ExtensionLink } from "./extension.ts";
 import { AGENT_TAB_IDLE_MS } from "../utils/constants.ts";
 import { sleep } from "../utils/async.ts";
 

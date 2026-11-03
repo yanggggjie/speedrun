@@ -48,7 +48,7 @@ npm run verify:pack
 
 **不再模拟扩展**：没有假扩展、没有桩 `chrome.*`、没有起 Chrome for Testing 的端到端脚本。改了扩展、页面脚本、agent 窗口、action 运行时之后，用真实的 Chrome 验证。lore 只录 agent 自己的窗口，所以录制要在 learn 窗口里触发（`lore learn new --url …` 拿到句柄，`lore learn <句柄> <操作>`），再读 `~/.lore/learn-windows/<句柄>/` 下的 `timeline.jsonl`、`requests/` 和 `~/.lore/sites/<站点>/endpoints.json`（格式见 `ARCHITECTURE.md` 第 6 节）；Claude in Chrome 只用来在用户窗口里浏览（确认不产生记录），以及开出被 `--url tab号` 引用的页面：
 
-1. `node skills/lore/setup.js` 重装到 `~/.lore`；改了 `background.js`、`manifest.json`、`page/` 下的页面脚本要在 `chrome://extensions` 里刷新 lore；只改了 daemon、CLI、`src/run/` 的 `lore daemon restart` 即可。`lore doctor` 的 `extension-abi` 提示扩展是否太旧。
+1. `node skills/lore/setup.js` 重装到 `~/.lore`；改了 `background.js`、`manifest.json`、`page/` 下的页面脚本要在 `chrome://extensions` 里刷新 lore；只改了 daemon、CLI、`src/commands/`、`src/learn/`、`src/run/`、`src/browser/`、`src/record/` 的 `lore daemon restart` 即可。`lore doctor` 的 `extension-abi` 提示扩展是否太旧。
 2. 只录 agent 窗口：用 Claude in Chrome 在用户窗口里浏览、点击几个站点，`~/.lore` 下不产生任何新行和新文件。
 3. 走一遍 learn 窗口，至少在三个站点上试：一个公共站点、一个 GraphQL 站点、一个公司内部多子域站点：
    - `lore learn new --url <链接|tab 号> --description "…"`（`tab 号` 用 `lore tabs` 按标题对出来）：第一行 `ok`，拿到句柄 `<站点>-<时间>`，输出里有窗口目录、learn 指引的路径（第一次或有更新时附全文，写在 `~/.lore/learn-guide.md`）、起点的观察结果。
@@ -84,7 +84,7 @@ npm run verify:pack
 
 ```text
 skills/lore/
-├── src/                     运行时（daemon、journal、run、cli、chrome-extension 含页面脚本）+ 自检 + package.json
+├── src/                     运行时（daemon、commands、learn、run、browser、record、cli、chrome-extension 含页面脚本）+ 自检 + package.json
 ├── scripts/dev/             图标生成
 ├── setup.js  SKILL.md  install.md  LICENSE
 ├── AGENTS.md                ← 仓库根目录的 AGENTS.md 是指向它的软链接

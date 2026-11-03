@@ -2,7 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
 import { ACTION_TIMEOUT_MS, COMPOSE_DIR, LIB_DIR, SESSION_DIR, SITES_DIR } from "../utils/constants.ts";
-import { RunHost, Session, type FailurePage } from "./host.ts";
+import { RunHost, Session, type FailurePage } from "../browser/host.ts";
+import type { AgentWindows } from "../browser/window.ts";
+import type { WindowLog } from "../record/windowlog.ts";
+import { PendingAsks } from "./asks.ts";
 import { actionSummary, actionTimeoutMs, checkParams, coerceParams, findAction, isComposed, stripComposeHead } from "./actions.ts";
 
 /** 最外层 compose 里每次 action() 调用的记录，按调用顺序；恢复时前几次直接返回记下的结果，不再执行。 */
@@ -38,6 +41,19 @@ const MAX_LOG_LINES = 50;
 export type RunWindows = { open(label: string, meta: Record<string, unknown>): string; close(key: string): Promise<void>; failureFile(key: string): string };
 const NO_WINDOWS: RunWindows = { open: (label) => label, close: async () => {}, failureFile: (key) => path.join(SESSION_DIR, `${key}-failure`) };
 
+/** daemon 里的 run 窗口：名字 <action 或 compose 名>-<时间>，日志在 run-windows/<名字>/，跑完关掉浏览器窗口。 */
+export function runWindowsOf(log: Pick<WindowLog, "freshName" | "openWindow" | "winDir">, win: Pick<AgentWindows, "dispose">): RunWindows {
+  return {
+    open(label, meta) {
+      const key = log.freshName(label);
+      log.openWindow(key, "run", meta);
+      return key;
+    },
+    close: (key) => win.dispose(key),
+    failureFile: (key) => path.join(log.winDir(key), "screenshots", "failure"),
+  };
+}
+
 /** askState：恢复一次停在 ask 的 compose。 */
 export type RunOptions = { askState?: AskState };
 
@@ -46,6 +62,8 @@ export class ActionRunner {
   private readonly host: RunHost;
   private readonly paths: RunnerPaths;
   private readonly windows: RunWindows;
+  /** 停在 lore.ask 的 run 的恢复记录。 */
+  readonly asks = new PendingAsks();
   /** 单个 action 的超时（自检里调小）；默认按文件头的 @timeout 或 ACTION_TIMEOUT_MS。 */
   timeoutOverrideMs: number | undefined;
 

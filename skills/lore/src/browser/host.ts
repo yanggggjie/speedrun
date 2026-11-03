@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionLink } from "../browser/extension.ts";
-import type { Ingestor, SeenRequest } from "../journal/ingest.ts";
-import type { RawEntry, RawStore } from "../journal/raw.ts";
-import type { AuthSnapshot } from "../journal/auth.ts";
-import { endpointKey, endpointOf, looksReadOnly } from "../journal/digest.ts";
-import { fetchableHeaders, VOLATILE } from "../journal/headers.ts";
+import type { ExtensionLink } from "./extension.ts";
+import type { Ingestor, SeenRequest } from "../record/ingest.ts";
+import type { RawEntry, RawStore } from "../record/raw.ts";
+import type { AuthSnapshot } from "../record/auth.ts";
+import { endpointKey, endpointOf, looksReadOnly } from "../record/digest.ts";
+import { fetchableHeaders, VOLATILE } from "../record/headers.ts";
 import { STEP_TIMEOUT_MS } from "../utils/constants.ts";
 import { siteOfUrl } from "../utils/url.ts";
 import type { AgentWindows } from "./window.ts";

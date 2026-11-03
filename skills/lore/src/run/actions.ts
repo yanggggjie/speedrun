@@ -110,27 +110,10 @@ export function coerceParams(file: string, params: Record<string, unknown>): { p
   return { params: out };
 }
 
-/** 把命令行里 `--名字 值` / `--名字=值` 解析成参数表；不接受位置参数。 */
-export function parseCliParams(args: string[]): { params: Record<string, string> } | { error: string } {
-  const params: Record<string, string> = {};
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    const match = /^--([A-Za-z_][A-Za-z0-9_]*)(?:=([\s\S]*))?$/.exec(arg);
-    if (!match) return { error: `参数要写成 --名字 值，不接受：${arg}` };
-    const name = match[1]!;
-    if (name in params) return { error: `参数重复：--${name}` };
-    if (match[2] !== undefined) { params[name] = match[2]; continue; }
-    const value = args[++i];
-    if (value === undefined) return { error: `参数 --${name} 缺少值` };
-    params[name] = value;
-  }
-  return { params };
-}
+/** lore run 自己用的参数名，action 不能用。 */
+const RESERVED_PARAMS = new Set(["action", "compose", "resume", "answer", "timeout", "description"]);
 
 /** 对照文件头的 @param 检查：缺必填、传了没声明的参数都返回说明；通过返回 undefined。compose 没有 @param，不检查。 */
-/** lore run 自己用的参数名，action 不能用。 */
-const RESERVED_PARAMS = new Set(["answer", "resume", "action", "compose", "name", "timeout"]);
-
 export function checkParams(file: string, params: Record<string, unknown>): string | undefined {
   const specs = paramSpecs(file);
   const reserved = specs.filter((spec) => RESERVED_PARAMS.has(spec.name));

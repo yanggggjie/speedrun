@@ -22,7 +22,7 @@ export const DAEMON_IDLE_EXIT_MS = 10 * 60_000;
 /** daemon 等扩展回包的上限。 */
 export const EXTENSION_COMMAND_TIMEOUT_MS = 60_000;
 
-/** 站点目录：<站点>/{endpoints.json, actions/}，只放 endpoints.json 和 actions/；日志按窗口放在 learn-windows/、run-windows/，见 journal/windowlog.ts。 */
+/** 站点目录：<站点>/{endpoints.json, actions/}，只放 endpoints.json 和 actions/；日志按窗口放在 learn-windows/、run-windows/，见 record/windowlog.ts。 */
 export const SITES_DIR = path.join(LORE_HOME, "sites");
 /** run 窗口目录只留最近这么多个。 */
 export const RUN_WINDOWS_KEEP = 100;

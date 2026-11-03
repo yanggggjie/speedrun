@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { SESSION_DIR, LORE_HOME } from "../utils/constants.ts";
 import { tryPing } from "./session.ts";
-import { WindowLog } from "../journal/windowlog.ts";
+import { WindowLog } from "../record/windowlog.ts";
 import { readVersion } from "../store/version.ts";
 import { chromeRunning } from "../browser/connect.ts";
 import { ABI } from "../browser/extension.ts";
@@ -81,7 +81,7 @@ async function collectChecks(): Promise<Check[]> {
   const usage = (() => { try { const l = new WindowLog(); l.open(); return { u: l.usage(), learn: l.listWindows("learn").length, run: l.listWindows("run").length }; } catch { return null; } })();
   const mb = (n: number): string => (n / 1024 / 1024).toFixed(1);
   add({
-    name: "journal",
+    name: "record",
     ok: true,
     detail: `${usage?.learn ?? 0} 个 learn 窗口（时间线和请求文件 ${mb(usage?.u.learn.light ?? 0)}MB，响应体、页面和截图 ${mb(usage?.u.learn.heavy ?? 0)}MB），${usage?.run ?? 0} 个 run 窗口`,
     fix: "",

@@ -6,14 +6,16 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { LearnWindows } from "../run/learn-windows.ts";
-import { Session } from "../run/host.ts";
+import { LearnWindows } from "../learn/windows.ts";
+import { Session } from "../browser/host.ts";
 import { actionSummary } from "../run/actions.ts";
-import { parsePointer, runCommand, type Ctx } from "./commands.ts";
-import { EndpointIndex } from "./endpoints.ts";
-import { Ingestor, type PageMsg } from "./ingest.ts";
-import { RawStore } from "./raw.ts";
-import { WindowLog } from "./windowlog.ts";
+import { runCommand, type Ctx } from "./index.ts";
+import { parsePointer } from "./learn.ts";
+import { PendingAsks } from "../run/asks.ts";
+import { EndpointIndex } from "../record/endpoints.ts";
+import { Ingestor, type PageMsg } from "../record/ingest.ts";
+import { RawStore } from "../record/raw.ts";
+import { WindowLog } from "../record/windowlog.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "lore-cmd-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
@@ -66,17 +68,17 @@ const host = {
 };
 let nextOutcome: Record<string, unknown> = {};
 const runner = {
+  asks: new PendingAsks(),
   runAction: async (name: string) => ({ status: "success", result: { name }, ...nextOutcome }),
   runInLearn: async (name: string) => ({ status: "success", result: { name }, writes: name === "like" ? ["POST /api/like ×1"] : [] }),
   runCompose: async () => ({ status: "success", result: 1, ...nextOutcome }),
 };
-const learn = new LearnWindows(log);
+const win = { isAgentTab: (t: number) => t === 20, windowIdOf: () => 9, isOpen: async () => true, dispose: async () => {} };
+const learn = new LearnWindows({ log, host, win });
 const ctx = {
   ensureExtension: async () => {},
   tabs: async () => tabs,
-  host, runner,
-  win: { isAgentTab: (t: number) => t === 20, windowIdOf: () => 9, isOpen: async () => true, dispose: async () => {} },
-  learn, sessions: new Map<string, Session>(), ingest, raw, log, index,
+  host, runner, win, learn, ingest, raw, log, index,
   daemon: () => ({ extension: true, pid: process.pid }),
   composeDir: path.join(root, "compose"),
 } as unknown as Ctx;
@@ -136,7 +138,7 @@ assert.equal(liked.code, 0, liked.stdout); assert.match(liked.stdout, /已发出
 assert.equal(actionSummary(path.join(actions, "vote.js")).status, "draft", "learn 窗口里 run 不变成 verified");
 
 // 句柄持久：新的登记（daemon 重启）从 meta.json 读回，游标接着上次，Chrome 窗口当作已关
-const reborn = new LearnWindows(log).get(id)!;
+const reborn = new LearnWindows({ log, host, win }).get(id)!;
 assert.equal(reborn.description, "给第一条回答点赞同");
 assert.equal(reborn.cursor, learn.get(id)!.cursor);
 assert.equal(reborn.open, false);

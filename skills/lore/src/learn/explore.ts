@@ -2,7 +2,7 @@
  * learn 窗口里"观察"用的纯函数：游标之后发生的请求里哪些值得列出（含 GET，写明有没有响应体）、一行怎么写、
  * 请求之间的依赖（后一个用了前一个响应里的值），以及可贴进 action 的一行。没有请求时这一行就是 DOM 步骤的 draft。
  */
-import type { RequestFile, Row } from "./types.ts";
+import type { RequestFile, Row } from "../record/types.ts";
 
 /** 静态资源不算“引发了请求”：脚本、样式、图片、字体。 */
 const STATIC = /\.(?:m?js|css|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|map|mp4|webm)(?:$|\?)/i;

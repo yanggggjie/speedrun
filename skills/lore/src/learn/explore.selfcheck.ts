@@ -2,8 +2,8 @@
 // 依赖链要能认出来（拿凭证 → 提交）；没有响应体要写出原因，agent 才知道转 DOM。
 import assert from "node:assert/strict";
 import { dependencies, describeRequest, isPeriodic, missingInSequence, shownRequests, stepLine } from "./explore.ts";
-import type { RequestFile, Row } from "./types.ts";
-import { looksReadOnly } from "./digest.ts";
+import type { RequestFile, Row } from "../record/types.ts";
+import { looksReadOnly } from "../record/digest.ts";
 
 const req = (seq: number, over: Partial<Row>): Row => ({ seq, t: seq, win: "x.com-20261101-120000", src: "agent", tab: 1, type: "request", requestType: "fetch", method: "GET", url: `https://x.com/api/${seq}`, endpoint: `GET /api/${seq}`, phase: "cmd", ...over });
 const stats = new Map([["POST /rpc/ReportViewing", { count: 121, idle: 120, cmdTriggered: 0 }], ["GET /api/list", { count: 5, idle: 1, cmdTriggered: 3 }]]);
