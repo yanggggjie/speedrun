@@ -79,14 +79,13 @@ export function makeLearnGuide(info: LearnInfo): string {
  * @summary 一句话：做什么（业务动作）
  * @status draft
  * @write（这个 action 会改东西才写，如点赞、提交、删除）
- * @start 起点页面的地址（run 时先打开它：request 要从这个页面发过的请求抄头，DOM 要在它上面操作）
  * @endpoint 方法 路径
  * @param 参数名 说明（可选写成 参数名?；不是字符串的写类型：参数名:number、参数名?:boolean、参数名:json）
  * @note 经验：签名、风控、必须先做的步骤、踩过的坑（一行一条）
  */
 \`\`\`
    前置请求也要发时，@endpoint 按发送顺序写多行；run 时会检查实际发出的顺序，不对就不变成 verified。
-5. 在这个窗口里试：\`${cmd} run --action <名字> --参数 值 --description "…"\`。在当前页面执行（有 @start 先打开它），日志进这个窗口，不变成 verified；换参数多试几次，改了文件再试。
+5. 在这个窗口里试：\`${cmd} run --action <名字> --参数 值 --description "…"\`。在当前页面执行，日志进这个窗口，不变成 verified；换参数多试几次，改了文件再试。
 6. 学完一个就接着学下一个；都写好后 \`lore run --compose-code '代码' --description "…"\`（或单个 \`lore run --action <名字>\`）在新的 run 窗口里交付。draft 真跑成功就变成 verified。
 7. run 出问题：回到这个窗口继续观察、在窗口里 run，或对比本窗口和 run 窗口目录里的 timeline.jsonl 找原因，改了再 run。
 8. 学不会：把 action 文件头改成 \`@status blocked\`，\`@note\` 写原因和证据（试过哪些请求编号、为什么 network 和 DOM 都不行），最终回复说明卡在哪。verified 的坏了：改回 \`@status draft\`，\`@note\` 写原因，回来修，run 通过再变成 verified。
@@ -96,17 +95,17 @@ export function makeLearnGuide(info: LearnInfo): string {
 - SDK：\`import { lore, goto, request, waitRequest, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, sleep } from "../../../lib/index.js"\`，入口 \`export default async () => { ... }\`，返回值就是结果。函数都不用传 page：\`goto(url)\`、\`click(定位)\`、\`request({…})\`。
 - **请求头**：lore 按顺序凑齐，你一般什么都不用写：
   1. 浏览器自己带的（cookie）；
-  2. 从这次窗口里页面发过的请求抄：页面发过同一个 endpoint 就整组抄它的（签名和 endpoint 绑定的站点靠这个），否则只抄值都一样的头，每次都变的不跨 endpoint 抄。所以 action 先 \`goto\`（或写 \`@start\`）打开会发这些请求的页面；
+  2. 从这次窗口里页面发过的请求抄：页面发过同一个 endpoint 就整组抄它的（签名和 endpoint 绑定的站点靠这个），否则只抄值都一样的头，每次都变的不跨 endpoint 抄。所以 action 先 \`goto\` 打开会发这些请求的页面；
   3. 页面这次没发带某个头的请求时：照观察「请求头」给的位置写 \`auth: { "x-xsrftoken": "cookie:_xsrf", authorization: "Bearer local:token" }\`，发送时在页面里现读；
   4. 值来自前序响应（上传凭证、nonce）：先 \`request\` 前序请求，再 \`headers: { "x-token": r.json().token }\`，照观察里的「依赖」写，@endpoint 写多行；
   5. 被拒（401/403）：失败输出写了抄了什么、没抄什么、下一步；每次都变的头被拒的，改用 \`waitRequest\` 或 DOM。
   接口在另一个子域（页面是 a.com，接口是 api.a.com）不用另写，lore 在当前页面上发。
-- run 窗口每次从空白开始，不沿用 learn 窗口的页面状态：action 写 \`@start\`（或第一步 \`goto\`），run 时先打开它。action 里不能调用别的 action，要串起来写 compose。
+- run 窗口每次从空白开始，不沿用 learn 窗口的页面状态：action 第一步 \`goto\` 要用的页面（\`request\` 从这个页面发过的请求抄头，DOM 在它上面操作）。action 里不能调用别的 action，要串起来写 compose。
 - 参数用 \`lore.params.名字 ?? 默认值\`，按 @param 的类型转好（没写类型是字符串）；变化的值（id、关键词、页码）都做成参数；返回字段用页面上的词命名。
 - **小函数放进 ${info.helpersDir}/**：写 action 前先 \`ls ${info.helpersDir}\` 看有什么；同一个小函数（去 HTML 标签、格式化时间、拼 URL）第二次出现就挪进去，按用途分文件（如 text.js、time.js），action 里 \`import { stripHtml } from "../../../helpers/text.js"\`。只放纯函数：要发请求或操作页面的写成 action。
 - **等待**：等渲染完用 \`goto(url, { settle: true })\`、操作带 \`{ settle: true }\`（等页面安静，最多 2 秒），或 \`waitFor(定位)\` 等具体元素；等页面自己发的请求用 \`waitRequest\`。不要用 \`sleep\` 等页面：快的页面白等、慢的不够。\`sleep\` 只用在轮询后台状态（隔一秒查一次建好了没有）。
 - 成功判断：action 自己判断任务有没有正确完成，不看最后停在什么页面。检查 HTTP 状态码和业务码；读页面内容的要检查拿到的确实是目标内容（标题、关键元素），停在登录页、错误页就抛错，不能把登录页的文字当结果返回；结果必须对应本次参数；会改东西的先读状态，已满足返回 already，并在文件头写 @write；返回被操作对象的稳定 id。
-- 定位用 \`{role,name}\` 或 CSS；\`query({css, fields})\` 取数；\`evaluate\` 是兜底（严格 CSP 的页面会被拒）。
+- 定位用 \`{role,name}\` 或 CSS；读整页文字用 \`text({ max })\`（返回 url、title、text），按结构取数用 \`query({css, fields})\`；\`evaluate\` 是兜底，只在这两个都不够时用（严格 CSP 的页面会被拒）。
 - 一次调用只做这一个业务动作：翻页、批量、多个对象都做成参数，由 compose 循环调用。返回值只放有用的字段。
 
 ## 纪律

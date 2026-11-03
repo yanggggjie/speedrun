@@ -1,8 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { EXIT } from "../protocol.ts";
-import { missingInSequence } from "../learn/explore.ts";
-import type { DraftRun } from "../run/asks.ts";
 import type { Outcome, AskState } from "../run/runner.ts";
 import { actionSummary, composeTarget, findAction, isComposed, promoteAction, pruneUnnamed, resolveCompose, saveComposed } from "../run/actions.ts";
 import { descriptionOf, parseArgs, valueOf } from "./args.ts";
@@ -56,7 +54,7 @@ export async function runCommand(argv: string[], ctx: Ctx, out: Output): Promise
 }
 
 /** priorDrafts：停在 lore.ask 之前那几次 run 里已经成功的 draft（恢复时不会再执行，最终成功时一起变成 verified）。 */
-type RunOpts = { description: string; params: Record<string, string>; timeoutSec?: number; askState?: AskState; resumed?: string; priorDrafts?: DraftRun[] };
+type RunOpts = { description: string; params: Record<string, string>; timeoutSec?: number; askState?: AskState; resumed?: string; priorDrafts?: string[] };
 
 /** --answer 按 JSON 解析，解析不了就当字符串（回答一个词不用加引号）。 */
 function parseAnswer(s: string): unknown {
@@ -90,7 +88,7 @@ export function outcomeLines(name: string, outcome: Outcome): string[] {
 function handleAsk(ctx: Ctx, out: Output, outcome: Outcome, o: RunOpts, target: { code?: string; action?: string }): boolean {
   if (outcome.status !== "failure" && o.resumed) ctx.runner.asks.delete(o.resumed);
   if (outcome.status !== "ask") return false;
-  const id = ctx.runner.asks.add({ question: outcome.question, description: o.description, ...target, params: o.params, timeoutSec: o.timeoutSec, journal: outcome.journal, answers: o.askState?.answers ?? [], drafts: [...(o.priorDrafts ?? []), ...(outcome.drafts ?? []).map((file) => ({ file, window: outcome.runWindow ?? "" }))] });
+  const id = ctx.runner.asks.add({ question: outcome.question, description: o.description, ...target, params: o.params, timeoutSec: o.timeoutSec, journal: outcome.journal, answers: o.askState?.answers ?? [], drafts: [...(o.priorDrafts ?? []), ...(outcome.drafts ?? [])] });
   out.code = EXIT.wait;
   out.line(`ask ${outcome.question}`);
   out.line(`数据：\n${indent(JSON.stringify(outcome.data ?? null, null, 2))}`);
@@ -100,7 +98,7 @@ function handleAsk(ctx: Ctx, out: Output, outcome: Outcome, o: RunOpts, target: 
   return true;
 }
 
-/** run 结束后的共同收尾：写 run 窗口的 meta，判断 draft 变成 verified（多行 @endpoint 要按顺序发出才变成 verified），提醒开着的 learn 窗口。返回要追加的文字行。 */
+/** run 结束后的共同收尾：写 run 窗口的 meta，跑成功的 draft 变成 verified，提醒开着的 learn 窗口。返回要追加的文字行。 */
 function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts): string[] {
   const lines: string[] = [];
   const win = outcome.runWindow;
@@ -109,29 +107,14 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts): string[] {
     if (old) ctx.log.writeMeta(win, { ...old, description: o.description, status: outcome.status, ...(outcome.sent?.length ? { sent: outcome.sent } : {}), endedAt: Date.now() });
     lines.push(`run 窗口目录：${ctx.log.winDir(win)}（窗口已关，日志留着）`);
   }
-  const drafts: DraftRun[] = [...(o.priorDrafts ?? []), ...(outcome.drafts ?? []).map((file) => ({ file, window: win ?? "" }))];
-  if (outcome.status === "success" && drafts.length) {
-    ctx.ingest.flush();
-    const sentOf = new Map<string, string[]>();
-    const sent = (w: string): string[] => {
-      let list = sentOf.get(w);
-      if (!list) { list = (w ? ctx.log.readRows(w, { limit: 5000 }) : []).filter((r) => (r.type === "cmd" && r.kind === "request") || (r.type === "request" && !r.noise)).map((r) => (r.type === "cmd" ? String(r.detail?.endpoint ?? "") : r.endpoint ?? "")); sentOf.set(w, list); }
-      return list;
-    };
-    const promoted: string[] = [], kept: string[] = [], seen = new Set<string>();
-    for (const { file, window } of drafts) {
-      if (seen.has(file)) continue;
-      seen.add(file);
-      const s = actionSummary(file);
-      const missing = s.endpoints.length >= 2 ? missingInSequence(s.endpoints, sent(window)) : undefined;
-      if (missing) { kept.push(`${s.name}（没有按 @endpoint 的顺序发出「${missing}」：前置请求漏了，或 @endpoint 写错了顺序）`); continue; }
-      if (promoteAction(file)) promoted.push(s.name);
-    }
+  // 跑成功就是事实：执行过的 draft 都变成 verified（action 自己检查状态码和返回值）
+  const drafts = new Set([...(o.priorDrafts ?? []), ...(outcome.drafts ?? [])]);
+  if (outcome.status === "success") {
+    const promoted = [...drafts].filter((file) => promoteAction(file)).map((file) => actionSummary(file).name);
     if (promoted.length) lines.push(`已变成 verified：${promoted.join("、")}`);
-    if (kept.length) lines.push(`没有变成 verified：${kept.join("；")}`);
   }
   const open = ctx.learn.opened();
-  if (outcome.status === "failure" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => w.id).join("、")} 还开着：失败的 action 如果在那里 run 成功过，多半是 action 缺了进入那个页面状态的前置步骤（先 goto 哪个页面、少了哪个前置请求），或者 auth 头没声明来源（看观察里的"auth 来源"，写进 request 的 auth）；对比两个窗口的 timeline.jsonl`);
+  if (outcome.status === "failure" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => w.id).join("、")} 还开着：失败的 action 如果在那里 run 成功过，多半是 action 缺了进入那个页面状态的前置步骤（先 goto 哪个页面、少了哪个前置请求），或者页面这次没发带某个头的请求（看观察里的「请求头」，照位置写进 request 的 auth）；对比两个窗口的 timeline.jsonl`);
   if (outcome.status === "success" && open.length) lines.push(`下一步：learn 窗口 ${open.map((w) => `${w.id}（空闲 ${idleMin(w)} 分钟）`).join("、")} 还开着，事情做完就 lore learn <句柄> close`);
   return lines;
 }

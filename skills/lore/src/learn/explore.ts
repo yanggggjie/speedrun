@@ -99,10 +99,3 @@ export function dependencies(rows: Row[], fileOf: (seq: number) => RequestFile |
   }
   return out;
 }
-
-/** 多行 @endpoint 是不是按顺序都出现在这次运行发出的请求里（可以夹着别的请求）；返回缺的那一行。 */
-export function missingInSequence(expected: string[], sent: string[]): string | undefined {
-  let i = 0;
-  for (const e of sent) if (i < expected.length && e === expected[i]) i++;
-  return i < expected.length ? expected[i] : undefined;
-}

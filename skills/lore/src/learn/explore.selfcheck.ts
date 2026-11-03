@@ -1,7 +1,7 @@
 // 观察里列什么：要包含 GET，但不能把静态资源、轮询、噪声列进去（折叠成计数）；
 // 依赖链要能认出来（拿凭证 → 提交）；没有响应体要写出原因，agent 才知道转 DOM。
 import assert from "node:assert/strict";
-import { dependencies, describeRequest, isPeriodic, missingInSequence, shownRequests } from "./explore.ts";
+import { dependencies, describeRequest, isPeriodic, shownRequests } from "./explore.ts";
 import type { RequestFile, Row } from "../record/types.ts";
 
 const req = (seq: number, over: Partial<Row>): Row => ({ seq, t: seq, win: "x.com-20261101-120000", src: "agent", tab: 1, type: "request", requestType: "fetch", method: "GET", url: `https://x.com/api/${seq}`, endpoint: `GET /api/${seq}`, phase: "cmd", ...over });
@@ -45,7 +45,4 @@ const aliasedBodies: Record<string, string> = { r31: JSON.stringify({ data: { to
 assert.deepEqual(dependencies([req(31, {}), req(32, {})], (q) => aliased[q], (f) => (f.responseBodyPath ? aliasedBodies[f.responseBodyPath] : undefined)), [{ from: 31, to: 32, field: "data.token" }], "两边都是同一个别名：对上");
 assert.deepEqual(dependencies([req(31, {}), req(32, {})], (q) => aliased[q], (f) => (f.responseBodyPath ? bodies[f.responseBodyPath] : undefined), (f) => (f.rid === "r:32" ? { url: "https://x.com/api/save", body: JSON.stringify({ token: "tok_998877" }) } : undefined)), [{ from: 31, to: 32, field: "data.token" }], "用原始请求对上");
 
-// 多行 @endpoint：按顺序都要出现，中间可以夹别的
-assert.equal(missingInSequence(["GET /token", "POST /submit"], ["GET /x", "GET /token", "GET /y", "POST /submit"]), undefined);
-assert.equal(missingInSequence(["GET /token", "POST /submit"], ["POST /submit", "GET /token"]), "POST /submit", "顺序反了算缺");
 console.log("explore.selfcheck ok");

@@ -95,7 +95,7 @@ export class ActionRunner {
       // 只有最外层的 compose 能 ask：嵌套调用的 compose 不带重跑状态
       const out: Outcome = composed
         ? await this.execCompose(stripComposeHead(fs.readFileSync(file, "utf8")), params, actionTimeoutMs(file), session, nested ? undefined : (opts.askState ?? { journal: [], answers: [] }))
-        : await this.startThenWork(file, summary.start, params, session);
+        : await this.work(file, params, actionTimeoutMs(file), session);
       if (out.status === "failure" && nested) out.failedAction ??= name;
       if (out.status === "failure" && !nested && !composed) {
         const page = await this.host.failureShot(session, this.windows.failureFile(key));
@@ -130,14 +130,6 @@ export class ActionRunner {
     } finally { this.host.takeSent(learn.key); }
   }
 
-  /** 学出来的 action：文件头有 @start 就先打开那个页面（run 窗口从空白开始），再执行。 */
-  private async startThenWork(file: string, start: string | undefined, params: Record<string, unknown>, session: Session): Promise<Outcome> {
-    if (start) {
-      try { await this.host.op(session, "goto", { url: start }); } catch (e) { return { status: "failure", error: `打开 @start ${start} 失败：${e instanceof Error ? e.message : String(e)}` }; }
-    }
-    return this.work(file, params, actionTimeoutMs(file), session);
-  }
-
   /** run --compose-code：一段 compose 代码，只能 action(名字, 参数) 调用 action，任何页面操作都被 host 拒绝。label 是 run 窗口的名字前缀（compose 的名字，没有就是 compose）。 */
   async runCompose(code: string, timeoutMs = ACTION_TIMEOUT_MS, params: Record<string, unknown> = {}, askState: AskState = { journal: [], answers: [] }, label = "compose"): Promise<Outcome> {
     const key = this.windows.open(label, { compose: label, params });
@@ -163,8 +155,7 @@ export class ActionRunner {
     fs.mkdirSync(this.paths.tmpDir, { recursive: true });
     const file = path.join(this.paths.tmpDir, `compose-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}.mjs`);
     fs.writeFileSync(file, [
-      `import { lore } from ${JSON.stringify(path.join(this.paths.libDir, "index.js"))};`,
-      "const action = (name, params) => lore.action(name, params);",
+      `import { lore, action } from ${JSON.stringify(path.join(this.paths.libDir, "index.js"))};`,
       "export default async () => {",
       code,
       "};",

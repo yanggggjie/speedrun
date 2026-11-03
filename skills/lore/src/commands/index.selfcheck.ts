@@ -1,6 +1,6 @@
 // 命令层：参数解析，以及用假的 daemon 能力（假页面、假标签页、假 runner）端到端跑 learn / observe / run。
 // 读日志不是命令（是文件），这里只守住坏了会静默出错的点：观察按游标不漏不重（晚到的请求下次出现、不重复）、句柄持久（重启后读回）、
-// 不是句柄被拒、观察里给出 auth 来源和 request 草稿（没有真值）、learn 窗口里 run 输出实际发出的非 GET 请求、run 真跑成功的 draft 变成 verified（多行 @endpoint 顺序不对就不变成 verified）。
+// 不是句柄被拒、观察里给出请求头的信号（没有真值）、learn 窗口里 run 输出实际发出的非 GET 请求、run 真跑成功的 draft 变成 verified（漏了就一直是 draft）。
 // 输出约定：第一行是 ok / fail / ask，退出码 0 / 1 / 2。
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -140,15 +140,15 @@ assert.equal(reborn.description, "给第一条回答点赞同");
 assert.equal(reborn.cursor, learn.get(id)!.cursor);
 assert.equal(reborn.open, false);
 
-// run：真跑成功的 draft 变成 verified；多行 @endpoint 顺序不对的不变成 verified；输出写 run 窗口目录
+// run：真跑成功的 draft 都变成 verified；输出写 run 窗口目录
 fs.writeFileSync(path.join(actions, "two.js"), "/**\n * @status draft\n * @endpoint GET /api/token\n * @endpoint POST /api/save\n */\n");
 log.openWindow("vote-20261101-120000", "run", { action: "vote" });
 nextOutcome = { runWindow: "vote-20261101-120000", drafts: [path.join(actions, "vote.js"), path.join(actions, "two.js")] };
 const ran = await run("run", "--action", "vote", "--description", "给回答点赞同");
 assert.equal(ran.code, 0, ran.stdout);
 assert.equal(actionSummary(path.join(actions, "vote.js")).status, "verified", "真跑成功的 draft 变成 verified");
-assert.equal(actionSummary(path.join(actions, "two.js")).status, "draft", "@endpoint 的请求没有按顺序发出：不变成 verified");
-assert.match(ran.stdout, /已变成 verified：vote/); assert.match(ran.stdout, /没有变成 verified：two/);
+assert.equal(actionSummary(path.join(actions, "two.js")).status, "verified", "多行 @endpoint 的也一样：跑成功就是 verified");
+assert.match(ran.stdout, /已变成 verified：vote、two/);
 assert.match(ran.stdout, /^ok vote\n/); assert.match(ran.stdout, /run 窗口目录：.*run-windows\/vote-20261101-120000/);
 assert.match(ran.stdout, new RegExp(`learn 窗口 ${id.replace(/\./g, "\\.")}.*还开着`), "提醒开着的 learn 窗口");
 

@@ -28,8 +28,6 @@ export interface ActionSummary {
   params: string[];
   /** 文件头 `@write`：这个 action 会改东西（点赞、提交、删除……），agent 写的。只是提示：找 action 时、status 里看得到，run 不拦。 */
   write: boolean;
-  /** 文件头 `@start <url>`：run 时先打开这个页面再执行（run 窗口每次从空白开始）。 */
-  start?: string;
   /** 文件头 `@timeout <秒>` 声明的上限；未声明时不出现。 */
   timeout?: number;
 }
@@ -66,7 +64,6 @@ export function actionSummary(file: string, site?: string): ActionSummary {
     summary: first("summary") || first("description"),
     params: tags.filter(([key]) => key === "param").map(([, value]) => value),
     write: tags.some(([key]) => key === "write"),
-    ...(first("start").trim() ? { start: first("start").trim() } : {}),
     ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
   };
 }

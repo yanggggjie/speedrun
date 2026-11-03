@@ -33,10 +33,9 @@ lore 的目标、设计原则和运行时实现：每一部分是谁实现的、
 - **run 窗口**：每次 `lore run` 新开一个，整个 run（含 compose 调用的 action）共用，跑完立刻关；失败时先截图（`screenshots/failure.*`）再关。不同的 run 可以同时跑，没有排队锁。
 - **观察按游标**（`learn/observe.ts`，`learn/explore.ts`）：返回游标之后这个窗口的变化并推进游标（请求默认只列这个窗口里第一次出现的 endpoint，`--all` 列全部）：页面状态、导航（跳到别的站点时写明站点）、请求（去掉噪声、静态资源、轮询；`describeRequest` 一行：编号、`方法 路径`、状态、内容类型、有没有响应体、请求文件名、以前的 description）、请求之间的依赖（`dependencies`：后一个请求里长度 ≥ 6 的值等于前一个响应里的值）。页面操作执行完等页面安静、记录送达（`RunHost.quiet`，见 §7），自动附带一次观察。"这一步之后发生了什么"以两次观察之间为准，不靠 `cause` 猜。
 - **写请求不拦，也不判断**：learn 窗口里页面发什么就真的发什么，`run` 带 `@write` 的 action 也直接发。一个请求有没有副作用、多严重，由 agent 按 SKILL 的标准判断（原则 6）；`@write` 是 agent 写的提示。每次 `run`（run 窗口，或 learn 窗口里的 `run`）统计这次实际发出的非 GET 请求（`request()` 发的和页面自己发的，只看方法、不是 GET / HEAD / OPTIONS 就算，`browser/host.ts` 的 `watchSent` / `takeSent`），输出里列成「已发出的非 GET 请求」，也写进 run 窗口 `meta.json` 的 `sent`；agent 拿它核对有没有意料之外的、告诉用户真发了什么。
-- **compose 只能调用 action**：`run --compose-code` 和 `@compose` 文件的会话标为 compose-only，任何页面操作都被 `RunHost` 拒绝；反过来，学出来的 action 里调用别的 action（`lore.action`）被 `ActionRunner` 拒绝。compose 可以调用 draft。
-- **draft 变成 verified**（`commands/run.ts` 的 `finishRun`）：run 成功、执行过的 draft 变成 verified。多行 `@endpoint` 要按顺序出现在这次 run 窗口发出的请求里（`missingInSequence`），否则不变并说明。`blocked` 的 action `run` 拒绝。
+- **compose 只能调用 action**：`run --compose-code` 和 `@compose` 文件的会话标为 compose-only，任何页面操作都被 `RunHost` 拒绝；反过来，学出来的 action 里调用别的 action（`action()`）被 `ActionRunner` 拒绝。compose 可以调用 draft。
+- **draft 变成 verified**（`commands/run.ts` 的 `finishRun`）：run 成功、执行过的 draft 都变成 verified（跑成功就是事实，action 自己检查状态码和返回值）。`blocked` 的 action `run` 拒绝。
 - **参数**（`run/actions.ts` 的 `checkParams`、`coerceParams`）：对照文件头 `@param 名字[?][:类型]` 检查缺的、多的，再按类型（`number`、`boolean`、`json`，默认字符串）转换后交给 action；compose 里 `action()` 传的参数也一样。
-- **`@start`**（`run/runner.ts` 的 `startThenWork`）：run 时先打开这个页面再执行，打不开就失败。
 - **`--description`**：打开 learn 窗口、页面操作、`run` 必须带，没带就拒绝（不占操作次数）。存进时间线 cmd 行（它引发的请求经 `cause` 指向它）、`endpoints.json` 每个 endpoint 的 `descriptions`（只收成功的，最近 5 句，`record/endpoints.ts`）、compose 文件头。学出来的 action 文件不自动改。
 - **compose 存下来**（`run/actions.ts` 的 `composeTarget`、`saveComposed`、`pruneUnnamed`）：`--compose-code` 跑通后按代码哈希前 12 位存进 `~/.lore/compose/`（`--compose` 认唯一前缀，`resolveCompose`），头由 lore 填（`// 描述`、`@description` 最多 5 句、`@compose`、`@params`、`@ok` 次数和最近时间）；按名字 `run` 成功也累加 description 和次数，代码以文件当前内容为准（哈希名只在第一次存时算）。淘汰：`@ok` ≥2 次的永远保留且不占名额；只跑过一次的超过 30 天删，最多留 300 个。失败的不存。
 - **`lore.ask`**（`run/runner.ts` 的 `work()`、`commands/run.ts` 的 `handleAsk`）：run 停下输出 `ask <问题>`、`数据`、`恢复`（`lore run --resume <编号> --answer …`），不存 compose；`--resume` 恢复时新开 run 窗口、从头重跑代码，最外层 compose 里记下的 `action()` 直接返回上次的结果，第 i 次 ask 返回第 i 个回答。恢复时核对每次调用的名字和参数，不同就失败。只有最外层的 compose 能 ask；`data` 超过 100KB 失败。恢复记录只在 daemon 内存里（`run/asks.ts`，归 `ActionRunner`），最多 20 条、30 分钟过期，用过就作废（恢复失败时保留）。
@@ -110,7 +109,7 @@ daemon 内部分四层，上层只依赖下层：
 ### 数据格式
 
 - **文件名**：以 6 位**日志编号**开头，后面是语义（请求是方法和 endpoint 名，页面是路径）。编号全局唯一、递增；只知道编号时 `ls ~/.lore/*-windows/*/requests/001203-*` 只会命中一个。观察输出里的文件名是相对窗口目录的。
-- **action 文件头**：学出来的是 `@summary` `@status draft|verified|blocked` `@endpoint`（可多行）`@param` `@write` `@start` `@timeout` `@note`；compose 是 `// 描述` 加 `@description`（最多 5 句）`@compose` `@params` `@ok`（成功次数和最近时间），下面是代码原文。名字全局唯一（action 和 compose 共用），`lore run --action <名>` / `--compose <名>` 在所有站点的 `actions/` 和 `~/.lore/compose/` 里找。
+- **action 文件头**：学出来的是 `@summary` `@status draft|verified|blocked` `@endpoint`（可多行）`@param` `@write` `@timeout` `@note`；compose 是 `// 描述` 加 `@description`（最多 5 句）`@compose` `@params` `@ok`（成功次数和最近时间），下面是代码原文。名字全局唯一（action 和 compose 共用），`lore run --action <名>` / `--compose <名>` 在所有站点的 `actions/` 和 `~/.lore/compose/` 里找。
 - **站点**是页面的 host，去掉前导 `www.`（非默认端口带上，目录名里 `:` 变 `_`）：`app.example.com`、`docs.google.com`、`x.com`。请求属于**发出请求的页面**的站点，不是请求地址的站点：`x.com` 页面调 `api.x.com` 记在 `x.com` 里。
 
 **timeline 一行**（JSON）：
@@ -162,7 +161,6 @@ daemon 内部分四层，上层只依赖下层：
 | `run` 的请求被 401/403 拒 | 失败的「下一步」写了抄了什么、没抄什么：登录失效就请用户登录；页面这次没发带某个头的请求，action 要先 `goto` 会发它的页面，或照 learn 窗口观察「请求头」给的位置写 `auth`；每次都变的头被拒，改用 `waitRequest` 或 DOM |
 | learn 窗口的操作说"重新打开" | Chrome 窗口之前关了（close、空闲 30 分钟、daemon 重启），页面状态没了；回到了上次的 URL，需要的话重新点到那个状态 |
 | `learn <句柄> click`、`type`、`key`、`scroll` 报"页面里没有 lore 的脚本" | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
-| run 成功了 draft 却没变成 verified | 输出写了原因：多行 `@endpoint` 没按顺序发出（前置请求漏了，或顺序写错） |
 | 日志里没有某个站点的事件 | 只录 agent 窗口：用户自己窗口里的浏览不会有记录，要用 `learn new --url` 在 learn 窗口里重新打开；用户在 agent 窗口里自己开的标签页（Cmd+T）也不录；看对应窗口目录里的 `timeline.jsonl`，按 `site` 字段筛 |
 | 磁盘上 `~/.lore/learn-windows` 太大 | 按额度自动淘汰（`lore status` 看占用）；要手动清就删关掉的旧窗口目录，别删 `sites/*/actions/` |
 

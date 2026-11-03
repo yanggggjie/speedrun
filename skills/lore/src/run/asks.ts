@@ -1,11 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type { JournalEntry } from "./runner.ts";
 
-/** 一个真跑成功的 draft，和它在哪个 run 窗口里跑的（变成 verified 时按那个窗口的请求检查多行 @endpoint 的顺序）。 */
-export type DraftRun = { file: string; window: string };
-
-/** 停在 lore.ask 的 run：恢复时要的一切。code 和 action 二选一。drafts：停下之前已经成功的 draft（恢复时不会再执行，最终成功时一起变成 verified）。 */
-export type PendingAsk = { t: number; question: string; description: string; code?: string; action?: string; params: Record<string, string>; timeoutSec?: number; journal: JournalEntry[]; answers: unknown[]; drafts: DraftRun[] };
+/** 停在 lore.ask 的 run：恢复时要的一切。code 和 action 二选一。drafts：停下之前已经成功的 draft 文件（恢复时不会再执行，最终成功时一起变成 verified）。 */
+export type PendingAsk = { t: number; question: string; description: string; code?: string; action?: string; params: Record<string, string>; timeoutSec?: number; journal: JournalEntry[]; answers: unknown[]; drafts: string[] };
 
 const ASK_KEEP = 20;
 export const ASK_TTL_MS = 30 * 60_000;

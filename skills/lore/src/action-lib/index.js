@@ -31,11 +31,12 @@ console.log = console.info = console.warn = console.error = toLog;
 /** 命令行 `--名字 值` 传进来的参数：按文件头 `@param 名字:类型` 转好（number、boolean、json），不写类型是字符串；没传的可选参数不存在。 */
 export const lore = {
   params: workerData?.params ?? {},
-  /** compose 代码里的 action(名字, 参数) 就是它：顺序调用一个 action，返回它的 result，失败时抛错。学出来的 action 里不能用。 */
-  action: (name, params = {}) => call("action", { name, params }),
   /** 只能用在最外层的 compose 代码里：run 在这里停下，把 question 和 data 交给 agent；agent 用 lore run --resume <编号> --answer … 恢复时，返回它的回答。 */
   ask: (question, data) => call("ask", { question, data }),
 };
+
+/** compose 代码里调用一个 action：action(名字, 参数)，返回它的 result，失败时抛错（compose 代码里已经能直接用，不用 import）。学出来的 action 里不能用。 */
+export const action = (name, params = {}) => call("action", { name, params });
 
 /** goto(url, { settle?, timeout? })：打开网址，等到页面可用（文档不再是 loading）；settle: true 再等页面安静（没有在途请求、DOM 一小段时间没变，最多 2 秒），等渲染完用它，不要 sleep。 */
 export const goto = (url, options = {}) => call("goto", { url, ...options });
@@ -51,7 +52,7 @@ const withJson = (res) => ({
  * 请求头不用写，lore 按顺序凑齐：
  * 1. 浏览器自己带的（cookie）。
  * 2. 从这次窗口里页面发过的请求抄：页面发过同一个 endpoint 就整组抄它的；否则抄这次窗口里值都一样的头（token、xsrf），每次都变的（签名、nonce）不跨 endpoint 抄。
- *    所以先 goto（或写 @start）打开会发这些请求的页面。
+ *    所以先 goto 打开会发这些请求的页面。
  * 3. auth：{ 头: 来源 }，页面这次没发带这个头的请求时用，发送时在页面里现读；来源 cookie:名字、local:key[.JSON 路径]、session:key[.路径]、meta:名字，前面加 "Bearer " 会拼上前缀。来源看 learn 窗口观察里的「请求头」。
  * 4. 前序请求：先 request 拿到 token，再 headers: { "x-token": r.json().token }（照观察里的「依赖」写）。
  * headers 显式写的最后覆盖。被 401/403 拒时，失败输出里会写抄了什么、没抄什么、下一步；每次都变的头被拒，改用 waitRequest 或 DOM。
@@ -93,7 +94,7 @@ export const press = (key, loc, options = {}) => call("act", { kind: "press", ke
 export const scroll = (options = {}) => call("act", { kind: "scroll", ...options });
 /** waitFor(loc, options?) */
 export const waitFor = (loc, options = {}) => call("waitFor", { loc, ...options });
-/** text(options?)：页面的可见文字。 */
+/** text({ max? }) → { url, title, total, text }：页面的可见文字（最多 max 个字，默认 20000）。读整页正文用它，不用 evaluate。 */
 export const text = (options = {}) => call("text", options);
 /** 声明式取数：query({ css: "article", fields: { author: ".name", link: "a@href" }, limit: 20 })。严格 CSP 的页面也能用。 */
 export const query = (spec) => call("query", spec);

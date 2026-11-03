@@ -59,7 +59,7 @@ npm run verify:pack
    - **持久**：`learn <句柄> close` 后、`lore daemon restart` 后，对同一个句柄 `screenshot` / `click`：窗口从上次的 URL 重新打开，日志接着写进同一个目录，游标接着上次；新句柄不重名。learn 窗口空闲 30 分钟自动关。
    - **run 窗口**：同一个站点连跑两次 `run`，第二次不沿用第一次的页面；两个 `run` 同时跑，各开各的窗口，互不排队。
    - **description 与 compose**：操作的 `--description` 进了时间线，并出现在 endpoint 的 `endpoints.json` 的 `descriptions` 里；compose 文件出现在 `~/.lore/compose/`，`rg` 能用 description 里的词命中，`lore run --compose <名>` 带别的参数再跑一次，`@description` 多一句。
-   - **@write 和 @start**：带 `@start` 的 action 在 run 窗口里先打开那个页面；带 `@write` 的 draft 在 `lore status` 里标出；学出来的 action 里调用 `lore.action` 被拒。
+   - **@write 和 compose**：带 `@write` 的 draft 在 `lore status` 里标出；学出来的 action 里调用 `action()` 被拒；compose 里 `action()` 不用 import 就能用。
    - **SDK、参数、helpers**：`export default async () => …` 加 `goto(url)`、`request({…})` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.lore/helpers/` 里的函数被 action `import` 后能跑，`lore daemon restart` 后还在；`--compose` 写哈希前几位能跑。
 4. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露"等页面加载完"这类问题）：量 `lore learn <句柄> open`、`lore run` 的耗时（新开 run 窗口的代价，尤其是 daemon 刚重启、request 要等页面先发请求才能抄头时）。
 
