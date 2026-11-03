@@ -10,7 +10,7 @@
 import { EXTENSION_COMMAND_TIMEOUT_MS } from "../utils/constants.ts";
 
 /** 扩展 ABI 版本：daemon 和扩展之间的操作集合（call、tabs、goto、openWindow、screenshot 等）。只有改 ABI 才加一，用户才需要刷新扩展。 */
-export const ABI = 11;
+export const ABI = 12;
 
 /** 扩展 tabs 操作返回的一个标签页；anchor 是 agent 窗口里扩展自己的 anchor 页。 */
 export type TabInfo = { tabId: number; windowId: number; active: boolean; url: string; title: string; status: string; anchor?: boolean };

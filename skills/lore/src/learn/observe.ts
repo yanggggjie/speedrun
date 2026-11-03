@@ -47,7 +47,7 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   const navs = rows.filter((r) => r.type === "nav" && r.via !== "replaceState");
   if (navs.length) lines.push(`导航：${navs.slice(-5).map((r) => `#${r.seq} ${r.url}${r.site && r.site !== w.site ? `（${r.site}）` : ""}`).join(" → ")}`);
   // 请求
-  type Stat = { count: number; idle: number; cmdTriggered: number; descriptions?: Array<{ text: string }>; headers?: Record<string, HeaderSignal> };
+  type Stat = { count: number; idle: number; cmdTriggered: number; descriptions?: Array<{ text: string }>; headers?: Record<string, HeaderSignal>; action?: string | null };
   const statsOf = new Map<string, Map<string, Stat>>();
   const stats = (site: string): Map<string, Stat> => { let m = statsOf.get(site); if (!m) { m = new Map(d.index.snapshot(site).endpoints.map((e) => [e.key, e])); statsOf.set(site, m); } return m; };
   const merged = new Map<string, Stat>();
@@ -100,6 +100,11 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   const folded = [repeated ? `之前出现过的 ${repeated}` : "", noise ? `埋点广告 ${noise}` : "", periodic ? `轮询 ${periodic}` : "", assets ? `静态资源 ${assets}` : ""].filter(Boolean);
   if (folded.length) lines.push(`没列出：${folded.join("，")}${repeated ? "（observe --all 看全部）" : "（在 timeline.jsonl 里）"}`);
   if (!picked.length && !repeated) lines.push("下一步：页面可能还在加载，等一会儿再 observe；或者数据在页面里，用 DOM 取");
+  // 这一步引发了还没有 action 覆盖的 endpoint：提醒写成 action（computer 只是触发，结果要来自 lore run）
+  if (step !== undefined) {
+    const uncovered = [...new Set(picked.filter((r) => r.phase === "cmd" && r.endpoint && !stats(r.site ?? w.site).get(r.endpoint)?.action).map((r) => r.endpoint!))].slice(0, 3);
+    if (uncovered.length) lines.push(`下一步：${uncovered.join("、")} 还没有 action 覆盖 → 要用的写成 action，lore learn ${w.id} run --action <名> 试，lore run 交付`);
+  }
   w.cursor = Math.max(w.cursor, to);
   return lines.join("\n");
 }

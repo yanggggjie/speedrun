@@ -21,15 +21,72 @@
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   };
   const fire = (el, Ctor, type, init) => el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, composed: true, view: window, ...init }));
+  // ---- 鼠标：和 computer 工具一样的顺序（移过去 → 按下 → 松开 → click），只是用 DOM 事件合成 ----
+  const modsOf = (m) => ({ ctrlKey: !!m?.ctrl, metaKey: !!m?.cmd, altKey: !!m?.alt, shiftKey: !!m?.shift });
+  const pointerInit = (x, y, mods, extra) => ({ clientX: x, clientY: y, ...modsOf(mods), ...extra });
+  // 悬停：记住上一个元素，离开时补移出事件，进入新元素补进入事件，再发一次移动
+  const hoverTo = (el, x, y, mods) => {
+    const m = pointerInit(x, y, mods), pm = { ...m, pointerId: 1, pointerType: "mouse", isPrimary: true };
+    const prev = T.hovered;
+    if (prev && prev !== el && prev.isConnected) {
+      fire(prev, PointerEvent, "pointerout", pm); fire(prev, MouseEvent, "mouseout", m);
+      fire(prev, PointerEvent, "pointerleave", { ...pm, bubbles: false }); fire(prev, MouseEvent, "mouseleave", { ...m, bubbles: false });
+    }
+    if (prev !== el) {
+      fire(el, PointerEvent, "pointerover", pm); fire(el, MouseEvent, "mouseover", m);
+      fire(el, PointerEvent, "pointerenter", { ...pm, bubbles: false }); fire(el, MouseEvent, "mouseenter", { ...m, bubbles: false });
+    }
+    fire(el, PointerEvent, "pointermove", pm); fire(el, MouseEvent, "mousemove", m);
+    T.hovered = el;
+  };
+  // 三击：输入框里全选，正文里选中这个元素的内容
+  const selectAround = (el) => {
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) { el.select(); return; }
+    const sel = window.getSelection(), range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges(); sel.addRange(range);
+  };
+  // 点 count 下：button 0 左键（click，count ≥ 2 补 dblclick，3 选中），2 右键（contextmenu）
+  const mouseClick = (el, x, y, { button = 0, count = 1, mods } = {}) => {
+    const buttons = button === 2 ? 2 : 1;
+    const m = pointerInit(x, y, mods, { button }), pm = { ...m, pointerId: 1, pointerType: "mouse", isPrimary: true };
+    if (el.focus) el.focus({ preventScroll: true }); // 真实的 mousedown 会让元素获得焦点，合成的不会
+    hoverTo(el, x, y, mods);
+    for (let i = 1; i <= count; i++) {
+      fire(el, PointerEvent, "pointerdown", { ...pm, buttons }); fire(el, MouseEvent, "mousedown", { ...m, buttons, detail: i });
+      fire(el, PointerEvent, "pointerup", pm); fire(el, MouseEvent, "mouseup", { ...m, detail: i });
+      fire(el, MouseEvent, button === 2 ? "contextmenu" : "click", { ...m, detail: i });
+    }
+    if (button === 0 && count >= 2) fire(el, MouseEvent, "dblclick", { ...m, detail: 2 });
+    if (button === 0 && count >= 3) selectAround(el);
+  };
   const clickEl = (el, at) => {
     const { x, y } = at || toView(el); // 给了坐标（截图里看到的位置）就不滚动
-    const m = { clientX: x, clientY: y, button: 0 };
-    const pm = { ...m, pointerId: 1, pointerType: "mouse", isPrimary: true };
-    if (el.focus) el.focus({ preventScroll: true }); // 真实的 mousedown 会让元素获得焦点，合成的不会
-    fire(el, PointerEvent, "pointerover", pm); fire(el, MouseEvent, "mouseover", m);
-    fire(el, PointerEvent, "pointerdown", { ...pm, buttons: 1 }); fire(el, MouseEvent, "mousedown", { ...m, buttons: 1 });
-    fire(el, PointerEvent, "pointerup", pm); fire(el, MouseEvent, "mouseup", m);
-    fire(el, MouseEvent, "click", { ...m, detail: 1 });
+    mouseClick(el, x, y);
+  };
+  // 拖动：按下 → 分 10 步移动 → 松开；起点能拖（draggable）时补 HTML5 拖放事件
+  const dragPath = (sx, sy, ex, ey, mods) => {
+    const start = deepFromPoint(sx, sy);
+    if (!start) throw new Error(`起点 (${sx}, ${sy}) 没有元素`);
+    hoverTo(start, sx, sy, mods);
+    const m0 = pointerInit(sx, sy, mods, { button: 0 });
+    fire(start, PointerEvent, "pointerdown", { ...m0, pointerId: 1, pointerType: "mouse", isPrimary: true, buttons: 1 }); fire(start, MouseEvent, "mousedown", { ...m0, buttons: 1, detail: 1 });
+    const source = start.closest('[draggable="true"]');
+    const dt = source ? new DataTransfer() : null;
+    if (source) fire(source, DragEvent, "dragstart", { ...m0, dataTransfer: dt });
+    let over = null, at = start;
+    for (let i = 1; i <= 10; i++) {
+      const x = sx + ((ex - sx) * i) / 10, y = sy + ((ey - sy) * i) / 10;
+      at = deepFromPoint(x, y) || at;
+      const m = pointerInit(x, y, mods, { buttons: 1 });
+      fire(at, PointerEvent, "pointermove", { ...m, pointerId: 1, pointerType: "mouse", isPrimary: true }); fire(at, MouseEvent, "mousemove", m);
+      if (source) { if (at !== over) { fire(at, DragEvent, "dragenter", { ...m, dataTransfer: dt }); over = at; } fire(at, DragEvent, "dragover", { ...m, dataTransfer: dt }); }
+    }
+    const m1 = pointerInit(ex, ey, mods, { button: 0 });
+    if (source) { fire(at, DragEvent, "drop", { ...m1, dataTransfer: dt }); fire(source, DragEvent, "dragend", { ...m1, dataTransfer: dt }); }
+    fire(at, PointerEvent, "pointerup", { ...m1, pointerId: 1, pointerType: "mouse", isPrimary: true }); fire(at, MouseEvent, "mouseup", { ...m1, detail: 1 });
+    T.hovered = at;
+    return { start, end: at };
   };
   // 用原生的 value setter 写值，React 等框架才会认；再补 input / change 事件
   const nativeSet = (el, value) => {
@@ -53,31 +110,61 @@
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   };
+  // 很多页面看 keyCode / which（如 Enter 是 13）：合成的按键要带上，否则「回车搜索」这类监听收不到
+  const KEY_CODES = { Enter: 13, Backspace: 8, Tab: 9, Escape: 27, " ": 32, PageUp: 33, PageDown: 34, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46 };
+  const keyCodeOf = (key) => KEY_CODES[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
+  const keyInit = (key) => { const c = keyCodeOf(key); return { key, code: codeOf(key), keyCode: c, which: c }; };
   const codeOf = (key) => (key.length === 1 ? (/[a-z]/i.test(key) ? "Key" + key.toUpperCase() : /\d/.test(key) ? "Digit" + key : key === " " ? "Space" : key) : key);
   const TEXTUAL = /^(text|search|email|url|tel|password|number)$/i;
-  const pressKey = (el, spec) => {
-    const parts = String(spec).split("+"), last = parts.pop(), key = last === "Space" ? " " : last; // "Ctrl+K" → 修饰键 + 键名
-    const mods = { ctrlKey: parts.includes("Ctrl"), metaKey: parts.includes("Cmd"), altKey: parts.includes("Alt"), shiftKey: parts.includes("Shift") };
+  // ---- 按键：和 computer 的 key 同一种写法：空格分隔多个，`+` 组合，修饰键 cmd / ctrl / alt / shift 不分大小写（learn 的 computer key 和 SDK 的 key 共用）----
+  const MOD_NAMES = { cmd: "cmd", command: "cmd", meta: "cmd", super: "cmd", ctrl: "ctrl", control: "ctrl", alt: "alt", option: "alt", opt: "alt", shift: "shift" };
+  const KEY_NAMES = { enter: "Enter", return: "Enter", backspace: "Backspace", delete: "Delete", del: "Delete", tab: "Tab", escape: "Escape", esc: "Escape", space: " ", up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight", home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown" };
+  const parseKeys = (spec) => String(spec).trim().split(/\s+/).filter(Boolean).map((combo) => {
+    const parts = combo.split("+").filter(Boolean), last = parts.pop() ?? "";
+    const mods = {};
+    for (const p of parts) { const m = MOD_NAMES[p.toLowerCase()]; if (!m) throw new Error(`不认识的修饰键「${p}」：用 cmd、ctrl、alt、shift`); mods[m] = true; }
+    const key = last.length === 1 ? last : KEY_NAMES[last.toLowerCase()] ?? last;
+    return { key, mods };
+  });
+  const pressKeys = (el, spec, repeat = 1) => {
+    const keys = parseKeys(spec);
+    if (!keys.length) throw new Error("key 要写按键，如 Enter、cmd+a、Backspace Backspace");
+    for (let r = 0; r < Math.min(Math.max(1, repeat), 100); r++) for (const k of keys) pressKey(el, k);
+  };
+  const pressKey = (el, { key, mods: m }) => {
+    const mods = modsOf(m);
     const target = el || document.activeElement || document.body;
-    const init = { key, code: codeOf(key), ...mods };
+    const init = { ...keyInit(key), ...mods };
     const proceed = fire(target, KeyboardEvent, "keydown", init); // false = 页面自己处理了（preventDefault）
     if (key.length === 1) fire(target, KeyboardEvent, "keypress", init);
-    if (proceed && !mods.ctrlKey && !mods.metaKey && !mods.altKey) {
+    const textField = target.isContentEditable || target.tagName === "TEXTAREA" || (target.tagName === "INPUT" && TEXTUAL.test(target.type));
+    if (proceed && (mods.metaKey || mods.ctrlKey) && key.toLowerCase() === "a") {
+      // 全选：输入框里选中内容，否则选中整页
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) target.select(); else document.execCommand("selectAll");
+    } else if (proceed && textField && (key === "Backspace" || key === "Delete") && !mods.metaKey && !mods.ctrlKey) {
+      document.execCommand(key === "Backspace" ? "delete" : "forwardDelete");
+    } else if (proceed && !mods.ctrlKey && !mods.metaKey && !mods.altKey) {
       // 合成的按键没有默认行为，常用的几个自己补上
       const tag = target.tagName;
       const clickable = tag === "A" || tag === "BUTTON" || tag === "SUMMARY" || (tag === "INPUT" && /^(button|submit|reset|checkbox|radio)$/i.test(target.type));
       if (key === "Enter" && clickable) clickEl(target);
       else if (key === "Enter" && tag === "INPUT" && TEXTUAL.test(target.type) && target.form) target.form.requestSubmit();
       else if (key === " " && (tag === "BUTTON" || (tag === "INPUT" && /^(checkbox|radio)$/i.test(target.type)))) clickEl(target);
-      else if (key.length === 1 && (target.isContentEditable || tag === "TEXTAREA" || (tag === "INPUT" && TEXTUAL.test(target.type)))) document.execCommand("insertText", false, key);
+      else if (key.length === 1 && textField) document.execCommand("insertText", false, key);
     }
     fire(target, KeyboardEvent, "keyup", init);
   };
-  const scrollTarget = (el, dx, dy, to) => {
+  const scrollTarget = (el, dx, dy) => {
     const t = el && el !== document.body && el !== document.documentElement ? el : window;
-    if (to === "top") t.scrollTo({ top: 0, behavior: "instant" });
-    else if (to === "bottom") t.scrollTo({ top: t === window ? document.documentElement.scrollHeight : t.scrollHeight, behavior: "instant" });
-    else t.scrollBy({ left: dx || 0, top: dy || 0, behavior: "instant" });
+    t.scrollBy({ left: dx || 0, top: dy || 0, behavior: "instant" });
+  };
+  // 和 computer 的 scroll 一样：方向加格数，一格 100 像素，最多 10 格
+  const wheelDelta = (direction, amount) => {
+    const n = Math.min(Math.max(1, Number(amount) || 3), 10) * 100;
+    switch (direction) {
+      case "up": return [0, -n]; case "down": return [0, n]; case "left": return [-n, 0]; case "right": return [n, 0];
+      default: throw new Error(`scroll 的方向要是 up、down、left、right，收到：${direction}`);
+    }
   };
   // 等页面稳定：没有在途的 fetch / XHR，并且 DOM 静默一小段时间；
   const settle = (timeoutMs, quietMs = 400) => new Promise((resolve) => {
@@ -210,8 +297,15 @@
           out.checked = el.checked;
           break;
         }
-        case "press": out.target = T.desc(el || document.activeElement); pressKey(el, cmd.key); break;
-        case "scroll": out.target = el ? T.desc(el) : "page"; scrollTarget(el, cmd.dx, cmd.dy, cmd.to); break;
+        case "key": if (el?.focus) el.focus({ preventScroll: true }); out.target = T.desc(el || document.activeElement); pressKeys(el, cmd.keys, cmd.repeat); break;
+        case "scroll": {
+          const box = el ? scrollableAt(el) : null;
+          const [dx, dy] = wheelDelta(cmd.direction, cmd.amount);
+          out.target = box ? T.desc(box) : "page"; scrollTarget(box, dx, dy);
+          out.scrollY = box ? Math.round(box.scrollTop) : Math.round(window.scrollY);
+          break;
+        }
+        case "scroll_to": if (!el) throw new Error("scroll_to 需要 loc"); out.target = T.desc(el); el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" }); break;
         default: throw new Error(`未知动作 ${cmd.kind}`);
       }
       out.url = location.href;
@@ -245,38 +339,61 @@
     }
     return null;
   };
+  // 坐标落在了什么上：没有元素报错；落在页面背景、没有可用控件的 <label> 上写提醒（不自动纠正：真人点那里也会点到同一个东西）
+  const hitAt = (x, y, out) => {
+    const el = deepFromPoint(x, y);
+    if (!el) throw new Error(`坐标 (${x}, ${y}) 在页面之外，或没有元素`);
+    out.target = T.desc(el); out.loc = uniqueLoc(el);
+    if (el === document.body || el === document.documentElement) out.warning = "落在页面背景上，没有点到任何控件：重新截图对一下坐标";
+    else if (el instanceof HTMLLabelElement && (!el.control || el.control.disabled)) out.warning = "落在一个 <label> 上，它没有关联的可用控件，点击可能不会作用到它标注的那个控件";
+    return el;
+  };
+  // computer 工具的页面动作（learn 用）：坐标是视口里的 CSS 像素（截图就是按这个尺寸缩的），左上角 (0,0)；mods 是 { cmd, ctrl, alt, shift }
   T.exec.pointer = async (cmd) => {
     try {
       const out = { ok: true };
-      switch (cmd.kind) {
-        case "click": {
-          const el = deepFromPoint(cmd.x, cmd.y);
-          if (!el) throw new Error(`坐标 (${cmd.x}, ${cmd.y}) 在页面之外，或没有元素`);
-          out.target = T.desc(el); out.loc = uniqueLoc(el);
-          clickEl(el, { x: cmd.x, y: cmd.y });
+      const mods = cmd.mods;
+      switch (cmd.action) {
+        case "left_click": mouseClick(hitAt(cmd.x, cmd.y, out), cmd.x, cmd.y, { mods }); break;
+        case "right_click": mouseClick(hitAt(cmd.x, cmd.y, out), cmd.x, cmd.y, { button: 2, mods }); break;
+        case "double_click": mouseClick(hitAt(cmd.x, cmd.y, out), cmd.x, cmd.y, { count: 2, mods }); break;
+        case "triple_click": mouseClick(hitAt(cmd.x, cmd.y, out), cmd.x, cmd.y, { count: 3, mods }); break;
+        case "hover": hoverTo(hitAt(cmd.x, cmd.y, out), cmd.x, cmd.y, mods); break;
+        case "left_click_drag": {
+          hitAt(cmd.sx, cmd.sy, out);
+          const { end } = dragPath(cmd.sx, cmd.sy, cmd.x, cmd.y, mods);
+          out.dropTarget = T.desc(end);
           break;
         }
         case "type": {
           const el = document.activeElement;
-          if (!el || el === document.body || el === document.documentElement) throw new Error("没有获得焦点的输入框：先点击输入框再 type");
+          if (!el || el === document.body || el === document.documentElement) throw new Error("没有获得焦点的输入框：先 computer left_click 输入框再 type");
+          if (!(el.isContentEditable || el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) throw new Error("焦点不在输入框上：先 computer left_click 输入框再 type");
           const text = String(cmd.text ?? "");
           out.target = T.desc(el); out.loc = uniqueLoc(el); out.chars = text.length;
-          if (el.isContentEditable || el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-            if (!document.execCommand("insertText", false, text)) setValue(el, String(el.value ?? el.textContent ?? "") + text); // 追加，像真实输入
-          } else throw new Error("焦点不在输入框上：先点击输入框再 type");
+          // 逐个字符：keydown → 插入 → keyup（只插入文字、没有按键事件的话，监听 keydown 的页面看不到输入）；中文、emoji 这类没有按键的只插入
+          for (const ch of text) {
+            const keyed = /^[\x20-\x7e]$/.test(ch);
+            const init = keyInit(ch);
+            if (keyed) fire(el, KeyboardEvent, "keydown", init);
+            if (!document.execCommand("insertText", false, ch)) setValue(el, String(el.value ?? el.textContent ?? "") + ch);
+            if (keyed) fire(el, KeyboardEvent, "keyup", init);
+          }
           break;
         }
-        case "key": out.target = T.desc(document.activeElement); pressKey(document.activeElement, cmd.key); break;
+        case "key": out.target = T.desc(document.activeElement); pressKeys(document.activeElement, cmd.keys, cmd.repeat); break;
         case "scroll": {
-          const at = cmd.x !== undefined && cmd.y !== undefined ? deepFromPoint(cmd.x, cmd.y) : null;
-          const box = at ? scrollableAt(at) : null;
-          scrollTarget(box, cmd.dx, cmd.dy, cmd.to);
+          const at = hitAt(cmd.x, cmd.y, out);
+          const box = scrollableAt(at);
+          const [dx, dy] = wheelDelta(cmd.direction, cmd.amount);
+          fire(at, WheelEvent, "wheel", { clientX: cmd.x, clientY: cmd.y, deltaX: dx, deltaY: dy, deltaMode: 0, ...modsOf(mods) }); // 监听滚轮的页面（地图、画布）收得到
+          scrollTarget(box, dx, dy);
           out.target = box ? T.desc(box) : "page";
-          if (box) out.loc = uniqueLoc(box);
           out.scrollY = box ? Math.round(box.scrollTop) : Math.round(window.scrollY);
           break;
         }
-        default: throw new Error(`未知动作 ${cmd.kind}`);
+        case "scroll_to": window.scrollTo({ left: cmd.x, top: cmd.y, behavior: "instant" }); out.scrollY = Math.round(window.scrollY); break;
+        default: throw new Error(`未知动作 ${cmd.action}`);
       }
       out.url = location.href; out.title = document.title;
       return out;

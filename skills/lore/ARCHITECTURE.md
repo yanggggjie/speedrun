@@ -83,7 +83,7 @@ daemon 内部分四层，上层只依赖下层：
 
 `src/chrome-extension/background.js` 没有业务逻辑，是一个固定 ABI 的管道；页面脚本是扩展包里的静态内容脚本（`page/`）。`manifest.json` 有固定的 `key`，扩展 ID 是 `dkjmgdhelenchaippejoppbcfbjfgppl`（和 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）；权限 `tabs`、`nativeMessaging`、`alarms`、`scripting`、`storage`、`<all_urls>`，Chrome 135 起。
 
-- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 11）：`call`（在页面 MAIN world 调 `window.__lore.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`openWindow`、`openTab`、`activateTab`、`closeTab`、`closeWindow`、`screenshot`。帧是 4 字节小端长度加 UTF-8 JSON；`hello` 带 `abi`，和 daemon 不一致时不工作，提示用户刷新扩展。只有改 ABI 或权限才需要用户刷新扩展。
+- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 12）：`call`（在页面 MAIN world 调 `window.__lore.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`history`（后退、前进）、`openWindow`、`openTab`、`activateTab`、`closeTab`、`closeWindow`、`screenshot`。帧是 4 字节小端长度加 UTF-8 JSON；`hello` 带 `abi`，和 daemon 不一致时不工作，提示用户刷新扩展。只有改 ABI 或权限才需要用户刷新扩展。
 - 页面消息：页面脚本 `postMessage` → `bridge.js` → `chrome.runtime.sendMessage` → 扩展补上 tab、frame 转给 daemon。每条带这次页面加载的编号 `d` 和递增序号 `n`（`page/common.js`），daemon 据此判断记录有没有送达。页面自己的脚本也能发，所以日志只是观察记录，不能当权限依据。
 - 连接：Chrome 拉起的 relay 无状态，只转发字节；断开后扩展指数退避重连（上限 30 秒），点工具栏图标立即重连。daemon 不随扩展刷新退出。
 
@@ -120,7 +120,7 @@ daemon 内部分四层，上层只依赖下层：
 | `description` | cmd 行：这一步带的 `--description`（用户的话，description）；它引发的请求经 `cause` 指向这一行 |
 | `src` | `agent`（lore 的操作，以及 agent 窗口里页面脚本触发的请求和导航）；`user` 只在有人在 agent 窗口里真的动了一下时出现 |
 | `type` | `request` `input`（页面里的点击、输入、按键、滚动）`nav` `cmd` `doc` `snap` `tab` |
-| input / cmd | `kind`（input 是 click、input、key、scroll、change、submit；cmd 是 goto、request、click、fill……）、`target`（如 `button[Like]`）、`role` `name` `selector` `key` `deltaY`；cmd 有 `ok` `error` `detail`（`request` 命令的 `detail.endpoint` 是它发的 endpoint） |
+| input / cmd | `kind`（input 是 click、input、key、scroll、change、submit；cmd 是 navigate、request、left_click、type、click、fill……）、`target`（如 `button[Like]`）、`role` `name` `selector` `key` `deltaY`；cmd 有 `ok` `error` `detail`（`request` 命令的 `detail.endpoint` 是它发的 endpoint） |
 | request | `requestType`（fetch / xhr）、`method` `url`（不含参数）`status` `size`、`endpoint`（`方法 路径`，就是 `@endpoint` 的写法）、`file`（请求文件，相对窗口目录）、`noise: 1`（埋点广告，默认别看） |
 | 因果 | `cause`：引发这个请求的命令的 `seq`（同一标签页 2 秒内最近一次 agent 命令）；`causeDt`：相隔毫秒；`phase`：`load`（页面或单页路由刚开始的几秒）、`cmd`（命令引发）、`idle`（轮询等） |
 
@@ -135,8 +135,9 @@ daemon 内部分四层，上层只依赖下层：
 - **RunHost**（`browser/host.ts`）：action 的每个操作都在这里执行并写一行 `cmd`。三种实现方式按顺序选：`request` > `waitRequest` > DOM。
   - `request` 的请求头按顺序凑齐，尽量继承复用：① 浏览器自己带的（cookie）；② 从这次窗口里页面发过的同站请求抄（`copyHeaders`）：页面发过同一个 endpoint 就整组抄它最近一次的，否则按 `record/headers.ts` 的 `headerKinds` 只抄页面级不变的头，每次都变、按 endpoint 变的不跨 endpoint 抄，和它们同一族的（名字去掉最后一段相同，如 `x-zse-93` 和 `x-zse-96`）也不抄：只带签名族的一半会被拒；这次窗口里还没有同站请求就等 1.5 秒；③ `auth` 声明的页面固定位置（cookie、localStorage、sessionStorage、meta），发送时在页面里现读；④ 前序请求的值由 action 代码写进 `headers`；`headers` 显式写的最后覆盖。cmd 行的 `detail` 记下抄自哪些 endpoint、抄了和没抄的头名。被 401/403 拒时，run 的 `hint` 写清楚抄了什么、没抄什么、下一步（`takeRejected`）。和当前页面同一注册域名的请求在当前页面上发，否则在请求自己的 origin 上开页面发。
   - `waitRequest` 等页面自己发出的第一个匹配请求，签名由页面算。
-  - **等待**只有四种，都有明确的结束条件和上限（`utils/constants.ts`）：① 页面可用：`goto` 等到 `readyState` 是 interactive（`GOTO_WAIT_MS`，不等被墙的子资源）；② 页面安静 + 记录送达（`quiet`，`QUIET_MAX_MS` 2 秒）：页面没有在途请求、DOM 400ms 没变（`executor.js` 的 `quiet`），并且页面报告的最后一个消息序号已经到了 daemon（`ingest.ts` 的 `waitDelivered`）；learn 每步之后、`learn new`、`request` 抄头前（刚 `goto` 过、这次窗口还没有同站请求时）默认等，SDK 的 `goto` / 操作带 `{ settle: true }` 时等；③ 等某个请求：`waitRequest`（`WAIT_REQUEST_MS`）；④ 等某个元素：操作先找元素、`waitFor`（10 秒）。单步 `STEP_TIMEOUT_MS`、整个 action `ACTION_TIMEOUT_MS` 是兜底。没有固定时长的等待。
+  - **等待**只有四种，都有明确的结束条件和上限（`utils/constants.ts`）：① 页面可用：`navigate` 等到 `readyState` 是 interactive（`GOTO_WAIT_MS`，不等被墙的子资源）；② 页面安静 + 记录送达（`quiet`，`QUIET_MAX_MS` 2 秒）：页面没有在途请求、DOM 400ms 没变（`executor.js` 的 `quiet`），并且页面报告的最后一个消息序号已经到了 daemon（`ingest.ts` 的 `waitDelivered`）；learn 每步之后、`learn new`、`request` 抄头前（刚 `navigate` 过、这次窗口还没有同站请求时）默认等，SDK 的 `navigate` / 操作带 `{ settle: true }` 时等；③ 等某个请求：`waitRequest`（`WAIT_REQUEST_MS`）；④ 等某个元素：操作先找元素、`waitFor`（10 秒）。单步 `STEP_TIMEOUT_MS`、整个 action `ACTION_TIMEOUT_MS` 是兜底。没有固定时长的等待。
 - **ActionRunner**（`run/runner.ts`）：action 在 worker 线程里跑，SDK（`action-lib/index.js`，daemon 每次启动整个覆盖到 `~/.lore/lib`，保证和 daemon 同一个版本）的每个函数是向 daemon 发一个操作，不用传 page；action 文件是 `export default async () => 结果`（`run/worker.ts` 调用它）；agent 自己的纯函数在 `~/.lore/helpers/`，只在不存在时建目录，从不覆盖；compose 包成注入了 `action()` 的模块再跑。整体超时 115 秒（`@timeout` 可改）。失败时输出带 `page`（URL、标题、截图），像登录失效时带 `hint`。
+- **learn 的页面操作**（`commands/learn.ts` 的 `parseComputer`，`page/executor.js` 的 `T.exec.pointer`）：和 Claude in Chrome 的 `computer`、`navigate` 工具同样的 action、参数和坐标系（截图上的 CSS 像素），事件由页面脚本合成（不用 CDP，不需要 `debugger` 权限）：点击前先看坐标落在什么元素上（`落在：`、`定位：`，落在页面背景、没有控件的 `<label>` 上写提醒，不自动纠正）；鼠标按 移过去 → 按下 → 松开 → click 的顺序，双击补 `dblclick`、右键补 `contextmenu`、三击选中；hover 记住上一个元素补移出事件；拖动分 10 步；`type` 逐字符 keydown → 插入 → keyup；`key` 空格分隔、`+` 组合（和 SDK 的 `key` 共用一份解析）；`scroll` 发 `wheel` 再滚那个位置的可滚动区域，滚完附截图。它只是触发页面行为、让 lore 录到请求：这一步引发了没有 action 覆盖的 endpoint、操作满 15 次还没写 action、`close` 前没跑过成功的 `lore run` 时，输出给一行「下一步」。
 - **在 learn 窗口里 run**（`commands/learn.ts`）：`lore learn <句柄> run --action <名>` 把 learn 窗口当前的 `Session` 交给 `ActionRunner.runAction`，和 compose 调用 action 一样共用页面状态；日志进 learn 窗口，不变成 verified。原始请求（含真值）只在 daemon 内存里（`record/raw.ts`），**绝不落盘**，daemon 重启就没了。
 - **请求头的信号**（`learn/observe.ts`、`record/auth.ts`、`record/headers.ts`）：观察里每个带非浏览器头的请求有一行「请求头」：按头名统计这个窗口里同站请求的真值怎么变（只在同一次页面加载里比），再拿真值和页面此刻的 cookie、localStorage、sessionStorage、meta 比对出位置；只输出、只记类别和位置（`endpoints.json` 的 `headers`），不记值。
 
@@ -158,9 +159,9 @@ daemon 内部分四层，上层只依赖下层：
 | `need-chrome` | 启动 Google Chrome |
 | 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |
 | 升级后旧 daemon 还在跑 | `lore daemon restart` |
-| `run` 的请求被 401/403 拒 | 失败的「下一步」写了抄了什么、没抄什么：登录失效就请用户登录；页面这次没发带某个头的请求，action 要先 `goto` 会发它的页面，或照 learn 窗口观察「请求头」给的位置写 `auth`；每次都变的头被拒，改用 `waitRequest` 或 DOM |
+| `run` 的请求被 401/403 拒 | 失败的「下一步」写了抄了什么、没抄什么：登录失效就请用户登录；页面这次没发带某个头的请求，action 要先 `navigate` 会发它的页面，或照 learn 窗口观察「请求头」给的位置写 `auth`；每次都变的头被拒，改用 `waitRequest` 或 DOM |
 | learn 窗口的操作说"重新打开" | Chrome 窗口之前关了（close、空闲 30 分钟、daemon 重启），页面状态没了；回到了上次的 URL，需要的话重新点到那个状态 |
-| `learn <句柄> click`、`type`、`key`、`scroll` 报"页面里没有 lore 的脚本" | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
+| `learn <句柄> computer …` 报"页面里没有 lore 的脚本" | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
 | 日志里没有某个站点的事件 | 只录 agent 窗口：用户自己窗口里的浏览不会有记录，要用 `learn new --url` 在 learn 窗口里重新打开；用户在 agent 窗口里自己开的标签页（Cmd+T）也不录；看对应窗口目录里的 `timeline.jsonl`，按 `site` 字段筛 |
 | 磁盘上 `~/.lore/learn-windows` 太大 | 按额度自动淘汰（`lore status` 看占用）；要手动清就删关掉的旧窗口目录，别删 `sites/*/actions/` |
 

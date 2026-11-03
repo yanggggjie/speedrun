@@ -55,7 +55,7 @@ assert.equal(opened.length, before, "拒绝的不开窗口");
 const composed = await runner.runCompose(`const r = await action("echo", { v: "c" }); return r.v;`);
 assert.deepEqual(plain(composed), { status: "success", result: "c" });
 assert.equal(composed.runWindow, opened.at(-1), "compose 里的 action 共用 compose 的窗口");
-const sdk = await runner.runCompose(`const m = await import(${JSON.stringify(path.join(libDir, "index.js"))}); await m.goto(null, "https://example.com/");`);
+const sdk = await runner.runCompose(`const m = await import(${JSON.stringify(path.join(libDir, "index.js"))}); await m.navigate("https://example.com/");`);
 assert.equal(sdk.status, "failure");
 assert.match((sdk as { error: string }).error, /不该碰页面|compose/, "compose 里的页面操作被拒绝");
 

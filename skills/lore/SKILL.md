@@ -43,8 +43,8 @@ description: >-
 **示范**：在知乎搜 agent，看前 30 条，给硬核技术的回答点赞同。
 
 1. 拆成 `zhihu-search`（`q`、`n`）和 `zhihu-vote`（回答 id）。"前 30 条"写在 compose 里，"硬核技术"交给 `lore.ask`，点赞只在第一张卡片上学。
-2. `lore learn new --url https://www.zhihu.com …` 拿到句柄；`open` 搜索页 → 观察里有 `GET /api/v4/search_v3`，「请求头」里 `x-zse-96 每次都变`；`zhihu-search` 先 `goto` 搜索页再 `request` 它（页面发过同一个 endpoint，签名整组抄），在窗口里 `run --offset 20` 通过。
-3. `click` 第一张卡片的赞同 → 观察里 `#1230 POST /api/v4/answers/:id/voters`，「请求头」里 `x-xsrftoken 页面级不变 ← cookie _xsrf` → `zhihu-vote` 只写 `request`；run 时页面没发带 `x-xsrftoken` 的请求被拒，才照位置加 `auth: { "x-xsrftoken": "cookie:_xsrf" }`。
+2. `lore learn new --url https://www.zhihu.com …` 拿到句柄；`navigate` 搜索页 → 观察里有 `GET /api/v4/search_v3`，「请求头」里 `x-zse-96 每次都变`；`zhihu-search` 先 `navigate` 搜索页再 `request` 它（页面发过同一个 endpoint，签名整组抄），在窗口里 `run --offset 20` 通过。
+3. `computer left_click` 第一张卡片的赞同 → 观察里 `#1230 POST /api/v4/answers/:id/voters`，「请求头」里 `x-xsrftoken 页面级不变 ← cookie _xsrf` → `zhihu-vote` 只写 `request`；run 时页面没发带 `x-xsrftoken` 的请求被拒，才照位置加 `auth: { "x-xsrftoken": "cookie:_xsrf" }`。
 4. `lore run --compose-code '搜 30 条 → lore.ask 挑 → 循环 zhihu-vote' --q agent` → 停在 ask，`--resume` 继续 → 结果，两个 draft 变成 verified。
 
 ## 4. 命令
@@ -53,8 +53,8 @@ description: >-
 |---|---|
 | `lore learn new --url <链接\|tab 号>` | 打开 learn 窗口：句柄、窗口目录、learn 指引、起点的观察 |
 | `lore learn list` | 列出 learn 窗口 |
-| `lore learn <句柄> open <网址> \| click <x> <y> \| type "文字" \| key <键> \| scroll down\|up\|top\|bottom` | 页面操作，靠截图加坐标；自动附带观察；窗口关着就从上次的 URL 重开 |
-| `lore learn <句柄> screenshot` | 截图存进窗口目录的 `screenshots/` |
+| `lore learn <句柄> computer <action> …` | 和 Claude in Chrome 的 `computer` 工具一样的 action 和参数：`screenshot [--scale]`、`zoom <x0> <y0> <x1> <y1>`、`left_click` / `right_click` / `double_click` / `triple_click` / `hover <x> <y> [--modifiers]`、`left_click_drag <sx> <sy> <x> <y>`、`type "文字"`、`key "<键 键…>" [--repeat]`、`scroll <x> <y> <方向> [格数]`、`scroll_to <x> <y>`、`wait <秒>`。坐标是截图上的像素。**只是在 learn 窗口里触发页面行为、让 lore 录到请求，不交付结果**；会改变页面的自动附带观察；窗口关着就从上次的 URL 重开 |
+| `lore learn <句柄> navigate <网址\|back\|forward>` | 和 `navigate` 工具一样：打开网址、后退、前进 |
 | `lore learn <句柄> observe [--all]` | 上次观察以来的新东西，推进游标；默认只列第一次出现的 endpoint，`--all` 列全部 |
 | `lore learn <句柄> run --action <名> [--参数 值]` | 在 learn 窗口当前页面跑一个 action，日志进这个窗口，不变成 verified；输出列出已发出的非 GET 请求 |
 | `lore learn <句柄> close` | 关掉 Chrome 窗口，句柄和目录保留 |
@@ -65,7 +65,7 @@ description: >-
 
 `learn new`、页面操作、`run` 都必须带 `--description`：一句话，用用户的话说这一步要做什么。好："点开变更单 10912 里的 MR 573"；不好："click 410 421"。它会存进时间线、`endpoints.json` 的 `descriptions` 和 compose 的文件头，下次靠它找到这些 endpoint 和做法。
 
-**写代码**：action 文件写 `export default async () => { … return 结果; }`；SDK 的函数不用传 page（`goto(url)`、`click(定位)`、`request({…})`）；变化的值用 `lore.params.名字 ?? 默认值`，不是字符串的在文件头写类型（`@param offset?:number`，也有 `boolean`、`json`），run 时转好；返回字段用页面上的词命名；action 第一步 `goto` 要用的页面（run 窗口每次从空白开始）：`request` 从这个页面发过的请求抄头，DOM 在它上面操作；action 里不能调用别的 action，要串起来就写 compose。会改东西（点赞、提交、删除）的 action 文件头写 `@write`（只是提示，不拦）。重复的小函数挪进 `~/.lore/helpers/`，action 里 `import`。`lore.ask` 只能写在最外层的 compose 里，compose 里不要用时间、随机数决定调哪个 action，`action`、`compose`、`resume`、`answer`、`timeout`、`description` 不能当参数名。三种实现方式按顺序选：`request` > `waitRequest` > DOM。`request`、`waitRequest`、`auth` 等的用法见 `~/.lore/lib/index.js` 的注释和 learn 指引。
+**写代码**：action 文件写 `export default async () => { … return 结果; }`；SDK 的函数不用传 page（`navigate(url)`、`click(定位)`、`key("cmd+a")`、`scroll({ direction })`、`request({…})`），名字和 computer 对齐，只是按持久定位（computer 输出的「定位：…」）而不是坐标；变化的值用 `lore.params.名字 ?? 默认值`，不是字符串的在文件头写类型（`@param offset?:number`，也有 `boolean`、`json`），run 时转好；返回字段用页面上的词命名；action 第一步 `navigate` 要用的页面（run 窗口每次从空白开始）：`request` 从这个页面发过的请求抄头，DOM 在它上面操作；action 里不能调用别的 action，要串起来就写 compose。会改东西（点赞、提交、删除）的 action 文件头写 `@write`（只是提示，不拦）。重复的小函数挪进 `~/.lore/helpers/`，action 里 `import`。`lore.ask` 只能写在最外层的 compose 里，compose 里不要用时间、随机数决定调哪个 action，`action`、`compose`、`resume`、`answer`、`timeout`、`description` 不能当参数名。三种实现方式按顺序选：`request` > `waitRequest` > DOM。`request`、`waitRequest`、`auth` 等的用法见 `~/.lore/lib/index.js` 的注释和 learn 指引。
 
 ## 5. 数据
 

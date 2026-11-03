@@ -10,7 +10,7 @@ import { LearnWindows } from "../learn/windows.ts";
 import { Session } from "../browser/host.ts";
 import { actionSummary } from "../run/actions.ts";
 import { runCommand, type Ctx } from "./index.ts";
-import { parsePointer } from "./learn.ts";
+import { parseComputer } from "./learn.ts";
 import { PendingAsks } from "../run/asks.ts";
 import { EndpointIndex } from "../record/endpoints.ts";
 import { Ingestor, type PageMsg } from "../record/ingest.ts";
@@ -21,13 +21,24 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "lore-cmd-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
 
 // ---- 参数解析 ----
-const ok = (kind: string, args: string[]) => { const r = parsePointer(kind, args); assert.ok("cmd" in r, JSON.stringify(r)); return r.cmd; };
-const bad = (kind: string, args: string[]) => { const r = parsePointer(kind, args); assert.ok("error" in r, JSON.stringify(r)); return r.error; };
-assert.deepEqual(ok("click", ["120", "340.5"]), { kind: "click", x: 120, y: 340.5 });
-assert.deepEqual(ok("type", ["你好", "世界"]), { kind: "type", text: "你好 世界" });
-assert.deepEqual(ok("scroll", ["down", "300", "500", "400"]), { kind: "scroll", dy: 300, x: 500, y: 400 }, "给了坐标就滚那个位置的可滚动区域");
-assert.deepEqual(ok("scroll", ["down", "500", "400"]), { kind: "scroll", dy: 600, x: 500, y: 400 }, "两个数是坐标，不是像素");
-assert.match(bad("click", ["@e12"]), /用法：lore learn <句柄> click <x> <y>/);
+// computer 的参数照工具的 schema：坐标错位、方向写错、超过上限都要拒绝（否则点到别处、滚错方向）
+const ok = (args: string[], o = {}) => { const r = parseComputer(args, o); assert.ok("cmd" in r, JSON.stringify(r)); return r.cmd; };
+const bad = (args: string[], o = {}) => { const r = parseComputer(args, o); assert.ok("error" in r, JSON.stringify(r)); return r.error; };
+assert.deepEqual(ok(["left_click", "120", "340.5"]), { action: "left_click", x: 120, y: 340.5 });
+assert.deepEqual(ok(["right_click", "1", "2"], { modifiers: "Cmd+shift" }), { action: "right_click", x: 1, y: 2, mods: { cmd: true, shift: true } });
+assert.deepEqual(ok(["left_click_drag", "10", "20", "300", "400"]), { action: "left_click_drag", sx: 10, sy: 20, x: 300, y: 400 }, "起点在前");
+assert.deepEqual(ok(["type", "你好", "世界"]), { action: "type", text: "你好 世界" });
+assert.deepEqual(ok(["key", "cmd+a", "Backspace"], { repeat: "3" }), { action: "key", keys: "cmd+a Backspace", repeat: 3 });
+assert.deepEqual(ok(["scroll", "500", "400", "down", "50"]), { action: "scroll", x: 500, y: 400, direction: "down", amount: 10 }, "最多 10 格");
+assert.deepEqual(ok(["scroll", "500", "400", "up"]), { action: "scroll", x: 500, y: 400, direction: "up", amount: 3 }, "默认 3 格");
+assert.deepEqual(ok(["zoom", "0", "0", "200", "100"], { scale: "0.5" }), { action: "zoom", region: [0, 0, 200, 100], scale: 0.5 });
+assert.match(bad(["left_click", "@e12"]), /用法：lore learn <句柄> computer left_click <x> <y>/);
+assert.match(bad(["scroll", "500", "400", "bottom"]), /up\|down\|left\|right/);
+assert.match(bad(["key", "Enter"], { repeat: "101" }), /--repeat/);
+assert.match(bad(["left_click", "1", "2"], { modifiers: "hyper" }), /不认识的修饰键/);
+assert.match(bad(["zoom", "100", "100", "50", "50"]), /左上角和右下角/);
+assert.match(bad(["wait", "30"]), /最多 10 秒/);
+assert.match(bad(["click", "1", "2"]), /computer 的 action 是/);
 
 // ---- 假的 daemon 能力 ----
 const log = new WindowLog({ root });
@@ -48,13 +59,13 @@ const host = {
   op: async (s: Session, name: string, a: Record<string, unknown>) => {
     WINS[20] = s.key;
     s.tab = 20; s.origin = "https://www.x.com";
-    if (name === "goto") {
-      ingest.endCmd(ingest.beginCmd(20, Date.now(), "goto", page, undefined, "x.com"), { detail: { ok: true } });
+    if (name === "navigate") {
+      ingest.endCmd(ingest.beginCmd(20, Date.now(), "navigate", page, undefined, "x.com"), { detail: { ok: true } });
       ingest.handleBatch([net(Date.now(), { id: 1, rid: "p:1", url: "https://www.x.com/api/feed", body: "{\"items\":[]}", size: 12, at: 10 })]);
       return { url: page, title: "示例" };
     }
     if (name === "pointer") {
-      const ref = ingest.beginCmd(20, Date.now(), String(a.kind), "x", { description: a.description }, "x.com");
+      const ref = ingest.beginCmd(20, Date.now(), String(a.action), "x", { description: a.description }, "x.com");
       ingest.handleBatch([net(Date.now() + 20, { id: 2, rid: "p:2", method: "POST", url: "https://www.x.com/api/answers/12345678/voters", reqHeaders: { "x-xsrftoken": "XSRF-REAL-0123456789", "x-zse-96": "2.0_SIGN" }, reqBody: "{\"type\":\"up\"}", body: "{\"ok\":1}", size: 8 })]);
       ingest.endCmd(ref, { detail: { description: a.description, ok: true } });
       return { ok: true, loc: { role: "button", name: "赞同" }, settle: { settled: true, waitedMs: 100 } };
@@ -105,16 +116,21 @@ const again = await run("learn", id, "observe");
 assert.deepEqual(seqsIn(again.stdout), [], "已经观察过的不再出现");
 
 // 页面操作自动附带观察：只列这一步之后的；请求行没有 write 前缀，带语义化的请求文件名
-const clicked = await run("learn", id, "click", "100", "200", "--description", "点第一个赞同");
+const clicked = await run("learn", id, "computer", "left_click", "100", "200", "--description", "点第一个赞同");
 const second = seqsIn(clicked.stdout);
 assert.equal(second.length, 1); assert.ok(second[0]! > first[0]!);
 assert.match(clicked.stdout, /\n  #\d+ POST \/api\/answers\/:id\/voters → 200 application\/json，有响应体，requests\/\d{6}-POST-api-answers-_id-voters\.json/);
 
 // 请求头的信号：cookie 里的值认出来（给 auth 用）；输出里只有类别和来源，没有真值；不再有 request 草稿
-assert.match(clicked.stdout, /^ok click/);
+assert.match(clicked.stdout, /^ok computer left_click/);
 assert.match(clicked.stdout, /请求头：.*x-xsrftoken 样本太少 ← cookie _xsrf.*x-zse-96 样本太少/);
 assert.ok(!clicked.stdout.includes("草稿"), "观察里没有草稿");
 assert.ok(!clicked.stdout.includes("XSRF-REAL-0123456789"), "输出里没有 auth 头的真值");
+// computer 只是触发：这一步引发了没有 action 覆盖的 endpoint 时提醒写成 action（否则 agent 容易把看到的直接交给用户）
+assert.match(clicked.stdout, /下一步：POST \/api\/answers\/:id\/voters 还没有 action 覆盖 → 要用的写成 action/);
+// close 时这个窗口学到的还没用 lore run 交付过：提醒一次
+const closed = await run("learn", id, "close");
+assert.match(closed.stdout, /^ok 已关掉/); assert.match(closed.stdout, /还没用 lore run 交付过/);
 
 // 晚到的请求（操作之后才到）：下一次观察出现，而且只出现一次
 ingest.handleBatch([net(Date.now() + 5000, { id: 3, rid: "p:3", url: "https://www.x.com/api/lazy", body: "{}", size: 2 })]);
@@ -173,5 +189,10 @@ assert.equal(actionSummary(path.join(actions, "search.js")).status, "verified", 
 index.flush();
 for (const f of fs.readdirSync(root, { recursive: true, withFileTypes: true })) if (f.isFile()) assert.ok(!fs.readFileSync(path.join(f.parentPath, f.name)).includes("XSRF-REAL-0123456789"), `${f.name} 里不该有真值`);
 assert.deepEqual(JSON.parse(fs.readFileSync(path.join(log.dir, "x.com", "endpoints.json"), "utf8")).endpoints.find((e: { key: string }) => e.key === "POST /api/answers/:id/voters").headers["x-xsrftoken"], { kind: "few", source: "cookie:_xsrf" }, "类别和来源记进 endpoints.json，没有值");
+
+// 跑过成功的 run 之后再 close：不再提醒
+await run("learn", id, "computer", "left_click", "1", "1", "--description", "重新打开窗口");
+const closedAgain = await run("learn", id, "close");
+assert.ok(!closedAgain.stdout.includes("还没用 lore run 交付过"), closedAgain.stdout);
 
 console.log("commands.selfcheck ok");

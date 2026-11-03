@@ -52,16 +52,17 @@ npm run verify:pack
 2. 只录 agent 窗口：用 Claude in Chrome 在用户窗口里浏览、点击几个站点，`~/.lore` 下不产生任何新行和新文件。
 3. 走一遍 learn 窗口，至少在三个站点上试：一个公共站点、一个 GraphQL 站点、一个公司内部多子域站点：
    - `lore learn new --url <链接|tab 号> --description "…"`（`tab 号` 用 `lore tabs` 按标题对出来）：第一行 `ok`，拿到句柄 `<站点>-<时间>`，输出里有窗口目录、learn 指引的路径（第一次或有更新时附全文，写在 `~/.lore/learn-guide.md`）、起点的观察结果。
-   - **观察**：多步操作（`screenshot` 加坐标 `click` / `type` / `key` / `scroll`，都带 `--description`），每步附带的观察和实际操作相符、这一步引发的请求不用再单独 `observe` 就在里面（「稳定：」写了等了多久），输出里的文件名在窗口目录里都找得到、是语义化的（`requests/<编号>-<方法>-<endpoint 名>.json`）；等几秒单独 `observe`，拿到晚到的请求，且和上一次不重复；第二步之后的观察不再列 `/me` 这类前面出现过的 endpoint，`observe --all` 列全部。页面跳到别的站点时写明站点。
-   - **请求头和在窗口里 run**：观察里带非浏览器头的请求有一行「请求头」（值怎么变、页面里的位置），和实际相符、没有真值；action 只写 `request({ url, method, json })`，`lore learn <句柄> run --action <名> --参数 值` 在当前页面跑通、换参数也跑通，不变成 verified；run 窗口里同样跑通（头从这次窗口里页面发过的请求抄）；故意去掉 `goto` 让它被拒，失败输出写清抄了什么、没抄什么。
+   - **观察**：多步操作（`computer screenshot` 加坐标 `computer left_click` / `type` / `key` / `scroll`，都带 `--description`），每步附带的观察和实际操作相符、这一步引发的请求不用再单独 `observe` 就在里面（「稳定：」写了等了多久），输出里的文件名在窗口目录里都找得到、是语义化的（`requests/<编号>-<方法>-<endpoint 名>.json`）；等几秒单独 `observe`，拿到晚到的请求，且和上一次不重复；第二步之后的观察不再列 `/me` 这类前面出现过的 endpoint，`observe --all` 列全部。页面跳到别的站点时写明站点。
+   - **请求头和在窗口里 run**：观察里带非浏览器头的请求有一行「请求头」（值怎么变、页面里的位置），和实际相符、没有真值；action 只写 `request({ url, method, json })`，`lore learn <句柄> run --action <名> --参数 值` 在当前页面跑通、换参数也跑通，不变成 verified；run 窗口里同样跑通（头从这次窗口里页面发过的请求抄）；故意去掉 `navigate` 让它被拒，失败输出写清抄了什么、没抄什么。
    - **写请求**：点赞这类轻量写操作真的发出（站点上看得到结果）；带 `@write` 的 action 在 learn 窗口里 `run` 直接发，输出的「已发出的非 GET 请求」和实际一致；观察里的请求行没有 `write` 前缀。
+   - **computer 对齐和「下一步」**：`computer` 的 13 个 action 都能用（`zoom` 的图只有那块、`hover` 出悬停菜单、`left_click_drag` 拖得动、`type` 时页面收到按键事件）；`navigate back` 能后退；这一步引发了没有 action 覆盖的 endpoint 时有「下一步」提醒，已有 action 覆盖的没有；`close` 前没跑过成功的 `lore run` 有提醒。
    - **一个窗口学多个 action**：在同一个窗口里写两个 action（draft），`run --compose-code …` 新开 run 窗口、跑完窗口消失、`run-windows/<名字>/` 有日志和 meta、两个 draft 变成 verified、`endpoints.json` 没有多出 run 窗口的请求；多行 `@endpoint` 漏了前置请求时不变成 verified 并说明。
-   - **持久**：`learn <句柄> close` 后、`lore daemon restart` 后，对同一个句柄 `screenshot` / `click`：窗口从上次的 URL 重新打开，日志接着写进同一个目录，游标接着上次；新句柄不重名。learn 窗口空闲 30 分钟自动关。
+   - **持久**：`learn <句柄> close` 后、`lore daemon restart` 后，对同一个句柄 `computer screenshot` / `computer left_click`：窗口从上次的 URL 重新打开，日志接着写进同一个目录，游标接着上次；新句柄不重名。learn 窗口空闲 30 分钟自动关。
    - **run 窗口**：同一个站点连跑两次 `run`，第二次不沿用第一次的页面；两个 `run` 同时跑，各开各的窗口，互不排队。
    - **description 与 compose**：操作的 `--description` 进了时间线，并出现在 endpoint 的 `endpoints.json` 的 `descriptions` 里；compose 文件出现在 `~/.lore/compose/`，`rg` 能用 description 里的词命中，`lore run --compose <名>` 带别的参数再跑一次，`@description` 多一句。
    - **@write 和 compose**：带 `@write` 的 draft 在 `lore status` 里标出；学出来的 action 里调用 `action()` 被拒；compose 里 `action()` 不用 import 就能用。
-   - **SDK、参数、helpers**：`export default async () => …` 加 `goto(url)`、`request({…})` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.lore/helpers/` 里的函数被 action `import` 后能跑，`lore daemon restart` 后还在；`--compose` 写哈希前几位能跑。
-4. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露"等页面加载完"这类问题）：量 `lore learn <句柄> open`、`lore run` 的耗时（新开 run 窗口的代价，尤其是 daemon 刚重启、request 要等页面先发请求才能抄头时）。
+   - **SDK、参数、helpers**：`export default async () => …` 加 `navigate(url)`、`request({…})`、`key(…)`、`scroll({ direction })` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.lore/helpers/` 里的函数被 action `import` 后能跑，`lore daemon restart` 后还在；`--compose` 写哈希前几位能跑。
+4. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露"等页面加载完"这类问题）：量 `lore learn <句柄> navigate`、`lore run` 的耗时（新开 run 窗口的代价，尤其是 daemon 刚重启、request 要等页面先发请求才能抄头时）。
 
 日常 Chrome 里测试时日志含登录态内容，在 `~/.lore/learn-windows`、`~/.lore/run-windows`；测完删除测试用的窗口目录。
 

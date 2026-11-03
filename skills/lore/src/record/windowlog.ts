@@ -142,6 +142,11 @@ export class WindowLog {
   }
 
   /** 某一种窗口，按创建时间从旧到新。 */
+  /** t 之后开的 run 窗口的 meta（learn close 时看这个窗口学到的有没有用 lore run 交付过）。 */
+  runsSince(t: number): WindowMeta[] {
+    return this.listWindows("run").map((w) => this.readMeta(w)).filter((m): m is WindowMeta => !!m && Number(m.createdAt) >= t);
+  }
+
   listWindows(kind: WinKind): string[] {
     return [...this.wins].filter(([, u]) => u.kind === kind).sort((a, b) => a[1].createdAt - b[1].createdAt).map(([win]) => win);
   }

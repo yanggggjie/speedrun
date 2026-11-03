@@ -4,19 +4,20 @@
 // daemon → 扩展：{ id, name, args }，应答 { id, result | error }
 //   call { tabId, fn, args }          在页面（MAIN world）里调用 window.__lore.exec[fn](...args)，等它的结果（可以是 Promise）
 //   tabs {}                            http/https 标签页，加上 anchor 页（标题 lore agent，extension 页，anchor: true）
-//   goto { tabId, url, wait }          在这个标签页里打开网址；wait 为真时等文档可用（readyState 不再是 loading，不等子资源；最多 15 秒）
+//   goto { tabId, url, wait, waitMs } 在这个标签页里打开网址；wait 为真时等文档可用（readyState 不再是 loading，不等子资源；最多 waitMs）
+//   history { tabId, dir, waitMs }    后退（dir: back）或前进（forward），等文档可用
 //   openWindow { url, anchor }         新开窗口（不抢焦点）；anchor 为真时打开 anchor 页
 //   openTab { windowId, url, active }  在窗口里新开标签页
 //   activateTab { tabId }              把标签页切到所在窗口的前台（后台标签页浏览器不渲染）
 //   closeTab { tabId } | closeWindow { windowId }
-//   screenshot { tabId }               截图：把标签页切到前台，截可见区域，缩到视口的 CSS 像素尺寸（截图上的坐标就是页面坐标），返回 { data(base64), mime, w, h }
+//   screenshot { tabId, region?, scale? } 截图：把标签页切到前台，截可见区域，缩到视口的 CSS 像素尺寸（截图上的坐标就是页面坐标）；region [x0,y0,x1,y1] 只要这块（zoom），scale 再缩小；返回 { data(base64), mime, w, h（图的尺寸）, vw, vh（视口） }
 // 扩展 → daemon：{ type: "hello", abi, ... } | { type: "page", tab, win, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化和关闭；win 是标签页所在的浏览器窗口）
 //
 // 只录 agent 自己的标签页：lore 开的（openWindow、openTab），以及被它们打开的（target=_blank、window.open，看 openerTabId）。
 // 窗口里有 anchor 页（标题 lore agent）只说明这是 agent 窗口，用户在这个窗口里自己开的标签页（Cmd+T、别的扩展开的）不算、不录。
 // 页面脚本加载时经 bridge 问一次，不是 agent 标签页就不再上报任何东西；地址变化也只转 agent 标签页的。
 
-const ABI = 11;
+const ABI = 12;
 const HOST = "com.lore.connect";
 const RETRY_MAX_MS = 30_000;
 const KEEPALIVE_MINUTES = 0.5;
@@ -153,6 +154,17 @@ async function runOp(name, args) {
       }
       return { tabs: out };
     }
+    case "history": {
+      // 后退、前进（navigate back / forward）
+      // 用页面自己的 history（chrome.tabs.goBack 对 tabs.update 打开的页面会报「没有下一页」）；地址没变就是没有可退的
+      const before = (await chrome.tabs.get(args.tabId)).url;
+      const wait = waitReady(args.tabId, null, args.waitMs);
+      await chrome.scripting.executeScript({ target: { tabId: args.tabId }, func: (dir) => (dir === "back" ? history.back() : history.forward()), args: [args.dir] });
+      const loaded = await wait;
+      const tab = await chrome.tabs.get(args.tabId);
+      if (tab.url === before) throw new Error(`history：没有可以${args.dir === "back" ? "后退" : "前进"}的页面`);
+      return { url: tab.url || "", title: tab.title || "", loaded };
+    }
     case "goto": {
       const wait = args.wait ? waitReady(args.tabId, args.url, args.waitMs) : null;
       await chrome.tabs.update(args.tabId, { url: args.url });
@@ -187,13 +199,19 @@ async function runOp(name, args) {
       if (!w || !h) throw new Error("取不到页面视口大小（受限页面截不了图）");
       const shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
       const bitmap = await createImageBitmap(await (await fetch(shot)).blob());
-      const canvas = new OffscreenCanvas(w, h);
-      canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+      // 先按视口缩到 CSS 像素（图上一个像素就是一个 CSS 像素），再按 region 裁剪（zoom）、按 scale 缩小；坐标始终按 CSS 像素算
+      const [x0, y0, x1, y1] = Array.isArray(args.region) ? args.region.map(Number) : [0, 0, w, h];
+      const rw = Math.max(1, Math.min(w, x1) - Math.max(0, x0)), rh = Math.max(1, Math.min(h, y1) - Math.max(0, y0));
+      const scale = Number(args.scale) > 0 && Number(args.scale) <= 1 ? Number(args.scale) : 1;
+      const kx = bitmap.width / w, ky = bitmap.height / h;
+      const outW = Math.max(1, Math.round(rw * scale)), outH = Math.max(1, Math.round(rh * scale));
+      const canvas = new OffscreenCanvas(outW, outH);
+      canvas.getContext("2d").drawImage(bitmap, Math.max(0, x0) * kx, Math.max(0, y0) * ky, rw * kx, rh * ky, 0, 0, outW, outH);
       const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.7 });
       const bytes = new Uint8Array(await blob.arrayBuffer());
       let bin = "";
       for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      return { data: btoa(bin), mime: "image/jpeg", w, h };
+      return { data: btoa(bin), mime: "image/jpeg", w: outW, h: outH, vw: w, vh: h };
     }
     case "closeWindow": {
       await chrome.windows.remove(args.windowId);

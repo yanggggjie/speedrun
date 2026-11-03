@@ -182,11 +182,11 @@ export class RunHost {
   async op(s: Session, name: string, a: any): Promise<unknown> {
     if (s.composeOnly) throw new Error(`compose 代码里只能调用 action（action("名字", 参数)），不能操作页面：缺的 action 先 lore learn 学会`);
     switch (name) {
-      case "goto": return this.goto(s, a);
+      case "navigate": return this.navigate(s, a);
       case "request": return this.request(s, a);
       case "act": return this.act(s, a);
       case "pointer": return this.act(s, a, "pointer");
-      case "screenshot": return this.screenshot(s);
+      case "screenshot": return this.screenshot(s, a);
       case "waitFor": return this.waitFor(s, a);
       case "text": { const tab = this.page(s); return this.callTab(tab, "text", [a.max ?? 20_000]); }
       case "query": { const tab = this.page(s); return this.callTab(tab, "query", [a]); }
@@ -228,13 +228,15 @@ export class RunHost {
     }
   }
 
-  private async goto(s: Session, a: { url: string; timeout?: number; description?: string; settle?: boolean }): Promise<{ url: string; title: string }> {
+  /** 打开网址，或 back / forward 后退前进（和 navigate 工具一样）；settle 为真再等页面安静。 */
+  private async navigate(s: Session, a: { url: string; timeout?: number; description?: string; settle?: boolean }): Promise<{ url: string; title: string }> {
+    if (a.url === "back" || a.url === "forward") return this.history(s, a.url, a);
     let url: URL;
     try { url = new URL(a.url.includes("://") ? a.url : `https://${a.url}`); if (!/^https?:$/.test(url.protocol)) throw new Error("协议"); } catch { throw new Error(`不是有效的网址：${a.url}`); }
     const tab = await this.bind(s, url.origin);
     await this.d.win.activate(tab);
     const safe = this.d.ingest.sanitizer.url(url.href);
-    return this.log(tab, "goto", safe.bareUrl, { bareUrl: safe.bareUrl, query: safe.query, ...(a.description ? { description: a.description } : {}) }, async () => {
+    return this.log(tab, "navigate", safe.bareUrl, { bareUrl: safe.bareUrl, query: safe.query, ...(a.description ? { description: a.description } : {}) }, async () => {
       let res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as { url: string; title: string; loaded?: boolean };
       // 新开的标签页还在加载占位的 robots.txt 时，这次跳转会被它盖掉：停在占位页上就再跳一次
       if (/\/robots\.txt$/.test(res.url) && !/\/robots\.txt$/.test(url.pathname)) res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as typeof res;
@@ -244,6 +246,20 @@ export class RunHost {
       if (a.settle) await this.quiet(s);
       return { url: res.url, title: res.title };
     }, undefined, siteOfUrl(url.href) || undefined);
+  }
+
+  private async history(s: Session, dir: "back" | "forward", a: { timeout?: number; description?: string; settle?: boolean }): Promise<{ url: string; title: string }> {
+    const tab = this.page(s);
+    await this.d.win.activate(tab);
+    return this.log(tab, "navigate", dir, { dir, ...(a.description ? { description: a.description } : {}) }, async () => {
+      let res: { url: string; title: string };
+      try { res = (await withTimeout(this.d.link.request("history", { tabId: tab, dir, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, dir === "back" ? "后退" : "前进")) as typeof res; }
+      catch (e) { if (/history/i.test(e instanceof Error ? e.message : String(e))) throw new Error(`没有可以${dir === "back" ? "后退" : "前进"}的页面（这个标签页的历史里没有）：用 navigate <网址> 直接打开`); throw e; }
+      if (res.url) { s.origin = originOf(res.url); this.d.win.moved(tab, s.origin); }
+      s.fresh = true;
+      if (a.settle) await this.quiet(s);
+      return { url: res.url, title: res.title };
+    });
   }
 
   /**
@@ -351,21 +367,24 @@ export class RunHost {
   }
 
   /** 截图（learn 用）：返回 { data(base64), mime, w, h }；图上坐标就是页面视口的 CSS 像素。图片本身不进日志。 */
-  private async screenshot(s: Session): Promise<{ data: string; mime: string; w: number; h: number }> {
+  /** 截图（learn 的 computer screenshot / zoom）：region 只要这块，scale 缩小；返回图和视口尺寸。图片本身不进日志。 */
+  private async screenshot(s: Session, a: { region?: number[]; scale?: number } = {}): Promise<{ data: string; mime: string; w: number; h: number; vw: number; vh: number }> {
     const tab = this.page(s);
     await this.d.win.activate(tab);
-    return this.log(tab, "screenshot", "", {}, async () => (await withTimeout(this.d.link.request("screenshot", { tabId: tab }), STEP_TIMEOUT_MS, "截图")) as { data: string; mime: string; w: number; h: number }, (r) => ({ w: r.w, h: r.h }));
+    const args = { tabId: tab, ...(a.region ? { region: a.region } : {}), ...(a.scale ? { scale: a.scale } : {}) };
+    return this.log(tab, a.region ? "zoom" : "screenshot", a.region ? a.region.join(",") : "", {}, async () => (await withTimeout(this.d.link.request("screenshot", args), STEP_TIMEOUT_MS, "截图")) as { data: string; mime: string; w: number; h: number; vw: number; vh: number }, (r) => ({ w: r.w, h: r.h }));
   }
 
   /** fn 是页面里的执行函数：act 按定位（action 用），pointer 按屏幕坐标（截图 learn 用）。 */
   private async act(s: Session, a: any, fn: "act" | "pointer" = "act"): Promise<unknown> {
     const tab = this.page(s);
     const cmd = { ...a };
+    const kind = String(a.kind ?? a.action);
     const at = a.x !== undefined && a.y !== undefined ? `(${a.x},${a.y})` : "";
-    const target = a.loc !== undefined ? JSON.stringify(a.loc).slice(0, 60) : at || (a.key ?? a.to ?? "");
-    const base = { kind: a.kind, ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(at ? { x: a.x, y: a.y } : {}), ...(a.key ? { key: a.key } : {}), ...(a.dy !== undefined ? { dy: a.dy } : {}), ...(a.to ? { to: a.to } : {}), ...(a.checked !== undefined ? { checked: a.checked } : {}), ...(a.description ? { description: a.description } : {}) };
+    const target = a.loc !== undefined ? JSON.stringify(a.loc).slice(0, 60) : at || (a.keys ?? a.direction ?? "");
+    const base = { kind, ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(at ? { x: a.x, y: a.y } : {}), ...(a.sx !== undefined ? { sx: a.sx, sy: a.sy } : {}), ...(a.keys ? { keys: a.keys } : {}), ...(a.direction ? { direction: a.direction, amount: a.amount } : {}), ...(a.mods ? { mods: a.mods } : {}), ...(a.checked !== undefined ? { checked: a.checked } : {}), ...(a.description ? { description: a.description } : {}) };
     delete cmd.settle;
-    return this.log(tab, a.kind, target, base, async () => {
+    return this.log(tab, kind, target, base, async () => {
       let res: any;
       try { res = await withTimeout(this.callTab(tab, fn, [cmd]), (a.timeout ?? 10_000) + 5_000, "页面操作"); }
       catch (e) {
@@ -379,7 +398,7 @@ export class RunHost {
       }
       if (a.settle === true) res.settle = await this.quiet(s);
       return res;
-    }, (r: any) => ({ loc: r.loc, ...((a.kind === "fill" || a.kind === "type") && r.target?.type !== "password" ? { text: String(a.text ?? "").slice(0, 200) } : {}), ...(a.kind === "select" ? { text: String(a.text ?? "") } : {}), url: r.url }));
+    }, (r: any) => ({ loc: r.loc, ...((kind === "fill" || kind === "type") && r.target?.type !== "password" ? { text: String(a.text ?? "").slice(0, 200) } : {}), ...(kind === "select" ? { text: String(a.text ?? "") } : {}), url: r.url }));
   }
 
   private async waitFor(s: Session, a: { loc: unknown; timeout?: number; gone?: boolean }): Promise<unknown> {

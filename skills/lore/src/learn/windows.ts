@@ -78,7 +78,7 @@ export class LearnWindows {
     this.log.openWindow(w.id, "learn");
     sess = new Session(w.id);
     this.sessions.set(w.id, sess);
-    const res = (await this.d.host.op(sess, "goto", { url: w.url || `https://${w.site}/` })) as { url: string; title: string };
+    const res = (await this.d.host.op(sess, "navigate", { url: w.url || `https://${w.site}/` })) as { url: string; title: string };
     w.open = true;
     w.url = res.url;
     w.title = res.title;
