@@ -14,9 +14,10 @@ lore 的目标、设计原则和运行时实现：每一部分是谁实现的、
 设计原则（agent 的使用原则在 `SKILL.md` 第 2 节）：
 1. **唯一目标：更快完成眼前的任务。** 结果只来自 `lore run`（毫秒级）。存下来的东西（action、compose、description）是顺带的，由 lore 自动存，agent 不做单独的保存、维护。这是 SKILL 里的约定，没有强制检查。
 2. **只录 agent 的窗口。** 用户的窗口和标签页不录、不碰，只读标签页列表（地址、标题）；要看用户手上的页面，就在 learn 窗口里重新打开它，从加载开始录。用户很久以前做的操作，agent 不知道请求的来源和意图；只学 agent 自己做出来的请求才准。
-3. **秘密不落盘、不进上下文。** 原始请求（含 token 真值）只在 daemon 内存里；日志、请求文件、观察输出里是别名。这不是对 agent 的隔离：action 和页面脚本与用户同权限（`evaluate` 能读页面的 cookie、localStorage，action 的 worker 有完整的 Node 权限），保证的只是真值不写盘、不出现在 agent 读到的文字里。
+3. **秘密不落盘、不进上下文。** 原始请求（含 token 真值）只在 daemon 内存里；日志、请求文件、观察输出里是别名。这不是对 agent 的隔离：action 和页面脚本与用户同权限（`evaluate` 能读页面的 cookie、localStorage，action 的 worker 有完整的 Node 权限），保证的只是真值不写盘、不出现在 agent 读到的文字里。原始请求按窗口存，窗口关掉（learn `close`、run 结束）就清掉。
 4. **日志和 action 都是文件。** 能读文件的不做命令，agent 用 `rg`、`node`、Python 直接读；lore 的命令只做必须由它做的事（控制浏览器、持有不能落盘的原始请求）。
-5. **命令面最小，显式区分优于隐式区分。** 同一条命令不因为 agent 看不到的状态做不同的事。run 窗口每次从空白开始、`run` 的 `--action` / `--compose` / `--compose-code` 三选一，都是为此。
+5. **命令面最小，显式区分优于隐式区分。** 同一条命令不因为 agent 看不到的状态做不同的事。run 窗口每次从空白开始、`run` 的 `--action` / `--compose` / `--compose-code` 三选一，都是为此。run 的行为只取决于 action 文件和这次窗口里发生的事：不读 `endpoints.json`，不用以前或别的窗口的原始请求。
+6. **lore 给信号，run 的结果和 agent 来定。** lore 只做必须由它做、而且做得准的事：用内存里的真值统计、按固定规则继承复用、把失败说清楚；不提前替 agent 下「这个请求该怎么发」的结论。用哪个请求、用 `request`、`waitRequest` 还是 DOM，由 agent 看信号决定，以 run 的真实结果为准。
 
 ## 2. 两种窗口与它们的保证
 
@@ -67,15 +68,15 @@ daemon 内部分四层，上层只依赖下层：
 | 层 | 目录 | 只做 |
 |---|---|---|
 | 命令 | `commands/` | argv 解析（`args.ts`）、调用下层、按输出约定拼文本；不持有状态 |
-| learn 与 run | `learn/`、`run/` | learn 窗口的登记和页面（`LearnWindows` 持有每个窗口当前的 `Session`）、观察和草稿；action 运行时（`ActionRunner` 持有 `lore.ask` 的恢复记录）、action 和 compose 文件 |
+| learn 与 run | `learn/`、`run/` | learn 窗口的登记和页面（`LearnWindows` 持有每个窗口当前的 `Session`）、观察和请求头的信号；action 运行时（`ActionRunner` 持有 `lore.ask` 的恢复记录）、action 和 compose 文件 |
 | 控制浏览器 | `browser/` | 扩展链路、agent 窗口池（`AgentWindows`）、页面操作（`RunHost`），learn 和 run 共用 |
-| 录制与存储 | `record/` | 收页面消息、脱敏、写日志、`endpoints.json`、淘汰、原始请求的内存表、auth 来源判断 |
+| 录制与存储 | `record/` | 收页面消息、脱敏、写日志、`endpoints.json`、淘汰、原始请求的内存表（按窗口）、请求头的统计和来源比对 |
 
 `daemon.ts` 只做组装（`build` 按依赖顺序一次建好）、socket 和定时任务。定时写盘出错（磁盘满、没权限）只记进运行时日志，不让 daemon 退出：退出会丢掉内存里的原始请求、ask 恢复记录和 learn 窗口的页面。
 
 - 命令入口：`src/cli/lore.ts` 没有命令逻辑，`lore <argv>` 原样发给 daemon 的 `run` RPC，daemon 调 `commands/index.ts` 的 `runCommand`，返回 `{ stdout, code }`。daemon 不在时 CLI 会拉起它，存活判据只有一条：socket 能不能回 `ping`。socket 权限 0600，连接按 UTF-8 解码。
 - 要经扩展的命令先 `ensureExtension`：没装 host → `need-install`；Chrome 没运行 → `need-chrome`；等不到扩展 → `need-extension`；扩展 ABI 不对 → 明确让用户刷新扩展。`status`、关着的窗口上的 `observe` 不需要扩展。
-- **输出约定**（`protocol.ts`）：第一行是结论，以 `ok`、`fail`、`ask` 开头，退出码 0、1、2（`ask` 和 `fail need-*` 是 2：要 agent 判断或要用户做一件事，不算失败）；后面是「标题：内容」的几段，多行内容缩进两格：`页面`、`导航`、`请求`、`依赖`、`没列出`（观察），`定位`、`草稿`（页面操作），`结果`（action 的返回值，JSON）、`错误`、`已发出的 write 请求`、`run 窗口目录`、`已变成 verified`（run），`下一步`（建议，最多一两句，和事实分开）。路径一律是绝对路径。
+- **输出约定**（`protocol.ts`）：第一行是结论，以 `ok`、`fail`、`ask` 开头，退出码 0、1、2（`ask` 和 `fail need-*` 是 2：要 agent 判断或要用户做一件事，不算失败）；后面是「标题：内容」的几段，多行内容缩进两格：`页面`、`导航`、`请求`（下面可能有一行 `请求头`）、`依赖`、`没列出`（观察），`定位`、`稳定`（页面操作），`结果`（action 的返回值，JSON）、`错误`、`已发出的 write 请求`、`run 窗口目录`、`已变成 verified`（run），`下一步`（建议，最多一两句，和事实分开）。路径一律是绝对路径。
 - relay 断开（刷新扩展、service worker 重启、Chrome 重启）是日常事件，daemon 只 `detach` 链路，日志照写。
 - daemon 启动时：按依赖顺序建好各部件（`daemon.ts` 的 `build`）、打开窗口日志、同步 action SDK、加载 adblock 规则；每 10 秒按额度淘汰日志；每分钟关掉空闲的 learn 窗口。
 
@@ -126,17 +127,18 @@ daemon 内部分四层，上层只依赖下层：
 
 **请求文件**：`method`，`url{bareUrl, query}`（查询参数已解析），`frameUrl`，`headers`，`requestBody`（JSON 和表单已解析成对象），`status`，`responseHeaders`，`responseBodyPath`（相对窗口目录），`startedAt` `endedAt`；lore 另加 `seq` `win` `endpoint` `requestType` `tab` `rid` `cause` `causeDt` `phase`，失败的有 `error`，被截断的有 `truncated`，没存响应体的有 `bodyOmitted`（原因：`noise` `cross-site` `large-error` `no-body` `error`）。**token、Cookie、密码是别名 `⟨secret_…⟩`**，真值只在 daemon 内存里，agent 拿不到。
 
-**endpoints.json**：`{ site, updatedAt, endpoints: [{ key, method, host, name, count, firstSeq, lastSeq, lastStatus, cmdTriggered, onLoad, idle, lastCause, descriptions, variables, shape, auth, samples, action }] }`。只由 learn 窗口的记录累积。`key` 是 `方法 路径`；`cmdTriggered` / `onLoad` / `idle` 按 `phase` 统计；`variables` 是能改的参数，`shape` 是响应结构；`samples` 是最近 5 次成功请求（`file`、`body` 相对 `~/.lore`，`available` 为假表示文件已被淘汰）；`action` 是覆盖它的 action 名（多行 `@endpoint` 每一行都算）；`auth` 是 auth 头的来源（`cookie:_xsrf`、`local:…`，或 `signed` / `static` / `unknown`），`signed` 为真表示带签名头、换参数可能被拒（以 run 的结果为准）；`descriptions` 是这个 endpoint 的**description**：引发它的操作、跑覆盖它的 action 时带的 `--description`（`{ text, from, t }`，只收成功的，最近 5 句，新的在前）。不排序，由你筛。文件可能比日志晚两秒，要最新就读时间线。
+**endpoints.json**：`{ site, updatedAt, endpoints: [{ key, method, host, name, count, firstSeq, lastSeq, lastStatus, cmdTriggered, onLoad, idle, lastCause, descriptions, variables, shape, headers, samples, action }] }`。只由 learn 窗口的记录累积。`key` 是 `方法 路径`；`cmdTriggered` / `onLoad` / `idle` 按 `phase` 统计；`variables` 是能改的参数，`shape` 是响应结构；`samples` 是最近 5 次成功请求（`file`、`body` 相对 `~/.lore`，`available` 为假表示文件已被淘汰）；`action` 是覆盖它的 action 名（多行 `@endpoint` 每一行都算）；`headers` 是请求头的信号（learn 窗口观察时算的最近一次）：头名 → `{ kind, source? }`，`kind` 是值在这个窗口的同站请求里怎么变（`page` 页面级不变、`endpoint` 按 endpoint 不变、`varies` 每次都变、`few` 样本太少），`source` 是它在页面里的位置（`cookie:_xsrf`、`local:…`，给 `request` 的 `auth` 用）；只有名字和类别，没有值，只给 agent 读，run 不读；`descriptions` 是这个 endpoint 的**description**：引发它的操作、跑覆盖它的 action 时带的 `--description`（`{ text, from, t }`，只收成功的，最近 5 句，新的在前）。不排序，由你筛。文件可能比日志晚两秒，要最新就读时间线。
 
 
 ## 7. 执行
 
 - **agent 窗口**（`browser/window.ts`）：一个窗口名一个 Chrome 窗口，第一个标签页是 anchor 页（标题 `lore agent`）；其余标签页在窗口内按 origin 池化，保证请求和页面同源。窗口名到 Chrome 窗口的映射只在内存里：daemon 重启后留下的都是孤儿，第一次用时全部关掉。
-- **RunHost**（`browser/host.ts`）：action 的每个操作都在这里执行并写一行 `cmd`。`request` 默认继承同站点最近一个带 auth 头的原始请求的请求头（内存里没有就先打开站点首页让页面发一次）；`inheritFrom` 只从指定 endpoint 继承（签名和 endpoint 绑定的站点用）；`auth` 声明的头发送时在页面里现读；`waitRequest` 等页面自己发出的第一个匹配请求。
+- **RunHost**（`browser/host.ts`）：action 的每个操作都在这里执行并写一行 `cmd`。三种实现方式按顺序选：`request` > `waitRequest` > DOM。
+  - `request` 的请求头按顺序凑齐，尽量继承复用：① 浏览器自己带的（cookie）；② 从这次窗口里页面发过的同站请求抄（`copyHeaders`）：页面发过同一个 endpoint 就整组抄它最近一次的，否则按 `record/headers.ts` 的 `headerKinds` 只抄页面级不变的头，每次都变的不跨 endpoint 抄；这次窗口里还没有同站请求就等 1.5 秒；③ `auth` 声明的页面固定位置（cookie、localStorage、sessionStorage、meta），发送时在页面里现读；④ 前序请求的值由 action 代码写进 `headers`；`headers` 显式写的最后覆盖。cmd 行的 `detail` 记下抄自哪些 endpoint、抄了和没抄的头名。被 401/403 拒时，run 的 `hint` 写清楚抄了什么、没抄什么、下一步（`takeRejected`）。和当前页面同一注册域名的请求在当前页面上发，否则在请求自己的 origin 上开页面发。
+  - `waitRequest` 等页面自己发出的第一个匹配请求，签名由页面算。
 - **ActionRunner**（`run/runner.ts`）：action 在 worker 线程里跑，SDK（`action-lib/index.js`，daemon 每次启动整个覆盖到 `~/.lore/lib`，保证和 daemon 同一个版本）的每个函数是向 daemon 发一个操作，不用传 page；action 文件是 `export default async () => 结果`（`run/worker.ts` 调用它）；agent 自己的纯函数在 `~/.lore/helpers/`，只在不存在时建目录，从不覆盖；compose 包成注入了 `action()` 的模块再跑。整体超时 115 秒（`@timeout` 可改）。失败时输出带 `page`（URL、标题、截图），像登录失效时带 `hint`。
 - **在 learn 窗口里 run**（`commands/learn.ts`）：`lore learn <句柄> run --action <名>` 把 learn 窗口当前的 `Session` 交给 `ActionRunner.runAction`，和 compose 调用 action 一样共用页面状态；日志进 learn 窗口，不变成 verified。原始请求（含真值）只在 daemon 内存里（`record/raw.ts`），**绝不落盘**，daemon 重启就没了。
-- **草稿**（`learn/observe.ts` 的 `observe`、`requestLine`）：观察里最多 3 个请求（写请求优先，再是这一步引发的，再是最新的）带 auth 来源和一行可以贴进 action 的 `request(...)`；地址和请求体里的秘密写成别名。
-- **auth 来源**（`record/auth.ts`）：拿原始请求头的真值和页面此刻的 cookie、localStorage、sessionStorage、meta 比对，再看同一 endpoint 各次请求里这个头变不变，分出来源；只记来源（`endpoints.json` 的 `auth`），不记值。
+- **请求头的信号**（`learn/observe.ts`、`record/auth.ts`、`record/headers.ts`）：观察里每个带非浏览器头的请求有一行「请求头」：按头名统计这个窗口里同站请求的真值怎么变（只在同一次页面加载里比），再拿真值和页面此刻的 cookie、localStorage、sessionStorage、meta 比对出位置；只输出、只记类别和位置（`endpoints.json` 的 `headers`），不记值。
 
 ## 8. 存储与安装
 
@@ -156,7 +158,7 @@ daemon 内部分四层，上层只依赖下层：
 | `need-chrome` | 启动 Google Chrome |
 | 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |
 | 升级后旧 daemon 还在跑 | `lore daemon restart` |
-| `run` 报"没有可继承的请求头" | 已经自动打开过该站点首页仍没有带 auth 头的请求：这个站点的 endpoint 可能不需要（去掉 `inherit`），或 action 要先 `goto` 到会发这个请求的页面 |
+| `run` 的请求被 401/403 拒 | 失败的「下一步」写了抄了什么、没抄什么：登录失效就请用户登录；页面这次没发带某个头的请求，action 要先 `goto` 会发它的页面，或照 learn 窗口观察「请求头」给的位置写 `auth`；每次都变的头被拒，改用 `waitRequest` 或 DOM |
 | learn 窗口的操作说"重新打开" | Chrome 窗口之前关了（close、空闲 30 分钟、daemon 重启），页面状态没了；回到了上次的 URL，需要的话重新点到那个状态 |
 | `learn <句柄> click`、`type`、`key`、`scroll` 报"页面里没有 lore 的脚本" | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
 | run 成功了 draft 却没变成 verified | 输出写了原因：多行 `@endpoint` 没按顺序发出（前置请求漏了，或顺序写错） |

@@ -39,13 +39,13 @@ export function makeLearnGuide(info: LearnInfo): string {
 - 依赖链、中间结果没有业务含义（拿上传凭证 → 上传 → 提交）：放进同一个 action，@endpoint 按发送顺序写多行；
 - 依赖链、每一步都有业务含义（创建草稿 → 发布草稿）：拆成两个 action；
 - 并行展开（详情页同时拉正文、评论、作者）：只学要的那一个；
-- 复现不了（前端签名、多步状态机）：用 DOM。
+- \`request\` 被拒（签名和参数绑定）、请求体由页面拼出来：用 \`waitRequest\`；页面不发请求、请求读不了：用 DOM。
 观察里的「依赖」一段标出请求之间的依赖（"#813 用了 #812 响应的 data.token"），据此判断。翻页：请求实现的翻页交给 compose 里的循环；"第 N 条"怎么算写在 compose 里，底层 action 只如实返回列表和每条的类型。
 
 ## 观察：每一步之后看发生了什么
 - 页面操作（open、click、type、key、scroll）和 \`run\` 执行完会等页面稳定，然后自动附带一次观察：上次观察以来的页面、导航、请求、请求之间的依赖。
 - 请求只列这个窗口里第一次出现的 endpoint 和所有写请求；之前出现过的只计数，\`${cmd} observe --all\` 看全部。
-- 每个请求一行：行首 \`write\` 表示写请求；后面是编号、\`方法 路径\`（就是 @endpoint 的写法）、状态、内容类型、有没有响应体、请求文件、以前的 description。重要的几个请求下面带 \`auth 来源\` 和一行 \`草稿\`：可以直接贴进 action 的 \`request(...)\`。auth 来源里「签名」每次都变、换参数可能被拒；「不变的值」「来源不明」会从最近的请求继承。
+- 每个请求一行：行首 \`write\` 表示写请求；后面是编号、\`方法 路径\`（就是 @endpoint 的写法）、状态、内容类型、有没有响应体、请求文件、以前的 description。带非浏览器头的请求下面有一行 \`请求头\`：每个头的值在这个窗口的请求里怎么变（页面级不变 / 按 endpoint 不变 / 每次都变 / 样本太少），和它在页面里的位置（← cookie _xsrf）。这是信号：请求头 lore 会自动抄，你只在 run 被拒时照它改。
 - 请求晚到（懒加载、防抖、新标签页加载）：等一会儿再 \`${cmd} observe\`，只给上次之后的新东西，不漏不重。
 
 ## 写请求：你判断严重程度
@@ -59,19 +59,19 @@ export function makeLearnGuide(info: LearnInfo): string {
 - 每个窗口：${info.learnDir}/<句柄>/
   - timeline.jsonl：这个窗口发生的一切，一行一条，按编号递增；type 是 request / input / nav / cmd / doc / snap / tab；site 是这一行属于的站点；request 行的 cause 是引发它的命令的编号，phase 是 load / cmd / idle。
   - requests/<编号>-<方法>-<endpoint 名>.json（url.query 和 requestBody 已解析，秘密是 ⟨secret_…⟩ 别名），响应体同名加 .response.json；pages/（页面 HTML、快照）、screenshots/（截图）。
-- endpoint 清单：${info.sitesDir}/<站点>/endpoints.json（次数、阶段统计、变量、响应结构、样本、descriptions、auth、被哪个 action 覆盖）。
+- endpoint 清单：${info.sitesDir}/<站点>/endpoints.json（次数、阶段统计、变量、响应结构、样本、descriptions、headers（请求头的信号）、被哪个 action 覆盖）。
 - 已有的 action：${actionsDir}/、${info.composeDir}/。SDK：${info.libDir}/index.js（每个函数的注释就是用法；daemon 每次启动整个覆盖，别在那里改）。
 - 你自己的函数：${info.helpersDir}/（不会被覆盖）。
 
 ## 怎么做
-成本顺序：读文件 < 在 learn 窗口里 run 一次 action < 一次页面操作。**先 network，不行才 DOM**：
-- **network**（默认）：action 里用 \`request({…})\` 直接发这个请求。
-- **等页面发**：请求必须由页面脚本带签名发出、或请求体由页面拼出来复现不了，但响应能读的，用 \`waitRequest("方法 路径", 触发动作)\`：触发动作（\`goto\` 带参数的页面、\`click\`）让页面自己发，action 拿它的响应。
-- **DOM**（兜底，也是正当的结果）：请求读不了响应体（流式、二进制）、或数据在页面里没有可用的请求时，action 做页面操作并用 \`text\` / \`query\` 取数据。
+成本顺序：读文件 < 在 learn 窗口里 run 一次 action < 一次页面操作。三种实现方式，按这个顺序选，前一种不行再用后一种：
+- **\`request\`**（默认）：\`request({ url, method, json })\` 直接发。请求头不用写，lore 从这次窗口里页面发过的请求自动抄。
+- **\`waitRequest\`**：\`request\` 被拒（签名和参数绑定）、或请求体由页面拼出来复现不了，但响应能读的，用 \`waitRequest("方法 路径", 触发动作)\`：触发动作（\`goto\` 带参数的页面、\`click\`）让页面自己发，action 拿它的响应，签名由页面算。
+- **DOM**（兜底，也是正当的结果）：页面不发请求、或请求读不了响应体（流式、二进制）时，action 做页面操作并用 \`text\` / \`query\` 取数据。
 
 1. 截图看页面：\`${cmd} screenshot\`（存成文件，用读图片的方式看），按图上的坐标操作：\`${cmd} click <x> <y> --description "点开某某"\`、\`${cmd} type "文字" --description "…"\`（先 click 输入框）、\`${cmd} key Enter --description "…"\`、\`${cmd} scroll down [像素] [x y] --description "…"\`、\`${cmd} open <网址> --description "…"\`。没有页面结构、没有元素编号，只靠看图。
 2. 页面操作和 run 都要带 \`--description\`：一句话用用户的话说这一步要做什么，它会存成 endpoint 的 description。
-3. 看到要的请求就读它的请求文件，把观察里的「草稿」那一行写进 action。
+3. 看到要的请求就读它的请求文件（地址、方法、请求体），自己写 \`request({ url, method, json })\`；变化的值换成 \`lore.params\`。
 4. 写 action 文件 ${actionsDir}/<名字>.js（名字小写字母数字和 -，全局唯一；站点是请求所在页面的 host 去 www.）。文件头：
 
 \`\`\`javascript
@@ -79,7 +79,7 @@ export function makeLearnGuide(info: LearnInfo): string {
  * @summary 一句话：做什么（业务动作）
  * @status draft
  * @write（会发 write 请求才写，如点赞、提交、删除）
- * @start 起点页面的地址（用 DOM 的 action 写；run 时先打开它）
+ * @start 起点页面的地址（run 时先打开它：request 要从这个页面发过的请求抄头，DOM 要在它上面操作）
  * @endpoint 方法 路径
  * @param 参数名 说明（可选写成 参数名?；不是字符串的写类型：参数名:number、参数名?:boolean、参数名:json）
  * @note 经验：签名、风控、必须先做的步骤、踩过的坑（一行一条）
@@ -94,20 +94,14 @@ export function makeLearnGuide(info: LearnInfo): string {
 
 ## 写 action 的规则
 - SDK：\`import { lore, goto, request, waitRequest, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../../../lib/index.js"\`，入口 \`export default async () => { ... }\`，返回值就是结果。函数都不用传 page：\`goto(url)\`、\`click(定位)\`、\`request({…})\`。
-- **请求头里的认证**（Cookie 由浏览器自动带上，不用管）：按下表从上往下选，前一种不行再用后一种。观察里的「auth 来源」和「草稿」已经替你判断好了。
-
-| 情况 | 写法 |
-|---|---|
-| 大多数站点 | 什么都不写：默认继承这个站点页面最近一次带身份信息的请求的请求头（真值只在 daemon 内存里；内存里没有就自动打开站点首页让页面发一次）。公开接口写 \`inherit: false\` |
-| 值来自 cookie、localStorage / sessionStorage、meta | \`auth: { "x-xsrftoken": "cookie:_xsrf", authorization: "Bearer local:token" }\`：发送时在页面里现读，daemon 重启也能用；取不到就报错 |
-| 值来自另一个 endpoint 的请求头 | \`auth: { "x-token": "from:/api/session" }\` |
-| 签名和 endpoint 绑定（换个 endpoint 的签名会被拒，如知乎 x-zse-96） | \`inheritFrom: "/路径"\`：只从那个 endpoint 最近一次请求继承整组头，先 \`goto\` 会发它的页面 |
-| API 在另一个域名（页面是 a.com，接口是 api.a.com / internal.a.com） | \`pageOrigin: "https://a.com"\`：从站点页面发出（带它的登录态），不写就在接口自己的域名上开页面发 |
-| 值来自前序响应（上传凭证、nonce） | 先发前序请求再取值，@endpoint 写多行 |
-| 签名还和完整 URL 绑定（换参数就被拒），或请求体由页面拼出来 | \`waitRequest\` 让页面自己发 |
-| 页面也不发请求 | DOM |
-
-- run 窗口每次从空白开始，不沿用 learn 窗口的页面状态：用 DOM 的 action 写 \`@start\`，run 时先打开它。action 里不能调用别的 action，要串起来写 compose。
+- **请求头**：lore 按顺序凑齐，你一般什么都不用写：
+  1. 浏览器自己带的（cookie）；
+  2. 从这次窗口里页面发过的请求抄：页面发过同一个 endpoint 就整组抄它的（签名和 endpoint 绑定的站点靠这个），否则只抄值都一样的头，每次都变的不跨 endpoint 抄。所以 action 先 \`goto\`（或写 \`@start\`）打开会发这些请求的页面；
+  3. 页面这次没发带某个头的请求时：照观察「请求头」给的位置写 \`auth: { "x-xsrftoken": "cookie:_xsrf", authorization: "Bearer local:token" }\`，发送时在页面里现读；
+  4. 值来自前序响应（上传凭证、nonce）：先 \`request\` 前序请求，再 \`headers: { "x-token": r.json().token }\`，照观察里的「依赖」写，@endpoint 写多行；
+  5. 被拒（401/403）：失败输出写了抄了什么、没抄什么、下一步；每次都变的头被拒的，改用 \`waitRequest\` 或 DOM。
+  接口在另一个子域（页面是 a.com，接口是 api.a.com）不用另写，lore 在当前页面上发。
+- run 窗口每次从空白开始，不沿用 learn 窗口的页面状态：action 写 \`@start\`（或第一步 \`goto\`），run 时先打开它。action 里不能调用别的 action，要串起来写 compose。
 - 参数用 \`lore.params.名字 ?? 默认值\`，按 @param 的类型转好（没写类型是字符串）；变化的值（id、关键词、页码）都做成参数；返回字段用页面上的词命名。
 - **小函数放进 ${info.helpersDir}/**：写 action 前先 \`ls ${info.helpersDir}\` 看有什么；同一个小函数（去 HTML 标签、格式化时间、拼 URL）第二次出现就挪进去，按用途分文件（如 text.js、time.js），action 里 \`import { stripHtml } from "../../../helpers/text.js"\`。只放纯函数：要发请求或操作页面的写成 action。
 - 成功判断：action 自己判断任务有没有正确完成，不看最后停在什么页面。检查 HTTP 状态码和业务码；读页面内容的要检查拿到的确实是目标内容（标题、关键元素），停在登录页、错误页就抛错，不能把登录页的文字当结果返回；结果必须对应本次参数；会发 write 请求的先读状态，已满足返回 already，并在文件头写 @write；返回被操作对象的稳定 id。

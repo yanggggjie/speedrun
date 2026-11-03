@@ -38,23 +38,6 @@ export function describeRequest(r: Row, file: RequestFile | undefined, opts: { w
   return { line: `${opts.write ? "write" : "     "} #${r.seq} ${r.endpoint ?? `${r.method ?? "?"} ${r.url ?? ""}`}${opts.other ? `（${opts.other}）` : ""} → ${r.status ?? "?"} ${ct}，${body}，${r.file ?? "（没有请求文件）"}${opts.known ? `（以前：${opts.known}）` : ""}`, readable };
 }
 
-type StepCmd = { kind: string; text?: string; key?: string; dx?: number; dy?: number; to?: string };
-
-/** 可贴进 action draft 的一行（SDK 见 src/action-lib/index.js）。 */
-export function stepLine(cmd: StepCmd, loc: unknown): string {
-  const where = loc ? JSON.stringify(loc) : undefined;
-  switch (cmd.kind) {
-    case "click": return where ? `await click(${where});` : "// 这一步点击没有拿到持久定位：换个更具体的位置再点";
-    case "type": return where ? `await fill(${where}, ${JSON.stringify(cmd.text ?? "")});` : `// 输入 ${JSON.stringify(cmd.text ?? "")}：先 click 输入框拿到定位，再写 await fill(<定位>, …);`;
-    case "key": return `await press(${JSON.stringify(cmd.key ?? "")});`;
-    case "scroll": {
-      const opts = cmd.to ? { to: cmd.to } : { dy: cmd.dy };
-      return `await scroll(${JSON.stringify(where ? { loc, ...opts } : opts)});`;
-    }
-    default: return "";
-  }
-}
-
 export type Dependency = { from: number; to: number; field: string };
 
 /** 把响应体里长度 ≥ 6 的字符串和数字值连同路径收集起来（只取第一次出现的位置）。 */

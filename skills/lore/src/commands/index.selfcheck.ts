@@ -59,7 +59,7 @@ const host = {
       ingest.endCmd(ref, { detail: { description: a.description, ok: true } });
       return { ok: true, loc: { role: "button", name: "赞同" }, settle: { settled: true, waitedMs: 100 } };
     }
-    if (name === "request") { requests.push(a); return { ok: true, status: 200, ct: "application/json", size: 8, text: "{\"ok\":1}", ms: 3, source: { inheritedFrom: { method: "GET", endpoint: "GET /api/feed", url: "https://www.x.com/api/feed" }, auth: {}, signatureMismatch: { headers: ["x-zse-96"], changed: ["路径", "请求体"] } } }; }
+    if (name === "request") { requests.push(a); return { ok: true, status: 200, ct: "application/json", size: 8, text: "{\"ok\":1}", ms: 3 }; }
     throw new Error(`没有预期的操作 ${name}`);
   },
   end: async (s: Session) => { s.tab = undefined; },
@@ -109,10 +109,10 @@ const second = seqsIn(clicked.stdout);
 assert.equal(second.length, 1); assert.ok(second[0]! > first[0]!);
 assert.match(clicked.stdout, /write #\d+ POST \/api\/answers\/:id\/voters → 200 application\/json，有响应体，requests\/\d{6}-POST-api-answers-_id-voters\.json/);
 
-// write 请求的 auth 来源：cookie 里的值认出来，签名认出来；草稿带 auth 声明；输出里只有来源，没有真值
+// 请求头的信号：cookie 里的值认出来（给 auth 用）；输出里只有类别和来源，没有真值；不再有 request 草稿
 assert.match(clicked.stdout, /^ok click/);
-assert.match(clicked.stdout, /auth 来源：.*x-xsrftoken ← cookie _xsrf.*x-zse-96 ← 签名/);
-assert.match(clicked.stdout, /草稿：await request\(\{ url: "https:\/\/www\.x\.com\/api\/answers\/12345678\/voters", method: "POST", json: \{"type":"up"\}, auth: \{"x-xsrftoken":"cookie:_xsrf"\} \}\);/);
+assert.match(clicked.stdout, /请求头：.*x-xsrftoken 样本太少 ← cookie _xsrf.*x-zse-96 样本太少/);
+assert.ok(!clicked.stdout.includes("草稿"), "观察里没有草稿");
 assert.ok(!clicked.stdout.includes("XSRF-REAL-0123456789"), "输出里没有 auth 头的真值");
 
 // 晚到的请求（操作之后才到）：下一次观察出现，而且只出现一次
@@ -171,6 +171,6 @@ assert.equal(actionSummary(path.join(actions, "search.js")).status, "verified", 
 // 落盘的文件里也没有 auth 头的真值（日志、请求文件、endpoints.json 只有别名和来源）
 index.flush();
 for (const f of fs.readdirSync(root, { recursive: true, withFileTypes: true })) if (f.isFile()) assert.ok(!fs.readFileSync(path.join(f.parentPath, f.name)).includes("XSRF-REAL-0123456789"), `${f.name} 里不该有真值`);
-assert.equal(JSON.parse(fs.readFileSync(path.join(log.dir, "x.com", "endpoints.json"), "utf8")).endpoints.find((e: { key: string }) => e.key === "POST /api/answers/:id/voters").auth["x-xsrftoken"], "cookie:_xsrf", "来源记进 endpoints.json");
+assert.deepEqual(JSON.parse(fs.readFileSync(path.join(log.dir, "x.com", "endpoints.json"), "utf8")).endpoints.find((e: { key: string }) => e.key === "POST /api/answers/:id/voters").headers["x-xsrftoken"], { kind: "few", source: "cookie:_xsrf" }, "类别和来源记进 endpoints.json，没有值");
 
 console.log("commands.selfcheck ok");

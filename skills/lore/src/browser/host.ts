@@ -5,9 +5,9 @@ import type { Ingestor, SeenRequest } from "../record/ingest.ts";
 import type { RawEntry, RawStore } from "../record/raw.ts";
 import type { AuthSnapshot } from "../record/auth.ts";
 import { endpointKey, endpointOf, looksReadOnly } from "../record/digest.ts";
-import { fetchableHeaders, VOLATILE } from "../record/headers.ts";
+import { fetchableHeaders, headerKinds, notableHeaders } from "../record/headers.ts";
 import { STEP_TIMEOUT_MS } from "../utils/constants.ts";
-import { siteOfUrl } from "../utils/url.ts";
+import { isSameSite, parseUrl, siteOfUrl } from "../utils/url.ts";
 import type { AgentWindows } from "./window.ts";
 
 /** 一次运行（或一次 learn）用到的页面：绑定到 lore agent 窗口里的一个标签页，站点（origin）变了就换一个。 */
@@ -19,15 +19,25 @@ export class Session {
   readonly key: string;
   /** compose（run --compose-code，或 @compose 文件）：只许调用 action，任何页面操作都拒绝。 */
   composeOnly = false;
+  /** 最近一次 goto 打开页面的时间：刚打开的页面可能还没发请求，request 抄头前等一小会儿。 */
+  loadedAt: number | undefined;
   /** 这次 run 里真跑成功的 draft（action 文件路径），run 结束后由命令层判断变成 verified。嵌套调用并进父 session。 */
   readonly draftsOk: string[] = [];
-  /** 已经为取请求头自动打开过首页的站点（每个站点只打开一次）。 */
-  readonly warmed = new Set<string>();
   constructor(key: string) { this.key = key; }
 }
 
-/** request 的请求头从哪来（不含值）：inheritedFrom 是继承的那个原始请求；auth 是声明了来源的头；signatureMismatch 见 RunHost.sourceOf。 */
-export type RequestSource = { inheritedFrom?: { method: string; endpoint: string; url: string }; auth: Record<string, string>; signatureMismatch?: { headers: string[]; changed: string[] } };
+/** request 的请求头从哪来（只有名字）：from 抄自这次窗口里的哪些 endpoint，copied 抄了哪些头，skipped 因为每次都变没抄的，auth 现读的。 */
+export type RequestSource = { from: string[]; copied: string[]; skipped: string[]; auth: string[] };
+
+/** 刚 goto 的页面还没发同站请求：从打开起最多等这么久（只靠 cookie 的站点不该被拖慢）。 */
+const COPY_WAIT_MS = 1_500;
+
+/** 被 401/403 拒时给 agent 的说明：抄了什么、没抄什么、下一步。 */
+function rejectHint(endpoint: string, status: number, src: RequestSource): string {
+  const copied = src.copied.length ? `抄了 ${src.from.join("、")} 的 ${src.copied.join("、")}` : "这次窗口里没有可抄的请求头（只带了 cookie）";
+  const skipped = src.skipped.length ? `；没抄 ${src.skipped.join("、")}（这次窗口里每次都变）` : "";
+  return `${endpoint} 被拒（${status}）：${copied}${skipped}。像是登录失效就请用户登录后重跑；页面这次没发带某个头的请求的，看 learn 窗口观察里「请求头」给的来源写进 request 的 auth；每次都变的头被拒的，改用 waitRequest（goto 带参数的页面或点一下，收页面自己发的请求）或 DOM`;
+}
 
 /** run 失败时的页面现场。 */
 export type FailurePage = { url: string; title: string; screenshot?: string };
@@ -38,8 +48,6 @@ const pathOf = (url: string): string => { try { return new URL(url).pathname; } 
 
 export type HostDeps = { link: Pick<ExtensionLink, "request">; win: AgentWindows; ingest: Ingestor; raw: RawStore };
 
-/** 请求头里带身份信息的那些：继承页面自己的请求头时优先挑带这些的请求。 */
-const CREDENTIAL = /auth|csrf|xsrf|token|^x-/i;
 const NAVIGATED = /frame.*(removed|detached)|context.*(destroyed|invalidated)|navigat|Cannot access contents|No tab with id/i;
 const originOf = (url: string): string => new URL(url).origin;
 
@@ -60,6 +68,8 @@ export class RunHost {
   private nextWait = 1;
   /** 正在统计 write 请求的窗口（run 窗口的名字，或正在 run action 的 learn 窗口句柄）：endpoint → 次数。 */
   private readonly writes = new Map<string, Map<string, number>>();
+  /** 每个窗口最近一次被 401/403 拒的说明。 */
+  private readonly rejected = new Map<string, string>();
   constructor(deps: HostDeps) {
     this.d = deps;
     deps.ingest.onRequest?.((r) => this.seen(r));
@@ -127,6 +137,9 @@ export class RunHost {
     if (s.tab !== undefined) this.d.win.release(s.tab);
     s.tab = undefined;
     s.origin = undefined;
+    // 窗口关掉（run 结束、learn close）：这个窗口的原始请求一起清掉
+    this.d.raw.dropWindow(s.key);
+    this.rejected.delete(s.key);
   }
 
   private page(s: Session): number {
@@ -222,103 +235,81 @@ export class RunHost {
       if (/\/robots\.txt$/.test(res.url) && !/\/robots\.txt$/.test(url.pathname)) res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as typeof res;
       this.d.win.moved(tab, originOf(res.url || url.href));
       s.origin = originOf(res.url || url.href);
+      s.loadedAt = Date.now();
       return { url: res.url, title: res.title };
     }, undefined, siteOfUrl(url.href) || undefined);
   }
 
-  private async request(s: Session, a: { url: string; method?: string; headers?: Record<string, string>; json?: unknown; body?: string; inherit?: boolean; inheritFrom?: string; auth?: Record<string, string>; pageOrigin?: string; timeout?: number }): Promise<unknown> {
+  /**
+   * 在页面里发请求。请求头按顺序凑齐：浏览器自己带的（cookie）→ 从这次窗口里页面发过的请求抄 → auth 声明的页面固定位置（发送时现读）→ headers 显式写的。
+   * 从页面请求抄：页面发过同一个 endpoint 就整组抄它最近一次的；否则按头名看这次窗口里的同站请求，值都一样的（页面级不变）抄，各不相同的（签名、nonce）不跨 endpoint 抄。
+   * 只用这次窗口里的原始请求，不用以前或别的窗口的。
+   */
+  private async request(s: Session, a: { url: string; method?: string; headers?: Record<string, string>; json?: unknown; body?: string; auth?: Record<string, string>; timeout?: number }): Promise<unknown> {
     const method = (a.method ?? (a.json !== undefined || a.body !== undefined ? "POST" : "GET")).toUpperCase();
     let target: URL;
     try { target = new URL(a.url); } catch { throw new Error(`request 需要完整的网址：${a.url}`); }
-    const origin = a.pageOrigin ? originOf(a.pageOrigin) : target.origin;
-    const tab = await this.bind(s, origin);
-    const headers: Record<string, string> = {};
-    let fromEntry: RawEntry | undefined;
-    if (a.inheritFrom) {
-      // 签名和 endpoint 绑定的站点（如知乎 x-zse-96）：只从这个 endpoint 最近一次的原始请求继承，别的 endpoint 的签名会被拒
-      const from = this.newestOf(target.origin, a.inheritFrom);
-      if (!from) throw new Error(`没有 ${a.inheritFrom} 的请求可以继承请求头：先 goto 会自己发这个请求的页面（等它发出），再 request`);
-      fromEntry = from;
-      Object.assign(headers, fetchableHeaders(from.headers));
-    } else if (a.inherit !== false) {
-      const sameOrigin = (e: { url: string }): boolean => { try { return originOf(e.url) === target.origin; } catch { return false; } };
-      // 优先取带身份信息的（authorization、csrf、x-* 之类）最近一次，没有再取任何带头的
-      const find = () => this.d.raw.newest((e) => sameOrigin(e) && Object.keys(fetchableHeaders(e.headers)).some((k) => CREDENTIAL.test(k)))
-        ?? this.d.raw.newest((e) => sameOrigin(e) && Object.keys(fetchableHeaders(e.headers)).length > 0);
-      let seen = find();
-      // 内存里没有（daemon 重启过，或页面还没发过请求）：打开该站点的首页，让页面自己发请求，每个站点只试一次
-      if (!seen && !s.warmed.has(target.origin)) {
-        s.warmed.add(target.origin);
-        await this.goto(s, { url: `${target.origin}/` }).catch(() => {});
-        await new Promise((r) => setTimeout(r, 300)); // 页面消息经扩展到 daemon 要一小会儿
-        this.d.ingest.flush();
-        seen = find();
-      }
-      if (seen) { fromEntry = seen; Object.assign(headers, fetchableHeaders(seen.headers)); }
-      else if (a.inherit === true) throw new Error(`没有可继承的请求头：已经打开过 ${target.origin} 的首页，页面也没有发出带 auth 头的请求；这个站点的 endpoint 可能不需要，去掉 inherit，或手写 headers`);
-    }
-    // 声明了来源的头：发送时现读（cookie、存储、meta 在页面里读，from: 按 endpoint 从原始请求取），取不到就报错，不静默发出去
+    // 和当前页面同一注册域名（跨子域，如 api.x.com 和 x.com）就在当前页面上发，否则在请求自己的 origin 上开页面发
+    const tab = s.tab !== undefined && s.origin && isSameSite(parseUrl(s.origin), parseUrl(target.href)) ? this.page(s) : await this.bind(s, target.origin);
+    let body: string | null = null;
+    if (a.json !== undefined) body = JSON.stringify(a.json);
+    else if (a.body !== undefined) body = a.body;
+    const endpoint = endpointKey(method, endpointOf(target.href, a.json ?? body ?? undefined).name);
+    const copy = await this.copyHeaders(s, target, endpoint);
+    const headers: Record<string, string> = { ...copy.headers };
+    // 声明了来源的头：发送时在页面里现读，取不到就报错，不静默发出去
     const auth = Object.fromEntries(Object.entries(a.auth ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
-    const pageSpecs: Record<string, string> = {};
-    for (const [h, spec] of Object.entries(auth)) {
-      if (!spec.startsWith("from:")) { pageSpecs[h] = spec; continue; }
-      const from = this.newestOf(target.origin, spec.slice(5));
-      const v = from ? Object.entries(from.headers).find(([k]) => k.toLowerCase() === h)?.[1] : undefined;
-      if (v === undefined) throw new Error(`取不到请求头 ${h}（${spec}）：没有这个 endpoint 的请求，或它没带这个头；先 goto 会发这个请求的页面`);
-      headers[h] = v;
-    }
-    if (Object.keys(pageSpecs).length) {
-      const vals = (await this.callTab(tab, "authRead", [pageSpecs])) as Record<string, string | null>;
-      for (const [h, spec] of Object.entries(pageSpecs)) {
+    if (Object.keys(auth).length) {
+      const vals = (await this.callTab(tab, "authRead", [auth])) as Record<string, string | null>;
+      for (const [h, spec] of Object.entries(auth)) {
         if (vals?.[h] == null) throw new Error(`取不到请求头 ${h}（${spec}）：页面里没有这个值（没登录、换了存储位置，或页面不对）`);
         headers[h] = vals[h]!;
       }
     }
     for (const [k, v] of Object.entries(a.headers ?? {})) headers[k.toLowerCase()] = v;
-    let body: string | null = null;
-    if (a.json !== undefined) { body = JSON.stringify(a.json); headers["content-type"] ??= "application/json"; }
-    else if (a.body !== undefined) body = a.body;
-    const source = this.sourceOf(fromEntry, auth, a.headers ?? {}, target.href, body);
+    if (a.json !== undefined) headers["content-type"] ??= "application/json";
+    const source = { from: copy.from, copied: Object.keys(copy.headers), skipped: copy.skipped, auth: Object.keys(auth) };
     const safe = this.d.ingest.sanitizer.url(target.href);
-    const shown = safe.bareUrl;
-    const ep = endpointOf(target.href, a.json ?? body ?? undefined);
-    const endpoint = endpointKey(method, ep.name);
-    const detail = { method, endpoint, bareUrl: safe.bareUrl, query: safe.query, ...(a.json !== undefined ? { reqBody: JSON.stringify(this.d.ingest.sanitizer.body(a.json)).slice(0, 4000) } : {}), inherit: a.inheritFrom ?? a.inherit !== false };
+    const detail = { method, endpoint, bareUrl: safe.bareUrl, query: safe.query, ...(a.json !== undefined ? { reqBody: JSON.stringify(this.d.ingest.sanitizer.body(a.json)).slice(0, 4000) } : {}), headersFrom: source.from, copied: source.copied, ...(source.skipped.length ? { skipped: source.skipped } : {}) };
     this.noteWrite(s.key, method, target.href, endpoint, a.json ?? body ?? undefined);
-    return this.log(tab, "request", `${method} ${shown}`, detail, async () => {
-      const res = await withTimeout(this.callTab(tab, "fetch", [{ method, url: target.href, headers, body, timeout: a.timeout ?? STEP_TIMEOUT_MS }]), (a.timeout ?? STEP_TIMEOUT_MS) + 3000, "请求");
-      if (res.ok === false) throw new Error(`请求失败：${res.error}`);
-      return { ...res, source };
-    }, (r: any) => ({ status: r.status, size: r.size, ms: r.ms, ...(source.inheritedFrom ? { inheritedFrom: source.inheritedFrom.endpoint } : {}) }));
+    const res = await this.log(tab, "request", `${method} ${safe.bareUrl}`, detail, async () => {
+      const r = await withTimeout(this.callTab(tab, "fetch", [{ method, url: target.href, headers, body, timeout: a.timeout ?? STEP_TIMEOUT_MS }]), (a.timeout ?? STEP_TIMEOUT_MS) + 3000, "请求");
+      if (r.ok === false) throw new Error(`请求失败：${r.error}`);
+      return { ...r, source };
+    }, (r: any) => ({ status: r.status, size: r.size, ms: r.ms })) as { status?: number };
+    if (res.status === 401 || res.status === 403) this.rejected.set(s.key, rejectHint(endpoint, res.status, source));
+    return res;
   }
 
-  /** 这个 origin 上、路径匹配（:id 匹配一段）的最近一次原始请求。 */
-  private newestOf(origin: string, path: string): RawEntry | undefined {
-    const pattern = new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/:id/g, "[^/]+")}$`);
-    return this.d.raw.newest((e) => { try { const u = new URL(e.url); return u.origin === origin && pattern.test(u.pathname); } catch { return false; } });
+  /** 从这次窗口里页面发过的同站请求抄头（刚 goto 的页面可能还没发请求：等一小会儿；没打开过页面的不等，只靠 cookie 的站点不被拖慢）。 */
+  private async copyHeaders(s: Session, target: URL, endpoint: string): Promise<{ headers: Record<string, string>; from: string[]; skipped: string[] }> {
+    const win = s.key;
+    const same = (e: RawEntry): boolean => isSameSite(parseUrl(e.url), parseUrl(target.href));
+    let entries = this.d.raw.inWindow(win).filter(same);
+    const loaded = s.loadedAt;
+    for (const deadline = (loaded ?? 0) + COPY_WAIT_MS; loaded !== undefined && !entries.length && Date.now() < deadline;) {
+      await new Promise((r) => setTimeout(r, 200));
+      this.d.ingest.flush();
+      entries = this.d.raw.inWindow(win).filter(same);
+    }
+    const newest = [...entries].reverse();
+    const own = newest.find((e) => e.endpoint === endpoint);
+    if (own) return { headers: fetchableHeaders(own.headers), from: [own.endpoint], skipped: [] };
+    const headers: Record<string, string> = {}, from = new Set<string>(), skipped: string[] = [];
+    for (const [name, kind] of headerKinds(entries)) {
+      if (kind === "varies" || kind === "endpoint") { skipped.push(name); continue; }
+      const e = newest.find((x) => notableHeaders(x.headers)[name] !== undefined)!;
+      headers[name] = notableHeaders(e.headers)[name]!;
+      from.add(e.endpoint);
+    }
+    return { headers, from: [...from], skipped };
   }
 
-  /**
-   * 这次请求的请求头从哪来（不含值）：继承自哪个请求、声明了来源的头；
-   * 继承来的签名类的头（没被 auth 或显式 headers 盖掉）配上了和它原来不一样的参数，就是 signatureMismatch。
-   */
-  private sourceOf(from: RawEntry | undefined, auth: Record<string, string>, explicit: Record<string, string>, url: string, body: string | null): RequestSource {
-    if (!from) return { auth };
-    const safe = this.d.ingest.sanitizer.url(from.url);
-    const method = from.method.toUpperCase();
-    let fromBody: unknown = from.body ?? undefined;
-    try { fromBody = from.body ? JSON.parse(from.body) : undefined; } catch { /* 表单或文字 */ }
-    const inheritedFrom = { method, endpoint: endpointKey(method, endpointOf(from.url, fromBody).name), url: safe.bareUrl };
-    const own = new Set([...Object.keys(auth), ...Object.keys(explicit).map((k) => k.toLowerCase())]);
-    const signed = Object.keys(fetchableHeaders(from.headers)).filter((k) => VOLATILE.test(k) && !own.has(k));
-    const changed: string[] = [];
-    try {
-      const a = new URL(from.url).searchParams, b = new URL(url).searchParams;
-      for (const k of new Set([...a.keys(), ...b.keys()])) if (a.get(k) !== b.get(k)) changed.push(k);
-      if (new URL(from.url).pathname !== new URL(url).pathname) changed.splice(0, changed.length, `路径（是另一个 endpoint ${new URL(from.url).pathname}）`);
-    } catch { /* 地址不合法 */ }
-    if ((from.body ?? null) !== body) changed.push("请求体");
-    return { inheritedFrom, auth, ...(signed.length && changed.length ? { signatureMismatch: { headers: signed, changed } } : {}) };
+  /** 这个窗口最近一次被 401/403 拒的说明（run 失败时接在 hint 里），取过就清掉。 */
+  takeRejected(win: string): string | undefined {
+    const v = this.rejected.get(win);
+    this.rejected.delete(win);
+    return v;
   }
 
   /** 页面此刻的 cookie、localStorage、sessionStorage、meta（判断 auth 来源用，只在 daemon 内存里）。 */

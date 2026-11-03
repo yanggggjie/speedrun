@@ -1,7 +1,7 @@
 // 观察里列什么：要包含 GET，但不能把静态资源、轮询、噪声列进去（折叠成计数）；写请求标 write（只读的 POST 不算写）；
 // 依赖链要能认出来（拿凭证 → 提交）；没有响应体要写出原因，agent 才知道转 DOM。
 import assert from "node:assert/strict";
-import { dependencies, describeRequest, isPeriodic, missingInSequence, shownRequests, stepLine } from "./explore.ts";
+import { dependencies, describeRequest, isPeriodic, missingInSequence, shownRequests } from "./explore.ts";
 import type { RequestFile, Row } from "../record/types.ts";
 import { looksReadOnly } from "../record/digest.ts";
 
@@ -29,11 +29,6 @@ assert.equal(none.readable, false);
 assert.match(none.line, /^write #8 POST \/rpc\/StreamTimeline → .*connect\+proto，无响应体（no-body）/);
 const ok = describeRequest({ ...rows[0]!, file: "requests/000001-GET-api-list.json" }, file({ responseHeaders: { "content-type": "application/json; charset=utf-8" }, responseBodyPath: "requests/000001-GET-api-list.response.json" }), { write: false, other: "api.x.com", known: "列出条目" });
 assert.equal(ok.readable, true); assert.match(ok.line, /^      #1 GET \/api\/list（api\.x\.com） → .*application\/json，有响应体，requests\/000001-GET-api-list\.json（以前：列出条目）$/);
-
-assert.equal(stepLine({ kind: "click" }, { role: "button", name: "提交" }), 'await click({"role":"button","name":"提交"});');
-assert.equal(stepLine({ kind: "scroll", dy: -600 }, undefined), 'await scroll({"dy":-600});');
-assert.equal(stepLine({ kind: "scroll", to: "bottom" }, undefined), 'await scroll({"to":"bottom"});');
-assert.equal(stepLine({ kind: "key", key: "Enter" }, undefined), 'await press("Enter");');
 
 // 依赖：后一个请求带出去的值（长度 ≥ 6）等于前一个响应里的值
 const files: Record<number, RequestFile> = {

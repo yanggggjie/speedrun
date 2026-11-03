@@ -40,7 +40,7 @@ ingest.handleBatch([
   { k: "tab", t: T - 600, tab: 3, ev: "url", url: page },
 ]);
 assert.equal(rows(W).length + rows(R).length, 0, "用户窗口的消息一条都不写");
-assert.equal(raw.get(3, "u:1"), undefined, "用户窗口的原始请求不进内存");
+assert.equal(raw.inWindow("user").length, 0, "用户窗口的原始请求不进内存");
 assert.equal(index.snapshot(SITE).endpoints.length, 0, "用户窗口的请求不进endpoints.json");
 assert.ok(!fs.readdirSync(dir, { recursive: true }).some((f) => String(f).includes("private")), "没有任何文件");
 
@@ -70,9 +70,11 @@ assert.match((file.requestBody as { token: string }).token, /^⟨secret_/);
 assert.equal(file.rid, "d:1");
 assert.equal(file.tab, 5);
 for (const f of fs.readdirSync(dir, { recursive: true, withFileTypes: true })) if (f.isFile()) assert.ok(!fs.readFileSync(path.join(f.parentPath, f.name)).includes(SECRET), `${f.name} 里不该有真值`);
-const entry = raw.get(5, "d:1")!;
+const entry = raw.get(W, 5, "d:1")!;
 assert.equal(entry.headers.authorization, `Bearer ${SECRET}`, "内存里是真值");
 assert.ok(entry.url.includes(SECRET) && entry.body!.includes(SECRET) && entry.page === page);
+assert.equal(entry.win, W, "原始请求按窗口存");
+assert.equal(entry.doc, "d", "页面加载编号是 rid 的前半段");
 assert.equal(ingest.sanitizer.resolve(file.url.query.access_token!), SECRET, "别名能换回真值");
 
 // 3. 每次请求都写一行，响应体按内容只存一份；页面刚加载（at 很小）且期间没有新动作的请求，阶段是 load
@@ -91,7 +93,7 @@ assert.equal(rows(W).find((r) => r.endpoint === "GET /api/poll")!.phase, "idle",
 ingest.handleBatch([net(T + 7000, { id: 5, rid: "d:5", method: "POST", url: "https://apm.example.com/collector/apm", status: 200, body: "", size: 0 })]);
 const noise = rows(W).find((r) => r.url?.includes("collector"))!;
 assert.equal(noise.noise, 1);
-assert.equal(raw.get(5, "d:5"), undefined);
+assert.equal(raw.get(W, 5, "d:5"), undefined);
 assert.ok(!index.snapshot(SITE).endpoints.some((e) => e.key.includes("collector")));
 
 // 5. agent 窗口（tab 9）：命令先预留编号，行在做完时写；它引发的请求指向命令；页面脚本触发的一切记为 agent，写在 run 窗口自己的文件里

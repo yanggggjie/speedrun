@@ -1,8 +1,10 @@
 /**
- * 原始请求：页面里发出的同站请求，带请求头里的 token 真值，只放在 daemon 的内存里（绝不落盘），继承请求头、生成草稿时用。
+ * 原始请求：agent 窗口里页面发出的同站请求，带请求头里的 token 真值，只放在 daemon 的内存里（绝不落盘）。
+ * 按窗口存：request() 只从这次窗口里页面发过的请求抄头，观察只看这个窗口的；窗口关掉（learn close、run 结束）就清掉这个窗口的。
  * 有字节上限，超过就先丢最旧的；daemon 重启就没了。
  */
-export type RawEntry = { method: string; url: string; headers: Record<string, string>; body: string | null; page: string; t: number; size: number };
+/** doc：页面加载的编号（rid 的前半段，同一次加载的请求相同）。 */
+export type RawEntry = { win: string; doc: string; endpoint: string; method: string; url: string; headers: Record<string, string>; body: string | null; page: string; t: number; size: number };
 
 export const RAW_MAX_BYTES = 50 * 1024 * 1024;
 export const RAW_ITEM_MAX = 64 * 1024;
@@ -14,13 +16,13 @@ export class RawStore {
 
   constructor(maxBytes = RAW_MAX_BYTES) { this.maxBytes = maxBytes; }
 
-  private key(tab: number, rid: string): string { return `${tab}:${rid}`; }
+  private key(win: string, tab: number, rid: string): string { return `${win}\n${tab}:${rid}`; }
 
-  /** 单条太大的不存（也就没法继承请求头、生成草稿）。 */
+  /** 单条太大的不存（也就没法抄它的请求头）。 */
   put(tab: number, rid: string, entry: Omit<RawEntry, "size">): boolean {
     const size = JSON.stringify(entry).length;
     if (size > RAW_ITEM_MAX) return false;
-    const key = this.key(tab, rid);
+    const key = this.key(entry.win, tab, rid);
     const old = this.map.get(key);
     if (old) { this.bytes -= old.size; this.map.delete(key); }
     this.map.set(key, { ...entry, size });
@@ -29,17 +31,15 @@ export class RawStore {
     return true;
   }
 
-  get(tab: number, rid: string): RawEntry | undefined { return this.map.get(this.key(tab, rid)); }
+  get(win: string, tab: number, rid: string): RawEntry | undefined { return this.map.get(this.key(win, tab, rid)); }
 
-  /** 最近一次满足条件的原始请求（从新到旧找）：action 里 inherit 请求头用。 */
-  newest(match: (e: RawEntry) => boolean): RawEntry | undefined {
-    const all = [...this.map.values()];
-    for (let i = all.length - 1; i >= 0; i--) if (match(all[i]!)) return all[i];
-    return undefined;
+  /** 这个窗口的全部原始请求，从旧到新。 */
+  inWindow(win: string): RawEntry[] { return [...this.map.values()].filter((e) => e.win === win); }
+
+  /** 窗口关掉：清掉这个窗口的。 */
+  dropWindow(win: string): void {
+    for (const [k, v] of this.map) if (v.win === win) { this.map.delete(k); this.bytes -= v.size; }
   }
-
-  /** 满足条件的全部原始请求（从旧到新）：判断一个头在同一 endpoint 的各次请求里变不变。 */
-  all(match: (e: RawEntry) => boolean): RawEntry[] { return [...this.map.values()].filter(match); }
 
   totalBytes(): number { return this.bytes; }
 }

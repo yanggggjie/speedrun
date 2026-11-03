@@ -5,6 +5,7 @@ import { causeLabel, endpointOf } from "./digest.ts";
 import type { EndpointIndex } from "./endpoints.ts";
 import { noiseReason, shouldStoreBody } from "./filter.ts";
 import type { RawStore } from "./raw.ts";
+import { docOf } from "./headers.ts";
 import { bodyExt, hashText, pageSlug, requestBodyValue, requestStem, responseText } from "./reqfile.ts";
 import { Sanitizer } from "./sanitize.ts";
 import type { WindowLog } from "./windowlog.ts";
@@ -227,10 +228,10 @@ export class Ingestor {
     const cause = last && causeDt !== undefined && causeDt >= 0 && causeDt <= (last.inherited ? NEW_TAB_MS : CAUSE_MS) ? last : undefined;
     const phase = this.phaseOf(msg.tab, reqStart, num(msg.at));
 
-    // 原始请求（含 token 真值）只放内存，继承请求头、生成草稿用；只存同站的、非噪声的
+    // 原始请求（含 token 真值）只放内存，按窗口存：request() 从这次窗口里抄头、观察统计请求头怎么变用；只存同站的、非噪声的
     const rid = str(msg.rid);
     if (rid && this.raw && !noise && !msg.err && isSameSite(parseUrl(rawUrl), parseUrl(rawPage))) {
-      this.raw.put(msg.tab, rid, { method, url: rawUrl, headers: reqHeadersRaw ?? {}, body: rawReqBody ?? null, page: rawPage, t: msg.t });
+      this.raw.put(msg.tab, rid, { win, doc: docOf(rid), endpoint, method, url: rawUrl, headers: reqHeadersRaw ?? {}, body: rawReqBody ?? null, page: rawPage, t: msg.t });
     }
 
     // 响应体：只写同站的、非噪声的、有内容的；失败的请求只留小响应体（够看出错在哪）

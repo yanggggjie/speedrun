@@ -1,4 +1,4 @@
-// request 的 inherit：内存里没有可继承的头时，自动打开站点首页让页面自己发请求，只试一次；有了就直接抄。
+// request 的请求头：只从这次窗口里页面发过的请求抄（别的窗口的不能用）；同一个 endpoint 整组抄；别的 endpoint 只抄值都一样的头，每次都变的不跨 endpoint 抄（抄错了请求会被拒或静默带错头）；窗口关掉就清掉原始请求。
 // run 输出的「已发出的 write 请求」：查询用的 POST 不算，写请求按 endpoint 计数（漏了 agent 就不知道自己真发了什么）。用最小的假依赖。
 import assert from "node:assert/strict";
 import { RunHost, Session } from "./host.ts";
@@ -6,19 +6,13 @@ import { RawStore } from "../record/raw.ts";
 
 const raw = new RawStore();
 const sent: Array<{ url: string; headers: Record<string, string> }> = [];
-const gotos: string[] = [];
 const link = {
   request: async (name: string, args: Record<string, unknown>) => {
-    if (name === "goto") {
-      gotos.push(String(args.url));
-      // 页面加载时自己发了个带 auth 头的请求，录制端把它放进了内存
-      raw.put(1, `r${gotos.length}`, { method: "GET", url: "https://api.example.com/me", headers: { authorization: "Bearer REAL", "x-csrf-token": "c1", accept: "*/*" }, body: null, page: "https://api.example.com/", t: Date.now() });
-      return { url: String(args.url), title: "t", loaded: true };
-    }
+    if (name === "goto") return { url: String(args.url), title: "t", loaded: true };
     if (name === "call") {
       const req = (args.args as Array<{ url: string; headers: Record<string, string> }>)[0]!;
       if (args.fn === "fetch") sent.push({ url: req.url, headers: req.headers });
-      return { v: { ok: true, status: 200, ct: "application/json", size: 2, text: "{}", ms: 1 } };
+      return { v: { ok: true, status: req.url.includes("denied") ? 403 : 200, ct: "application/json", size: 2, text: "{}", ms: 1 } };
     }
     return {};
   },
@@ -30,22 +24,45 @@ const ingest = {
 };
 const host = new RunHost({ link, win, ingest, raw } as never);
 const s = new Session("r-20261101-120000");
+let n = 0;
+const page = (key: string, endpoint: string, url: string, headers: Record<string, string>): void => { raw.put(1, `d:${++n}`, { win: key, doc: "d", endpoint, method: "GET", url, headers: { accept: "*/*", ...headers }, body: null, page: "https://www.example.com/", t: Date.now() }); };
+// 别的窗口里有别的 token：不能抄
+page("other-20261101-110000", "GET /api/me", "https://api.example.com/api/me", { authorization: "Bearer OTHER" });
+// 这次窗口：页面加载时发了 /me 和 /feed，authorization 都一样，x-sign 每次都变
+page(s.key, "GET /api/me", "https://api.example.com/api/me", { authorization: "Bearer REAL", "x-sign": "s1" });
+page(s.key, "GET /api/feed", "https://api.example.com/api/feed", { authorization: "Bearer REAL", "x-sign": "s2" });
+page(s.key, "GET /api/feed", "https://api.example.com/api/feed?p=2", { authorization: "Bearer REAL", "x-sign": "s3" });
 
-await host.op(s, "request", { url: "https://api.example.com/v1/x" });
-assert.deepEqual(gotos, ["https://api.example.com/"], "内存里没有可继承的头：先打开首页");
-assert.equal(sent[0]!.headers.authorization, "Bearer REAL", "抄到了页面自己发的 authorization");
-assert.equal(sent[0]!.headers["x-csrf-token"], "c1");
-await host.op(s, "request", { url: "https://api.example.com/v1/y", headers: { "x-csrf-token": "mine" } });
-assert.equal(gotos.length, 1, "有了就直接抄，不再打开首页");
-assert.equal(sent[1]!.headers["x-csrf-token"], "mine", "action 里显式写的头优先");
+await host.op(s, "request", { url: "https://api.example.com/api/feed?p=3" });
+assert.equal(sent[0]!.headers.authorization, "Bearer REAL", "同一个 endpoint：整组抄它最近一次的");
+assert.equal(sent[0]!.headers["x-sign"], "s3", "同一个 endpoint 的签名也抄（签名和 endpoint 绑定的站点靠这个）");
+const other = await host.op(s, "request", { url: "https://api.example.com/api/save", method: "POST", json: { a: 1 } }) as { source: { skipped: string[] } };
+assert.equal(sent[1]!.headers.authorization, "Bearer REAL", "别的 endpoint：值都一样的头抄这次窗口里的，不抄别的窗口的");
+assert.equal(sent[1]!.headers["x-sign"], undefined, "每次都变的头不跨 endpoint 抄");
+assert.deepEqual(other.source.skipped, ["x-sign"]);
+await host.op(s, "request", { url: "https://api.example.com/api/y", headers: { authorization: "mine" } });
+assert.equal(sent[2]!.headers.authorization, "mine", "action 里显式写的头优先");
+await host.op(s, "request", { url: "https://api.example.com/api/denied" });
+assert.match(host.takeRejected(s.key) ?? "", /GET \/api\/denied 被拒（403）：抄了 .*authorization.*；没抄 x-sign（这次窗口里每次都变）.*waitRequest/, "被拒时说清楚抄了什么、没抄什么、下一步");
+await host.end(s);
+assert.equal(raw.inWindow(s.key).length, 0, "窗口关掉：这个窗口的原始请求清掉");
+assert.equal(raw.inWindow("other-20261101-110000").length, 1, "别的窗口的不动");
+sent.length = 0;
+const fresh = new Session("r-20261101-130000");
+await host.op(fresh, "request", { url: "https://api.example.com/api/me" });
+assert.equal(sent[0]!.headers.authorization, undefined, "这次窗口里没有请求：只靠 cookie，不用别的窗口的");
+const t0 = Date.now();
+await host.op(fresh, "request", { url: "https://api.example.com/api/me" });
+assert.ok(Date.now() - t0 < 1000, "没打开过页面：不等页面发请求（只靠 cookie 的站点不被拖慢）");
 
-host.watchWrites(s.key);
-await host.op(s, "request", { url: "https://api.example.com/v1/listItems", method: "POST", json: { page: 1 } });
-await host.op(s, "request", { url: "https://api.example.com/v1/save", method: "POST", json: { text: "hi" } });
-await host.op(s, "request", { url: "https://api.example.com/v1/save", method: "POST", json: { text: "again" } });
-await host.op(s, "request", { url: "https://api.example.com/v1/z" });
-assert.deepEqual(host.takeWrites(s.key), ["POST /v1/save ×2"], "查询用的 POST 和 GET 不算 write");
-assert.deepEqual(host.takeWrites(s.key), [], "取过就停止统计");
+const s2 = new Session("r-20261101-140000");
+host.watchWrites(s2.key);
+await host.op(s2, "request", { url: "https://api.example.com/v1/listItems", method: "POST", json: { page: 1 } });
+await host.op(s2, "request", { url: "https://api.example.com/v1/save", method: "POST", json: { text: "hi" } });
+await host.op(s2, "request", { url: "https://api.example.com/v1/save", method: "POST", json: { text: "again" } });
+await host.op(s2, "request", { url: "https://api.example.com/v1/z" });
+assert.deepEqual(host.takeWrites(s2.key), ["POST /v1/save ×2"], "查询用的 POST 和 GET 不算 write");
+assert.deepEqual(host.takeWrites(s2.key), [], "取过就停止统计");
 
 // waitRequest：只拿登记之后、本窗口里方法和 endpoint 对得上的那一个；别的窗口、别的 endpoint、登记之前的都不算（拿错了会静默返回错误的数据）
 let emit: (r: Record<string, unknown>) => void = () => {};

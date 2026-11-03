@@ -47,14 +47,15 @@ const withJson = (res) => ({
 });
 
 /**
- * 在页面里发请求（带这个站点的登录态，Cookie 由浏览器自动带上）。
- * request({ url, method?, headers?, json?, body?, inherit?, inheritFrom?, auth?, pageOrigin? }) → { status, ok, text, json(), ct, finalUrl, ms }
- * 请求头里的认证按这个顺序选，前一种不行再用后一种：
- * - 默认继承：什么都不写，复制这个站点页面最近一次带身份信息的请求的请求头（token 值只在 daemon 内存里）；内存里没有就先打开站点首页让页面自己发一次。inherit: false 不继承（公开接口）。
- * - auth：{ 头: 来源 }，发送时现读，daemon 重启也能用。来源：cookie:名字、local:key[.JSON 路径]、session:key[.路径]、meta:名字、from:/endpoint 路径（从那个 endpoint 的请求取这个头）；前面加 "Bearer " 会拼上前缀。取不到就报错。观察里的「草稿」会给出判断好的 auth。
- * - inheritFrom："/api/v4/search_v3" 这样的 endpoint 路径（:id 匹配一段），只从这个 endpoint 最近一次的请求继承整组请求头：签名和 endpoint 绑定的站点用它，先 goto 会发这个请求的页面。
- * - pageOrigin："https://a.com"，接口在另一个域名（api.a.com）时从站点页面发出；不写就在接口自己的域名上开页面发。
- * - 签名还和完整 URL 绑定（换参数就被拒），或请求体由页面拼出来：用 waitRequest；页面也不发请求的，用 DOM。
+ * 在页面里发请求：request({ url, method?, json?, body?, auth?, headers?, timeout? }) → { status, ok, text, json(), ct, finalUrl, ms, source }
+ * 请求头不用写，lore 按顺序凑齐：
+ * 1. 浏览器自己带的（cookie）。
+ * 2. 从这次窗口里页面发过的请求抄：页面发过同一个 endpoint 就整组抄它的；否则抄这次窗口里值都一样的头（token、xsrf），每次都变的（签名、nonce）不跨 endpoint 抄。
+ *    所以先 goto（或写 @start）打开会发这些请求的页面。
+ * 3. auth：{ 头: 来源 }，页面这次没发带这个头的请求时用，发送时在页面里现读；来源 cookie:名字、local:key[.JSON 路径]、session:key[.路径]、meta:名字，前面加 "Bearer " 会拼上前缀。来源看 learn 窗口观察里的「请求头」。
+ * 4. 前序请求：先 request 拿到 token，再 headers: { "x-token": r.json().token }（照观察里的「依赖」写）。
+ * headers 显式写的最后覆盖。被 401/403 拒时，失败输出里会写抄了什么、没抄什么、下一步；每次都变的头被拒，改用 waitRequest 或 DOM。
+ * 和当前页面同一注册域名（api.a.com 和 a.com）的请求在当前页面上发，否则在请求自己的域名上开页面发。
  */
 export async function request(options) {
   return withJson(await call("request", options));
@@ -63,7 +64,7 @@ export async function request(options) {
 // 定位：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? }。元素没出现会等到 timeout（默认 10 秒）。
 // 操作之后默认不等页面“稳定”（有动静的页面会白等）；要等某个结果就用 waitFor 等具体元素，或传 { settle: true } 等在途请求结束。
 /**
- * 等页面自己发出某个请求，拿它的响应：请求体由页面拼、签名复现不了时用（介于 request() 和纯页面操作之间）。
+ * 等页面自己发出某个请求，拿它的响应：request 被拒（签名和参数绑定）、或请求体由页面拼出来时用；签名由页面自己算（介于 request() 和 DOM 之间）。
  * waitRequest(endpoint, () => goto(url), { timeout? }) → { status, ok, text, json(), ct, url, requestBody }
  * endpoint 写法和 @endpoint 一样（:id 匹配一段）；只等触发动作之后、这个窗口里发出的第一个匹配请求，超时（默认 15 秒）报错并列出实际发出的请求。
  */

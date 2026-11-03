@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { ENDPOINTS_FLUSH_MS, LOG_LIMITS, SITES_DIR } from "../utils/constants.ts";
 import { siteDirName } from "../utils/url.ts";
 import { shapeOf, variablesOf } from "./digest.ts";
+import type { HeaderSignal } from "./auth.ts";
 import type { RequestFile, Row } from "./types.ts";
 
 /**
@@ -23,8 +24,8 @@ export type EndpointStat = {
   count: number; firstSeq: number; lastSeq: number; lastStatus?: number;
   cmdTriggered: number; onLoad: number; idle: number; lastCause?: string;
   descriptions?: Description[];
-  /** auth 头的来源（最近一次判断）：头 → "cookie:_xsrf" 这样的来源，或 signed / static / unknown；signed 为真表示带签名头，换参数可能被拒（以 run 的结果为准）。 */
-  auth?: Record<string, string>; signed?: boolean;
+  /** 请求头的信号（learn 窗口观察时算的最近一次）：头名 → 值怎么变（page / endpoint / varies / few）和页面里的来源（"cookie:_xsrf"）。只有名字和类别，没有值；只给 agent 读，run 不读。 */
+  headers?: Record<string, HeaderSignal>;
   variables: string[]; shape?: string; samples: Sample[];
 };
 export type EndpointJson = Omit<EndpointStat, "samples"> & { samples: Array<Omit<Sample, "size"> & { available: boolean }>; action: string | null };
@@ -131,12 +132,11 @@ export class EndpointIndex {
     return true;
   }
 
-  /** 记下 auth 头的来源（观察里判断出的）；endpoint 还不在聚合里就不记。 */
-  setAuth(site: string, key: string, auth: Record<string, string>, signed: boolean): boolean {
+  /** 记下请求头的信号（观察里算出的）；endpoint 还不在聚合里就不记。 */
+  setHeaders(site: string, key: string, headers: Record<string, HeaderSignal>): boolean {
     const e = this.load(site).get(key);
     if (!e) return false;
-    e.auth = auth;
-    e.signed = signed;
+    e.headers = headers;
     this.touch(site);
     return true;
   }

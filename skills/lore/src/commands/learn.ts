@@ -4,7 +4,6 @@ import { EXIT } from "../protocol.ts";
 import { HANDLE, type LearnWindow } from "../learn/windows.ts";
 import { makeLearnGuide } from "../learn/guide.ts";
 import { observe } from "../learn/observe.ts";
-import { stepLine } from "../learn/explore.ts";
 import { actionSummary, findAction, isComposed } from "../run/actions.ts";
 import { normalizeSite } from "../record/digest.ts";
 import { siteOfUrl } from "../utils/url.ts";
@@ -161,8 +160,6 @@ async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, 
     if (res.scrollY !== undefined) body.push(`滚动位置：${res.scrollY}`);
     if (res.settle) body.push(res.settle.settled ? `稳定：页面已稳定，等了 ${(res.settle.waitedMs / 1000).toFixed(1)}s` : "稳定：等了很久页面还在变化");
     if (res.navigated) body.push(`跳转：${res.url ?? ""} "${res.title ?? ""}"`);
-    const step = stepLine(parsed.cmd, res.loc);
-    if (step) body.push(`草稿：${step}`);
   }
   if (counted) w.ops++;
   await new Promise((r) => setTimeout(r, AFTER_OP_MS));

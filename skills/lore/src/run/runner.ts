@@ -89,7 +89,7 @@ export class ActionRunner {
     // 嵌套调用共用页面状态；compose 的"只能调用 action"只约束 compose 自己的代码，不约束被它调用的 action
     const session = new Session(key);
     session.composeOnly = composed;
-    if (nested) { session.tab = nested.tab; session.origin = nested.origin; }
+    if (nested) { session.tab = nested.tab; session.origin = nested.origin; session.loadedAt = nested.loadedAt; }
     else this.host.watchWrites(key);
     try {
       // 只有最外层的 compose 能 ask：嵌套调用的 compose 不带重跑状态
@@ -103,13 +103,20 @@ export class ActionRunner {
         if (looksLoggedOut(out.error, page?.url)) out.hint = "像是登录失效：用读图片的方式看 page.screenshot。点一下就能登录的（快速登录、使用此账号继续），用 lore learn new --url <这个页面> 打开 learn 窗口点登录，确认登进去后重跑同一条命令；要账号密码、二维码、验证码的请用户在 Chrome 里登录后重跑。不要重新 learn、不要改 action。";
         else if (page?.screenshot) out.hint = "看 page.screenshot 判断页面停在了哪；页面正常但 action 失败，才是 action 坏了。";
       }
+      if (out.status === "failure" && !nested) this.addRejected(out, key);
       if (out.status === "success" && !composed && summary.status === "draft") session.draftsOk.push(file);
-      if (nested) { nested.tab = session.tab; nested.origin = session.origin; nested.draftsOk.push(...session.draftsOk); }
+      if (nested) { nested.tab = session.tab; nested.origin = session.origin; nested.loadedAt = session.loadedAt; nested.draftsOk.push(...session.draftsOk); }
       else { out.runWindow = key; out.drafts = [...session.draftsOk]; out.writes = this.host.takeWrites(key); }
       return out;
     } finally {
       if (!nested) { this.host.takeWrites(key); await this.host.end(session); await this.windows.close(key); }
     }
+  }
+
+  /** 失败时，这个窗口里有请求被 401/403 拒过：把抄了什么、没抄什么、下一步放在 hint 最前面。 */
+  private addRejected(out: Outcome, key: string): void {
+    const why = this.host.takeRejected(key);
+    if (why && out.status === "failure") out.hint = out.hint ? `${why}\n${out.hint}` : why;
   }
 
   /** 在 learn 窗口当前的页面上跑一个 action（lore learn <句柄> run）：共用这个窗口的页面，结果里带这次真发出的 write 请求。 */
@@ -138,6 +145,7 @@ export class ActionRunner {
     this.host.watchWrites(key);
     try {
       const out = await this.execCompose(code, params, timeoutMs, session, askState);
+      if (out.status === "failure") this.addRejected(out, key);
       out.runWindow = key;
       out.writes = this.host.takeWrites(key);
       out.drafts = [...session.draftsOk];

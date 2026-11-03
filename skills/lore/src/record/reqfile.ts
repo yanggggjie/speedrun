@@ -1,13 +1,11 @@
 import { createHash } from "node:crypto";
 import { UNREPLAYABLE_BODY } from "./headers.ts";
 import type { Sanitizer } from "./sanitize.ts";
-import type { ParsedUrl } from "./types.ts";
 
 // 请求文件、响应体文件的命名与内容整理（秘密在这里换成别名）。
 
 export const REQ_BODY_MAX = 64 * 1024;
 export const REQ_OMITTED = "[请求体已省略：太大，或不是完整的 JSON]";
-const ALIAS_ONLY = /^⟨secret_[0-9a-f]+:\w+⟩$/;
 
 export const hashText = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
@@ -37,12 +35,6 @@ export function bodyExt(ct: string | undefined | null, text: string): string {
   if (/json/i.test(ct ?? "") || /^\s*[[{]/.test(text)) return "json";
   if (/html/i.test(ct ?? "")) return "html";
   return "txt";
-}
-
-/** 脱敏后的地址：别名 ⟨secret_a3f9c1e2d4b7:jwt⟩ 保持原样好读，其它参数照常编码（编码会把别名也编码掉）。 */
-export function readableUrl(parsed: ParsedUrl): string {
-  const parts = Object.entries(parsed.query).map(([k, v]) => `${encodeURIComponent(k)}=${ALIAS_ONLY.test(v) ? v : encodeURIComponent(v)}`);
-  return parts.length ? `${parsed.bareUrl}?${parts.join("&")}` : parsed.bareUrl;
 }
 
 /** 把响应体变成可 grep 的文本：JSON 就缩进展开（脱敏之后），其它原样。 */
