@@ -31,8 +31,8 @@ lore 的目标、设计原则和运行时实现：每一部分是谁实现的、
 
 - **learn 窗口**（`learn/windows.ts`）：`lore learn new --url … --description …` 是唯一入口，返回句柄（同一秒重名加 `-2`）和 learn 指引（`learn/guide.ts`，存在 `~/.lore/learn-guide.md`，内容变了才在输出里给全文）。句柄持久：`learn-windows/<句柄>/meta.json` 存起点、描述、当前 URL、标题、观察游标、操作次数，daemon 重启后读回。所有页面操作、观察、`run` 都作用在它当前的页面上。关窗口：agent `close`、空闲 30 分钟、daemon 重启；关了再操作就重开、回到上次的 URL（页面状态丢失，输出写明），日志接着写。操作上限 200 次，只有成功的页面操作计数。
 - **run 窗口**：每次 `lore run` 新开一个，整个 run（含 compose 调用的 action）共用，跑完立刻关；失败时先截图（`screenshots/failure.*`）再关。不同的 run 可以同时跑，没有排队锁。
-- **观察按游标**（`learn/observe.ts`，`learn/explore.ts`）：返回游标之后这个窗口的变化并推进游标（请求默认只列这个窗口里第一次出现的 endpoint 和所有写请求，`--all` 列全部）：页面状态、导航（跳到别的站点时写明站点）、请求（去掉噪声、静态资源、轮询；`describeRequest` 一行：写请求标 `write`（`digest.ts` 的 `looksReadOnly`）、`方法 路径`、状态、内容类型、有没有响应体、请求文件名、以前的 description）、请求之间的依赖（`dependencies`：后一个请求里长度 ≥ 6 的值等于前一个响应里的值）。页面操作执行完等页面稳定，自动附带一次观察。"这一步之后发生了什么"以两次观察之间为准，不靠 `cause` 猜。
-- **写请求不拦**：learn 窗口里页面发什么就真的发什么，`run` 带 `@write` 的 action 也直接发，由 agent 按 SKILL 的标准判断。`@write` 只是提示。每次 `run`（run 窗口，或 learn 窗口里的 `run`）统计这次真发出的 write 请求（`request()` 发的和页面自己发的，按 `looksReadOnly` 排除查询用的 POST，`browser/host.ts` 的 `watchWrites` / `takeWrites`），输出里列成「已发出的 write 请求」，也写进 run 窗口的 `meta.json`。
+- **观察按游标**（`learn/observe.ts`，`learn/explore.ts`）：返回游标之后这个窗口的变化并推进游标（请求默认只列这个窗口里第一次出现的 endpoint，`--all` 列全部）：页面状态、导航（跳到别的站点时写明站点）、请求（去掉噪声、静态资源、轮询；`describeRequest` 一行：编号、`方法 路径`、状态、内容类型、有没有响应体、请求文件名、以前的 description）、请求之间的依赖（`dependencies`：后一个请求里长度 ≥ 6 的值等于前一个响应里的值）。页面操作执行完等页面安静、记录送达（`RunHost.quiet`，见 §7），自动附带一次观察。"这一步之后发生了什么"以两次观察之间为准，不靠 `cause` 猜。
+- **写请求不拦，也不判断**：learn 窗口里页面发什么就真的发什么，`run` 带 `@write` 的 action 也直接发。一个请求有没有副作用、多严重，由 agent 按 SKILL 的标准判断（原则 6）；`@write` 是 agent 写的提示。每次 `run`（run 窗口，或 learn 窗口里的 `run`）统计这次实际发出的非 GET 请求（`request()` 发的和页面自己发的，只看方法、不是 GET / HEAD / OPTIONS 就算，`browser/host.ts` 的 `watchSent` / `takeSent`），输出里列成「已发出的非 GET 请求」，也写进 run 窗口 `meta.json` 的 `sent`；agent 拿它核对有没有意料之外的、告诉用户真发了什么。
 - **compose 只能调用 action**：`run --compose-code` 和 `@compose` 文件的会话标为 compose-only，任何页面操作都被 `RunHost` 拒绝；反过来，学出来的 action 里调用别的 action（`lore.action`）被 `ActionRunner` 拒绝。compose 可以调用 draft。
 - **draft 变成 verified**（`commands/run.ts` 的 `finishRun`）：run 成功、执行过的 draft 变成 verified。多行 `@endpoint` 要按顺序出现在这次 run 窗口发出的请求里（`missingInSequence`），否则不变并说明。`blocked` 的 action `run` 拒绝。
 - **参数**（`run/actions.ts` 的 `checkParams`、`coerceParams`）：对照文件头 `@param 名字[?][:类型]` 检查缺的、多的，再按类型（`number`、`boolean`、`json`，默认字符串）转换后交给 action；compose 里 `action()` 传的参数也一样。
@@ -76,7 +76,7 @@ daemon 内部分四层，上层只依赖下层：
 
 - 命令入口：`src/cli/lore.ts` 没有命令逻辑，`lore <argv>` 原样发给 daemon 的 `run` RPC，daemon 调 `commands/index.ts` 的 `runCommand`，返回 `{ stdout, code }`。daemon 不在时 CLI 会拉起它，存活判据只有一条：socket 能不能回 `ping`。socket 权限 0600，连接按 UTF-8 解码。
 - 要经扩展的命令先 `ensureExtension`：没装 host → `need-install`；Chrome 没运行 → `need-chrome`；等不到扩展 → `need-extension`；扩展 ABI 不对 → 明确让用户刷新扩展。`status`、关着的窗口上的 `observe` 不需要扩展。
-- **输出约定**（`protocol.ts`）：第一行是结论，以 `ok`、`fail`、`ask` 开头，退出码 0、1、2（`ask` 和 `fail need-*` 是 2：要 agent 判断或要用户做一件事，不算失败）；后面是「标题：内容」的几段，多行内容缩进两格：`页面`、`导航`、`请求`（下面可能有一行 `请求头`）、`依赖`、`没列出`（观察），`定位`、`稳定`（页面操作），`结果`（action 的返回值，JSON）、`错误`、`已发出的 write 请求`、`run 窗口目录`、`已变成 verified`（run），`下一步`（建议，最多一两句，和事实分开）。路径一律是绝对路径。
+- **输出约定**（`protocol.ts`）：第一行是结论，以 `ok`、`fail`、`ask` 开头，退出码 0、1、2（`ask` 和 `fail need-*` 是 2：要 agent 判断或要用户做一件事，不算失败）；后面是「标题：内容」的几段，多行内容缩进两格：`页面`、`导航`、`请求`（下面可能有一行 `请求头`）、`依赖`、`没列出`（观察），`定位`、`稳定`（页面操作），`结果`（action 的返回值，JSON）、`错误`、`已发出的非 GET 请求`、`run 窗口目录`、`已变成 verified`（run），`下一步`（建议，最多一两句，和事实分开）。路径一律是绝对路径。
 - relay 断开（刷新扩展、service worker 重启、Chrome 重启）是日常事件，daemon 只 `detach` 链路，日志照写。
 - daemon 启动时：按依赖顺序建好各部件（`daemon.ts` 的 `build`）、打开窗口日志、同步 action SDK、加载 adblock 规则；每 10 秒按额度淘汰日志；每分钟关掉空闲的 learn 窗口。
 
@@ -84,8 +84,8 @@ daemon 内部分四层，上层只依赖下层：
 
 `src/chrome-extension/background.js` 没有业务逻辑，是一个固定 ABI 的管道；页面脚本是扩展包里的静态内容脚本（`page/`）。`manifest.json` 有固定的 `key`，扩展 ID 是 `dkjmgdhelenchaippejoppbcfbjfgppl`（和 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）；权限 `tabs`、`nativeMessaging`、`alarms`、`scripting`、`storage`、`<all_urls>`，Chrome 135 起。
 
-- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 10）：`call`（在页面 MAIN world 调 `window.__lore.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`openWindow`、`openTab`、`activateTab`、`closeTab`、`closeWindow`、`screenshot`。帧是 4 字节小端长度加 UTF-8 JSON；`hello` 带 `abi`，和 daemon 不一致时不工作，提示用户刷新扩展。只有改 ABI 或权限才需要用户刷新扩展。
-- 页面消息：页面脚本 `postMessage` → `bridge.js` → `chrome.runtime.sendMessage` → 扩展补上 tab、frame 转给 daemon。页面自己的脚本也能发，所以日志只是观察记录，不能当权限依据。
+- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 11）：`call`（在页面 MAIN world 调 `window.__lore.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`openWindow`、`openTab`、`activateTab`、`closeTab`、`closeWindow`、`screenshot`。帧是 4 字节小端长度加 UTF-8 JSON；`hello` 带 `abi`，和 daemon 不一致时不工作，提示用户刷新扩展。只有改 ABI 或权限才需要用户刷新扩展。
+- 页面消息：页面脚本 `postMessage` → `bridge.js` → `chrome.runtime.sendMessage` → 扩展补上 tab、frame 转给 daemon。每条带这次页面加载的编号 `d` 和递增序号 `n`（`page/common.js`），daemon 据此判断记录有没有送达。页面自己的脚本也能发，所以日志只是观察记录，不能当权限依据。
 - 连接：Chrome 拉起的 relay 无状态，只转发字节；断开后扩展指数退避重连（上限 30 秒），点工具栏图标立即重连。daemon 不随扩展刷新退出。
 
 ## 5. 页面脚本
@@ -134,8 +134,9 @@ daemon 内部分四层，上层只依赖下层：
 
 - **agent 窗口**（`browser/window.ts`）：一个窗口名一个 Chrome 窗口，第一个标签页是 anchor 页（标题 `lore agent`）；其余标签页在窗口内按 origin 池化，保证请求和页面同源。窗口名到 Chrome 窗口的映射只在内存里：daemon 重启后留下的都是孤儿，第一次用时全部关掉。
 - **RunHost**（`browser/host.ts`）：action 的每个操作都在这里执行并写一行 `cmd`。三种实现方式按顺序选：`request` > `waitRequest` > DOM。
-  - `request` 的请求头按顺序凑齐，尽量继承复用：① 浏览器自己带的（cookie）；② 从这次窗口里页面发过的同站请求抄（`copyHeaders`）：页面发过同一个 endpoint 就整组抄它最近一次的，否则按 `record/headers.ts` 的 `headerKinds` 只抄页面级不变的头，每次都变的不跨 endpoint 抄；这次窗口里还没有同站请求就等 1.5 秒；③ `auth` 声明的页面固定位置（cookie、localStorage、sessionStorage、meta），发送时在页面里现读；④ 前序请求的值由 action 代码写进 `headers`；`headers` 显式写的最后覆盖。cmd 行的 `detail` 记下抄自哪些 endpoint、抄了和没抄的头名。被 401/403 拒时，run 的 `hint` 写清楚抄了什么、没抄什么、下一步（`takeRejected`）。和当前页面同一注册域名的请求在当前页面上发，否则在请求自己的 origin 上开页面发。
+  - `request` 的请求头按顺序凑齐，尽量继承复用：① 浏览器自己带的（cookie）；② 从这次窗口里页面发过的同站请求抄（`copyHeaders`）：页面发过同一个 endpoint 就整组抄它最近一次的，否则按 `record/headers.ts` 的 `headerKinds` 只抄页面级不变的头，每次都变、按 endpoint 变的不跨 endpoint 抄，和它们同一族的（名字去掉最后一段相同，如 `x-zse-93` 和 `x-zse-96`）也不抄：只带签名族的一半会被拒；这次窗口里还没有同站请求就等 1.5 秒；③ `auth` 声明的页面固定位置（cookie、localStorage、sessionStorage、meta），发送时在页面里现读；④ 前序请求的值由 action 代码写进 `headers`；`headers` 显式写的最后覆盖。cmd 行的 `detail` 记下抄自哪些 endpoint、抄了和没抄的头名。被 401/403 拒时，run 的 `hint` 写清楚抄了什么、没抄什么、下一步（`takeRejected`）。和当前页面同一注册域名的请求在当前页面上发，否则在请求自己的 origin 上开页面发。
   - `waitRequest` 等页面自己发出的第一个匹配请求，签名由页面算。
+  - **等待**只有四种，都有明确的结束条件和上限（`utils/constants.ts`）：① 页面可用：`goto` 等到 `readyState` 是 interactive（`GOTO_WAIT_MS`，不等被墙的子资源）；② 页面安静 + 记录送达（`quiet`，`QUIET_MAX_MS` 2 秒）：页面没有在途请求、DOM 400ms 没变（`executor.js` 的 `quiet`），并且页面报告的最后一个消息序号已经到了 daemon（`ingest.ts` 的 `waitDelivered`）；learn 每步之后、`learn new`、`request` 抄头前（刚 `goto` 过、这次窗口还没有同站请求时）默认等，SDK 的 `goto` / 操作带 `{ settle: true }` 时等；③ 等某个请求：`waitRequest`（`WAIT_REQUEST_MS`）；④ 等某个元素：操作先找元素、`waitFor`（10 秒）。单步 `STEP_TIMEOUT_MS`、整个 action `ACTION_TIMEOUT_MS` 是兜底。没有固定时长的等待。
 - **ActionRunner**（`run/runner.ts`）：action 在 worker 线程里跑，SDK（`action-lib/index.js`，daemon 每次启动整个覆盖到 `~/.lore/lib`，保证和 daemon 同一个版本）的每个函数是向 daemon 发一个操作，不用传 page；action 文件是 `export default async () => 结果`（`run/worker.ts` 调用它）；agent 自己的纯函数在 `~/.lore/helpers/`，只在不存在时建目录，从不覆盖；compose 包成注入了 `action()` 的模块再跑。整体超时 115 秒（`@timeout` 可改）。失败时输出带 `page`（URL、标题、截图），像登录失效时带 `hint`。
 - **在 learn 窗口里 run**（`commands/learn.ts`）：`lore learn <句柄> run --action <名>` 把 learn 窗口当前的 `Session` 交给 `ActionRunner.runAction`，和 compose 调用 action 一样共用页面状态；日志进 learn 窗口，不变成 verified。原始请求（含真值）只在 daemon 内存里（`record/raw.ts`），**绝不落盘**，daemon 重启就没了。
 - **请求头的信号**（`learn/observe.ts`、`record/auth.ts`、`record/headers.ts`）：观察里每个带非浏览器头的请求有一行「请求头」：按头名统计这个窗口里同站请求的真值怎么变（只在同一次页面加载里比），再拿真值和页面此刻的 cookie、localStorage、sessionStorage、meta 比对出位置；只输出、只记类别和位置（`endpoints.json` 的 `headers`），不记值。

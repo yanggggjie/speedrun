@@ -139,4 +139,17 @@ assert.equal(mr.cause, opener.seq, "新标签页的请求指向打开它的那�
 assert.equal(index.snapshot("git.example.org").endpoints[0]!.descriptions?.[0]?.text, "点开 MR 573");
 
 
+// 记录送达：按标签页和页面加载编号分开等，换了加载（跳转）的消息不能当成旧页面的到了（否则观察会漏掉这一步的请求）
+ingest.push({ k: "x", t: T, tab: 5, d: "docA", n: 3 } as PageMsg);
+assert.equal(await ingest.waitDelivered(5, "docA", 3, 10), true, "已经到了：立刻返回");
+const waitingA = ingest.waitDelivered(5, "docA", 5, 200);
+ingest.push({ k: "x", t: T, tab: 6, d: "docA", n: 9 } as PageMsg);
+ingest.push({ k: "x", t: T, tab: 5, d: "docB", n: 9 } as PageMsg);
+assert.equal(await waitingA, false, "别的标签页、别的加载编号的消息都不算");
+const waitingB = ingest.waitDelivered(5, "docB", 10, 1000);
+ingest.push({ k: "x", t: T, tab: 5, d: "docB", n: 10 } as PageMsg);
+assert.equal(await waitingB, true, "等到的那条一到就返回");
+assert.equal(await ingest.waitDelivered(7, "docZ", 0, 10), true, "页面还没发过消息：直接算到了");
+ingest.flush();
+
 console.log("ingest.selfcheck ok");

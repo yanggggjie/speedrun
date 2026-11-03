@@ -24,7 +24,7 @@ description: >-
 3. **先拆分；同一种操作只学一次**：只是作用对象不同的操作，只在最容易的那个对象上学，对象换成参数。
 4. **network 优先，DOM 兜底。** 读不了响应体（流式、二进制）时，DOM 是正当的结果。
 5. **成本顺序**：读文件 < 在 learn 窗口里 run 一次 action < 一次页面操作 < 继续 learn。
-6. **写请求你判断严重程度**：lore 不拦写请求，learn 窗口里页面发什么就真的发什么，`run` 带 `@write` 的 action 也直接发。点赞、收藏这类轻量可撤销的直接做；删除、支付、下单、发布或发给别人、改设置、不可撤销的先问用户。批量写先跑读的 action 拿到目标，用 `lore.ask` 停下来确认，再跑写的 action。`run` 输出里的「已发出的 write 请求」就是这次真发了什么，要告诉用户。
+6. **有没有副作用你判断**：lore 不拦、也不替你判断哪个请求是写，learn 窗口里页面发什么就真的发什么，`run` 带 `@write` 的 action 也直接发。点赞、收藏这类轻量可撤销的直接做；删除、支付、下单、发布或发给别人、改设置、不可撤销的先问用户。批量写先跑读的 action 拿到目标，用 `lore.ask` 停下来确认，再跑写的 action。`run` 输出里的「已发出的非 GET 请求」是这次实际发出的（只看方法，查询用的 POST 也在里面）：核对有没有意料之外的，真发过的写操作要告诉用户。
 
 ## 3. 流程
 
@@ -44,7 +44,7 @@ description: >-
 
 1. 拆成 `zhihu-search`（`q`、`n`）和 `zhihu-vote`（回答 id）。"前 30 条"写在 compose 里，"硬核技术"交给 `lore.ask`，点赞只在第一张卡片上学。
 2. `lore learn new --url https://www.zhihu.com …` 拿到句柄；`open` 搜索页 → 观察里有 `GET /api/v4/search_v3`，「请求头」里 `x-zse-96 每次都变`；`zhihu-search` 先 `goto` 搜索页再 `request` 它（页面发过同一个 endpoint，签名整组抄），在窗口里 `run --offset 20` 通过。
-3. `click` 第一张卡片的赞同 → 观察里 `write #1230 POST /api/v4/answers/:id/voters`，「请求头」里 `x-xsrftoken 页面级不变 ← cookie _xsrf` → `zhihu-vote` 只写 `request`；run 时页面没发带 `x-xsrftoken` 的请求被拒，才照位置加 `auth: { "x-xsrftoken": "cookie:_xsrf" }`。
+3. `click` 第一张卡片的赞同 → 观察里 `#1230 POST /api/v4/answers/:id/voters`，「请求头」里 `x-xsrftoken 页面级不变 ← cookie _xsrf` → `zhihu-vote` 只写 `request`；run 时页面没发带 `x-xsrftoken` 的请求被拒，才照位置加 `auth: { "x-xsrftoken": "cookie:_xsrf" }`。
 4. `lore run --compose-code '搜 30 条 → lore.ask 挑 → 循环 zhihu-vote' --q agent` → 停在 ask，`--resume` 继续 → 结果，两个 draft 变成 verified。
 
 ## 4. 命令
@@ -55,17 +55,17 @@ description: >-
 | `lore learn list` | 列出 learn 窗口 |
 | `lore learn <句柄> open <网址> \| click <x> <y> \| type "文字" \| key <键> \| scroll down\|up\|top\|bottom` | 页面操作，靠截图加坐标；自动附带观察；窗口关着就从上次的 URL 重开 |
 | `lore learn <句柄> screenshot` | 截图存进窗口目录的 `screenshots/` |
-| `lore learn <句柄> observe [--all]` | 上次观察以来的新东西，推进游标；默认只列第一次出现的 endpoint 和写请求，`--all` 列全部 |
-| `lore learn <句柄> run --action <名> [--参数 值]` | 在 learn 窗口当前页面跑一个 action（有 `@start` 先打开它），日志进这个窗口，不变成 verified；输出列出已发出的 write 请求 |
+| `lore learn <句柄> observe [--all]` | 上次观察以来的新东西，推进游标；默认只列第一次出现的 endpoint，`--all` 列全部 |
+| `lore learn <句柄> run --action <名> [--参数 值]` | 在 learn 窗口当前页面跑一个 action（有 `@start` 先打开它），日志进这个窗口，不变成 verified；输出列出已发出的非 GET 请求 |
 | `lore learn <句柄> close` | 关掉 Chrome 窗口，句柄和目录保留 |
-| `lore run --action <名> \| --compose <名> [--参数 值]` | 新开 run 窗口执行一个 action 或存下来的 compose（哈希写前几位就行），跑完关掉；输出列出已发出的 write 请求 |
+| `lore run --action <名> \| --compose <名> [--参数 值]` | 新开 run 窗口执行一个 action 或存下来的 compose（哈希写前几位就行），跑完关掉；输出列出已发出的非 GET 请求 |
 | `lore run --compose-code '代码' [--参数 值]` | 跑一段 compose 代码：`action("名字", 参数)` 调用 action，`lore.params.名字` 读参数；跑通就按代码哈希存进 `~/.lore/compose/` |
 | `lore run --resume <编号> --answer '<json>'` | 恢复停在 `lore.ask` 的 run（可重复，按 ask 的顺序；30 分钟内有效） |
 | `lore tabs` `status` `doctor` `daemon restart` | 用户的标签页（地址和标题）/ daemon、扩展、日志占用和没跑通的 draft / 检查安装 / 重启 daemon |
 
 `learn new`、页面操作、`run` 都必须带 `--description`：一句话，用用户的话说这一步要做什么。好："点开变更单 10912 里的 MR 573"；不好："click 410 421"。它会存进时间线、`endpoints.json` 的 `descriptions` 和 compose 的文件头，下次靠它找到这些 endpoint 和做法。
 
-**写代码**：action 文件写 `export default async () => { … return 结果; }`；SDK 的函数不用传 page（`goto(url)`、`click(定位)`、`request({…})`）；变化的值用 `lore.params.名字 ?? 默认值`，不是字符串的在文件头写类型（`@param offset?:number`，也有 `boolean`、`json`），run 时转好；返回字段用页面上的词命名；action 在文件头写 `@start <url>`（或第一步 `goto`），run 时先打开它：`request` 从这个页面发过的请求抄头，DOM 在它上面操作；action 里不能调用别的 action，要串起来就写 compose。会发 write 请求的 action 文件头写 `@write`（只是提示，不拦）。重复的小函数挪进 `~/.lore/helpers/`，action 里 `import`。`lore.ask` 只能写在最外层的 compose 里，compose 里不要用时间、随机数决定调哪个 action，`action`、`compose`、`resume`、`answer`、`timeout`、`description` 不能当参数名。三种实现方式按顺序选：`request` > `waitRequest` > DOM。`request`、`waitRequest`、`auth` 等的用法见 `~/.lore/lib/index.js` 的注释和 learn 指引。
+**写代码**：action 文件写 `export default async () => { … return 结果; }`；SDK 的函数不用传 page（`goto(url)`、`click(定位)`、`request({…})`）；变化的值用 `lore.params.名字 ?? 默认值`，不是字符串的在文件头写类型（`@param offset?:number`，也有 `boolean`、`json`），run 时转好；返回字段用页面上的词命名；action 在文件头写 `@start <url>`（或第一步 `goto`），run 时先打开它：`request` 从这个页面发过的请求抄头，DOM 在它上面操作；action 里不能调用别的 action，要串起来就写 compose。会改东西（点赞、提交、删除）的 action 文件头写 `@write`（只是提示，不拦）。重复的小函数挪进 `~/.lore/helpers/`，action 里 `import`。`lore.ask` 只能写在最外层的 compose 里，compose 里不要用时间、随机数决定调哪个 action，`action`、`compose`、`resume`、`answer`、`timeout`、`description` 不能当参数名。三种实现方式按顺序选：`request` > `waitRequest` > DOM。`request`、`waitRequest`、`auth` 等的用法见 `~/.lore/lib/index.js` 的注释和 learn 指引。
 
 ## 5. 数据
 

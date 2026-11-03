@@ -28,14 +28,14 @@ export function shownRequests(rows: Row[], stats: ReadonlyMap<string, PeriodicSt
 }
 
 /**
- * 一个请求的一行：write（写请求）、编号、`方法 路径`、状态、内容类型、有没有响应体（没有就写原因）、请求文件（窗口内的相对路径）；
+ * 一个请求的一行：编号、`方法 路径`、状态、内容类型、有没有响应体（没有就写原因）、请求文件（窗口内的相对路径）；
  * other 是请求不在 learn 窗口起点的站点时写上站点；known 是这个 endpoint 以前记下的 description（description）。
  */
-export function describeRequest(r: Row, file: RequestFile | undefined, opts: { write: boolean; other?: string; known?: string }): { line: string; readable: boolean } {
+export function describeRequest(r: Row, file: RequestFile | undefined, opts: { other?: string; known?: string }): { line: string; readable: boolean } {
   const ct = file?.responseHeaders?.["content-type"]?.split(";")[0]?.trim() || "未知类型";
   const readable = !!file?.responseBodyPath;
   const body = readable ? "有响应体" : `无响应体（${file?.bodyOmitted ?? file?.error ?? "没存"}）`;
-  return { line: `${opts.write ? "write" : "     "} #${r.seq} ${r.endpoint ?? `${r.method ?? "?"} ${r.url ?? ""}`}${opts.other ? `（${opts.other}）` : ""} → ${r.status ?? "?"} ${ct}，${body}，${r.file ?? "（没有请求文件）"}${opts.known ? `（以前：${opts.known}）` : ""}`, readable };
+  return { line: `#${r.seq} ${r.endpoint ?? `${r.method ?? "?"} ${r.url ?? ""}`}${opts.other ? `（${opts.other}）` : ""} → ${r.status ?? "?"} ${ct}，${body}，${r.file ?? "（没有请求文件）"}${opts.known ? `（以前：${opts.known}）` : ""}`, readable };
 }
 
 export type Dependency = { from: number; to: number; field: string };

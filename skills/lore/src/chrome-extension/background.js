@@ -16,11 +16,10 @@
 // 窗口里有 anchor 页（标题 lore agent）只说明这是 agent 窗口，用户在这个窗口里自己开的标签页（Cmd+T、别的扩展开的）不算、不录。
 // 页面脚本加载时经 bridge 问一次，不是 agent 标签页就不再上报任何东西；地址变化也只转 agent 标签页的。
 
-const ABI = 10;
+const ABI = 11;
 const HOST = "com.lore.connect";
 const RETRY_MAX_MS = 30_000;
 const KEEPALIVE_MINUTES = 0.5;
-const LOAD_WAIT_MS = 15_000;
 const PAGE_FILES = ["page/common.js", "page/recorder.js", "page/executor.js"];
 const ANCHOR_URL = chrome.runtime.getURL("anchor.html");
 
@@ -155,7 +154,7 @@ async function runOp(name, args) {
       return { tabs: out };
     }
     case "goto": {
-      const wait = args.wait ? waitReady(args.tabId, args.url, LOAD_WAIT_MS) : null;
+      const wait = args.wait ? waitReady(args.tabId, args.url, args.waitMs) : null;
       await chrome.tabs.update(args.tabId, { url: args.url });
       const loaded = wait ? await wait : undefined;
       const tab = await chrome.tabs.get(args.tabId);

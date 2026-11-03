@@ -26,7 +26,7 @@ export interface ActionSummary {
   status: string;
   summary: string;
   params: string[];
-  /** 文件头 `@write`：这个 action 会发 write 请求（点赞、提交、删除……）。只是提示：找 action 时、status 里看得到，run 不拦。 */
+  /** 文件头 `@write`：这个 action 会改东西（点赞、提交、删除……），agent 写的。只是提示：找 action 时、status 里看得到，run 不拦。 */
   write: boolean;
   /** 文件头 `@start <url>`：run 时先打开这个页面再执行（run 窗口每次从空白开始）。 */
   start?: string;

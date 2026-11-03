@@ -90,9 +90,37 @@ export class Ingestor {
 
   /** 收一条页面消息：攒一小会儿，一批放进一次写入。 */
   push(msg: PageMsg): void {
+    this.noteDelivered(msg);
     this.queue.push(msg);
     // 定时写盘出错（磁盘满、没权限）只记下来：抛到定时器外面会让 daemon 退出，内存里的原始请求、ask 恢复记录、learn 窗口的页面全丢
     this.timer ??= setTimeout(() => { try { this.flush(); } catch (error) { logger.warn("写日志失败", { err: error instanceof Error ? error.message : String(error) }); } }, FLUSH_MS);
+  }
+
+  // ---- 记录送达：页面每条消息带这次加载的编号 d 和递增序号 n（page/common.js） ----
+
+  /** 每个标签页最近一次页面加载收到的最大序号。 */
+  private readonly delivered = new Map<number, { d: string; n: number }>();
+  private readonly deliveredWaits = new Set<{ tab: number; d: string; n: number; done: (ok: boolean) => void }>();
+
+  private noteDelivered(msg: PageMsg): void {
+    const d = str(msg.d), n = num(msg.n);
+    if (!d || n === undefined) return;
+    const cur = this.delivered.get(msg.tab);
+    if (cur?.d === d && cur.n >= n) return;
+    this.delivered.set(msg.tab, { d, n });
+    trimMap(this.delivered);
+    for (const w of this.deliveredWaits) if (w.tab === msg.tab && w.d === d && n >= w.n) w.done(true);
+  }
+
+  /** 等这个标签页这次加载（d）的第 n 条消息到 daemon，最多 ms；返回到没到。n 为 0（页面还没发过消息）直接算到了。 */
+  waitDelivered(tab: number, d: string, n: number, ms: number): Promise<boolean> {
+    const cur = this.delivered.get(tab);
+    if (n <= 0 || (cur?.d === d && cur.n >= n)) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const w = { tab, d, n, done: (ok: boolean) => { clearTimeout(timer); this.deliveredWaits.delete(w); resolve(ok); } };
+      const timer = setTimeout(() => w.done(false), ms);
+      this.deliveredWaits.add(w);
+    });
   }
 
   flush(): void {

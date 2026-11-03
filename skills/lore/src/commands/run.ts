@@ -64,7 +64,7 @@ function parseAnswer(s: string): unknown {
 }
 
 /**
- * run 的结论和结果，按输出约定写成几段：第一行 ok / fail，然后「结果」（action 的返回值，JSON）、已发出的 write 请求、
+ * run 的结论和结果，按输出约定写成几段：第一行 ok / fail，然后「结果」（action 的返回值，JSON）、已发出的非 GET 请求、
  * 出错的地方。lore run 和 learn 窗口里的 run 共用；run 窗口目录、变成 verified 的 draft 由 finishRun 接在后面。
  */
 export function outcomeLines(name: string, outcome: Outcome): string[] {
@@ -79,7 +79,7 @@ export function outcomeLines(name: string, outcome: Outcome): string[] {
     if (outcome.page) lines.push(`页面：${outcome.page.url} "${outcome.page.title}"`, ...(outcome.page.screenshot ? [`截图：${outcome.page.screenshot}`] : []));
     if (outcome.hint) lines.push(`下一步：${outcome.hint}`);
   }
-  if (outcome.writes?.length) lines.push(`已发出的 write 请求：\n${indent(outcome.writes.join("\n"))}`);
+  if (outcome.sent?.length) lines.push(`已发出的非 GET 请求：\n${indent(outcome.sent.join("\n"))}`);
   return lines;
 }
 
@@ -94,7 +94,7 @@ function handleAsk(ctx: Ctx, out: Output, outcome: Outcome, o: RunOpts, target: 
   out.code = EXIT.wait;
   out.line(`ask ${outcome.question}`);
   out.line(`数据：\n${indent(JSON.stringify(outcome.data ?? null, null, 2))}`);
-  if (outcome.writes?.length) out.line(`已发出的 write 请求：\n${indent(outcome.writes.join("\n"))}`);
+  if (outcome.sent?.length) out.line(`已发出的非 GET 请求：\n${indent(outcome.sent.join("\n"))}`);
   out.line(`恢复：lore run --resume ${id} --answer '<json>'（前面已执行的 action 不会重跑；30 分钟内有效）`);
   if (outcome.runWindow) out.line(`run 窗口目录：${ctx.log.winDir(outcome.runWindow)}`);
   return true;
@@ -106,7 +106,7 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts): string[] {
   const win = outcome.runWindow;
   if (win) {
     const old = ctx.log.readMeta(win);
-    if (old) ctx.log.writeMeta(win, { ...old, description: o.description, status: outcome.status, ...(outcome.writes?.length ? { writes: outcome.writes } : {}), endedAt: Date.now() });
+    if (old) ctx.log.writeMeta(win, { ...old, description: o.description, status: outcome.status, ...(outcome.sent?.length ? { sent: outcome.sent } : {}), endedAt: Date.now() });
     lines.push(`run 窗口目录：${ctx.log.winDir(win)}（窗口已关，日志留着）`);
   }
   const drafts: DraftRun[] = [...(o.priorDrafts ?? []), ...(outcome.drafts ?? []).map((file) => ({ file, window: win ?? "" }))];

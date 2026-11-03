@@ -12,12 +12,12 @@ import { actionSummary, actionTimeoutMs, checkParams, coerceParams, findAction, 
 export type JournalEntry = { name: string; params: Record<string, unknown>; result: unknown };
 /** 最外层 compose 的重跑状态：已执行的 action 和 agent 给过的回答（按 ask 的顺序）。 */
 export type AskState = { journal: JournalEntry[]; answers: unknown[] };
-/** runWindow：这次 run 用的 run 窗口（名字）；drafts：这次真跑成功的 draft（文件路径），由命令层判断变成 verified；writes：这次真发出的 write 请求（`POST /api/x ×2`）。三者只在最外层有。 */
+/** runWindow：这次 run 用的 run 窗口（名字）；drafts：这次真跑成功的 draft（文件路径），由命令层判断变成 verified；sent：这次实际发出的非 GET 请求（`POST /api/x ×2`）。三者只在最外层有。 */
 export type Outcome = (
   | { status: "success"; result: unknown }
   | { status: "failure"; error: string; failedAction?: string; page?: FailurePage; hint?: string }
   | { status: "ask"; question: string; data: unknown; journal: JournalEntry[] }
-) & { runWindow?: string; drafts?: string[]; writes?: string[] };
+) & { runWindow?: string; drafts?: string[]; sent?: string[] };
 
 const ASK_DATA_LIMIT = 100 * 1024;
 
@@ -89,8 +89,8 @@ export class ActionRunner {
     // 嵌套调用共用页面状态；compose 的"只能调用 action"只约束 compose 自己的代码，不约束被它调用的 action
     const session = new Session(key);
     session.composeOnly = composed;
-    if (nested) { session.tab = nested.tab; session.origin = nested.origin; session.loadedAt = nested.loadedAt; }
-    else this.host.watchWrites(key);
+    if (nested) { session.tab = nested.tab; session.origin = nested.origin; session.fresh = nested.fresh; }
+    else this.host.watchSent(key);
     try {
       // 只有最外层的 compose 能 ask：嵌套调用的 compose 不带重跑状态
       const out: Outcome = composed
@@ -105,11 +105,11 @@ export class ActionRunner {
       }
       if (out.status === "failure" && !nested) this.addRejected(out, key);
       if (out.status === "success" && !composed && summary.status === "draft") session.draftsOk.push(file);
-      if (nested) { nested.tab = session.tab; nested.origin = session.origin; nested.loadedAt = session.loadedAt; nested.draftsOk.push(...session.draftsOk); }
-      else { out.runWindow = key; out.drafts = [...session.draftsOk]; out.writes = this.host.takeWrites(key); }
+      if (nested) { nested.tab = session.tab; nested.origin = session.origin; nested.fresh = session.fresh; nested.draftsOk.push(...session.draftsOk); }
+      else { out.runWindow = key; out.drafts = [...session.draftsOk]; out.sent = this.host.takeSent(key); }
       return out;
     } finally {
-      if (!nested) { this.host.takeWrites(key); await this.host.end(session); await this.windows.close(key); }
+      if (!nested) { this.host.takeSent(key); await this.host.end(session); await this.windows.close(key); }
     }
   }
 
@@ -119,14 +119,15 @@ export class ActionRunner {
     if (why && out.status === "failure") out.hint = out.hint ? `${why}\n${out.hint}` : why;
   }
 
-  /** 在 learn 窗口当前的页面上跑一个 action（lore learn <句柄> run）：共用这个窗口的页面，结果里带这次真发出的 write 请求。 */
+  /** 在 learn 窗口当前的页面上跑一个 action（lore learn <句柄> run）：共用这个窗口的页面，结果里带这次实际发出的非 GET 请求。 */
   async runInLearn(name: string, params: Record<string, unknown>, learn: Session): Promise<Outcome> {
-    this.host.watchWrites(learn.key);
+    this.host.watchSent(learn.key);
     try {
       const out = await this.runAction(name, params, learn);
-      out.writes = this.host.takeWrites(learn.key);
+      if (out.status === "failure") this.addRejected(out, learn.key);
+      out.sent = this.host.takeSent(learn.key);
       return out;
-    } finally { this.host.takeWrites(learn.key); }
+    } finally { this.host.takeSent(learn.key); }
   }
 
   /** 学出来的 action：文件头有 @start 就先打开那个页面（run 窗口从空白开始），再执行。 */
@@ -142,16 +143,16 @@ export class ActionRunner {
     const key = this.windows.open(label, { compose: label, params });
     const session = new Session(key);
     session.composeOnly = true;
-    this.host.watchWrites(key);
+    this.host.watchSent(key);
     try {
       const out = await this.execCompose(code, params, timeoutMs, session, askState);
       if (out.status === "failure") this.addRejected(out, key);
       out.runWindow = key;
-      out.writes = this.host.takeWrites(key);
+      out.sent = this.host.takeSent(key);
       out.drafts = [...session.draftsOk];
       return out;
     } finally {
-      this.host.takeWrites(key);
+      this.host.takeSent(key);
       await this.host.end(session);
       await this.windows.close(key);
     }
@@ -178,7 +179,7 @@ export class ActionRunner {
 
   /**
    * askState 只有最外层 compose 才有：每次 action() 按调用顺序记进 journal；恢复时从头重跑代码，
-   * 前面记下的 action() 直接返回记录的结果（不重复发写请求），第 i 次 ask 返回第 i 个回答，没有回答就停下交给 agent。
+   * 前面记下的 action() 直接返回记录的结果（不重复发请求），第 i 次 ask 返回第 i 个回答，没有回答就停下交给 agent。
    */
   private work(file: string, params: Record<string, unknown>, timeoutMs: number, session: Session, askState?: AskState): Promise<Outcome> {
     const limit = this.timeoutOverrideMs ?? timeoutMs;

@@ -80,7 +80,7 @@
     else t.scrollBy({ left: dx || 0, top: dy || 0, behavior: "instant" });
   };
   // 等页面稳定：没有在途的 fetch / XHR，并且 DOM 静默一小段时间；
-  const settle = (timeoutMs = 4000, quietMs = 400) => new Promise((resolve) => {
+  const settle = (timeoutMs, quietMs = 400) => new Promise((resolve) => {
     const t0 = Date.now();
     const tick = () => {
       const quiet = inflight === 0 && Date.now() - T.lastMut >= quietMs;
@@ -214,8 +214,6 @@
         case "scroll": out.target = el ? T.desc(el) : "page"; scrollTarget(el, cmd.dx, cmd.dy, cmd.to); break;
         default: throw new Error(`未知动作 ${cmd.kind}`);
       }
-      // 默认不等：等整页“静默”在永远有动静的页面上会白等满上限。需要时由调用方显式要求（settle: true），或用 waitFor 等具体条件
-      if (cmd.settle === true) out.settle = await settle(cmd.settleTimeout ?? 2000);
       out.url = location.href;
       out.title = document.title;
       if (el) out.loc = durable(el);
@@ -280,7 +278,6 @@
         }
         default: throw new Error(`未知动作 ${cmd.kind}`);
       }
-      if (cmd.settle === true) out.settle = await settle(cmd.settleTimeout ?? 2000);
       out.url = location.href; out.title = document.title;
       return out;
     } catch (e) {
@@ -289,6 +286,9 @@
   };
 
   T.exec.ping = () => true; // 页面脚本就位的探针
+
+  // 页面安静（没有在途请求、DOM 一小段时间没变，最多 maxMs），然后报告这次页面加载最后发出的消息序号：daemon 等它到了，就知道记录都收齐了
+  T.exec.quiet = async (maxMs) => ({ ...(await settle(maxMs)), d: T.doc, n: T.n });
 
   T.exec.text = (max) => {
     const text = (document.body?.innerText ?? "").replace(/\n{3,}/g, "\n\n").trim();

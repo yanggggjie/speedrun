@@ -43,16 +43,16 @@ export function makeLearnGuide(info: LearnInfo): string {
 观察里的「依赖」一段标出请求之间的依赖（"#813 用了 #812 响应的 data.token"），据此判断。翻页：请求实现的翻页交给 compose 里的循环；"第 N 条"怎么算写在 compose 里，底层 action 只如实返回列表和每条的类型。
 
 ## 观察：每一步之后看发生了什么
-- 页面操作（open、click、type、key、scroll）和 \`run\` 执行完会等页面稳定，然后自动附带一次观察：上次观察以来的页面、导航、请求、请求之间的依赖。
-- 请求只列这个窗口里第一次出现的 endpoint 和所有写请求；之前出现过的只计数，\`${cmd} observe --all\` 看全部。
-- 每个请求一行：行首 \`write\` 表示写请求；后面是编号、\`方法 路径\`（就是 @endpoint 的写法）、状态、内容类型、有没有响应体、请求文件、以前的 description。带非浏览器头的请求下面有一行 \`请求头\`：每个头的值在这个窗口的请求里怎么变（页面级不变 / 按 endpoint 不变 / 每次都变 / 样本太少），和它在页面里的位置（← cookie _xsrf）。这是信号：请求头 lore 会自动抄，你只在 run 被拒时照它改。
+- 页面操作（open、click、type、key、scroll）和 \`run\` 执行完会等页面安静、这一步引发的记录都到了（最多 2 秒），然后自动附带一次观察：上次观察以来的页面、导航、请求、请求之间的依赖。「稳定：」一行写等了多久、页面有没有安静下来。
+- 请求只列这个窗口里第一次出现的 endpoint；之前出现过的只计数，\`${cmd} observe --all\` 看全部。
+- 每个请求一行：编号、\`方法 路径\`（就是 @endpoint 的写法）、状态、内容类型、有没有响应体、请求文件、以前的 description。带非浏览器头的请求下面有一行 \`请求头\`：每个头的值在这个窗口的请求里怎么变（页面级不变 / 按 endpoint 不变 / 每次都变 / 样本太少），和它在页面里的位置（← cookie _xsrf）。这是信号：请求头 lore 会自动抄，你只在 run 被拒时照它改。
 - 请求晚到（懒加载、防抖、新标签页加载）：等一会儿再 \`${cmd} observe\`，只给上次之后的新东西，不漏不重。
 
-## 写请求：你判断严重程度
-页面发什么就真的发什么（learn 窗口不拦）。做会引发写请求的操作之前先判断：
+## 写请求：你判断有没有副作用、多严重
+页面发什么就真的发什么（learn 窗口不拦），lore 也不替你判断哪个请求是写：看 endpoint 名、请求体和业务含义。做会引发写请求的操作之前先判断：
 - 轻量、可撤销、只影响用户自己的（点赞、收藏、关注、标已读）：直接做；
 - 删除、支付、下单、发布或发给别人、改设置、不可撤销的：先问用户，同意了再做。
-在 learn 窗口里 \`run\` 带 \`@write\` 的 action 也一样：lore 不拦，输出最后的「已发出的 write 请求」列出这次真发了什么。真发过的写操作要在最终回复里告诉用户。
+在 learn 窗口里 \`run\` 带 \`@write\` 的 action 也一样：lore 不拦，输出最后的「已发出的非 GET 请求」列出这次实际发出的（只看方法，查询用的 POST 也在里面）：核对有没有意料之外的，真发过的写操作要在最终回复里告诉用户。
 批量写（给 10 条点赞、删一批记录）在 compose 里先跑读的 action 拿到目标，用 \`lore.ask\` 停下来确认（严重的交给用户确认），再循环跑写的 action。
 
 ## 文件在哪（用 rg / node / Python 读；没有读日志的 lore 命令）
@@ -78,7 +78,7 @@ export function makeLearnGuide(info: LearnInfo): string {
 /**
  * @summary 一句话：做什么（业务动作）
  * @status draft
- * @write（会发 write 请求才写，如点赞、提交、删除）
+ * @write（这个 action 会改东西才写，如点赞、提交、删除）
  * @start 起点页面的地址（run 时先打开它：request 要从这个页面发过的请求抄头，DOM 要在它上面操作）
  * @endpoint 方法 路径
  * @param 参数名 说明（可选写成 参数名?；不是字符串的写类型：参数名:number、参数名?:boolean、参数名:json）
@@ -93,7 +93,7 @@ export function makeLearnGuide(info: LearnInfo): string {
 9. 事情做完由你决定 \`${cmd} close\`（关掉 Chrome 窗口，句柄和目录保留）。
 
 ## 写 action 的规则
-- SDK：\`import { lore, goto, request, waitRequest, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, serializeUrl } from "../../../lib/index.js"\`，入口 \`export default async () => { ... }\`，返回值就是结果。函数都不用传 page：\`goto(url)\`、\`click(定位)\`、\`request({…})\`。
+- SDK：\`import { lore, goto, request, waitRequest, click, fill, select, check, press, scroll, waitFor, text, query, evaluate, sleep } from "../../../lib/index.js"\`，入口 \`export default async () => { ... }\`，返回值就是结果。函数都不用传 page：\`goto(url)\`、\`click(定位)\`、\`request({…})\`。
 - **请求头**：lore 按顺序凑齐，你一般什么都不用写：
   1. 浏览器自己带的（cookie）；
   2. 从这次窗口里页面发过的请求抄：页面发过同一个 endpoint 就整组抄它的（签名和 endpoint 绑定的站点靠这个），否则只抄值都一样的头，每次都变的不跨 endpoint 抄。所以 action 先 \`goto\`（或写 \`@start\`）打开会发这些请求的页面；
@@ -104,7 +104,8 @@ export function makeLearnGuide(info: LearnInfo): string {
 - run 窗口每次从空白开始，不沿用 learn 窗口的页面状态：action 写 \`@start\`（或第一步 \`goto\`），run 时先打开它。action 里不能调用别的 action，要串起来写 compose。
 - 参数用 \`lore.params.名字 ?? 默认值\`，按 @param 的类型转好（没写类型是字符串）；变化的值（id、关键词、页码）都做成参数；返回字段用页面上的词命名。
 - **小函数放进 ${info.helpersDir}/**：写 action 前先 \`ls ${info.helpersDir}\` 看有什么；同一个小函数（去 HTML 标签、格式化时间、拼 URL）第二次出现就挪进去，按用途分文件（如 text.js、time.js），action 里 \`import { stripHtml } from "../../../helpers/text.js"\`。只放纯函数：要发请求或操作页面的写成 action。
-- 成功判断：action 自己判断任务有没有正确完成，不看最后停在什么页面。检查 HTTP 状态码和业务码；读页面内容的要检查拿到的确实是目标内容（标题、关键元素），停在登录页、错误页就抛错，不能把登录页的文字当结果返回；结果必须对应本次参数；会发 write 请求的先读状态，已满足返回 already，并在文件头写 @write；返回被操作对象的稳定 id。
+- **等待**：等渲染完用 \`goto(url, { settle: true })\`、操作带 \`{ settle: true }\`（等页面安静，最多 2 秒），或 \`waitFor(定位)\` 等具体元素；等页面自己发的请求用 \`waitRequest\`。不要用 \`sleep\` 等页面：快的页面白等、慢的不够。\`sleep\` 只用在轮询后台状态（隔一秒查一次建好了没有）。
+- 成功判断：action 自己判断任务有没有正确完成，不看最后停在什么页面。检查 HTTP 状态码和业务码；读页面内容的要检查拿到的确实是目标内容（标题、关键元素），停在登录页、错误页就抛错，不能把登录页的文字当结果返回；结果必须对应本次参数；会改东西的先读状态，已满足返回 already，并在文件头写 @write；返回被操作对象的稳定 id。
 - 定位用 \`{role,name}\` 或 CSS；\`query({css, fields})\` 取数；\`evaluate\` 是兜底（严格 CSP 的页面会被拒）。
 - 一次调用只做这一个业务动作：翻页、批量、多个对象都做成参数，由 compose 循环调用。返回值只放有用的字段。
 

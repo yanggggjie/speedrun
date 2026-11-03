@@ -3,7 +3,6 @@ import type { RunHost, Session } from "../browser/host.ts";
 import type { AgentWindows } from "../browser/window.ts";
 import { describeHeaders, headerSignals, type AuthSnapshot, type HeaderSignal } from "../record/auth.ts";
 import { headerKinds, type HeaderKind } from "../record/headers.ts";
-import { looksReadOnly } from "../record/digest.ts";
 import type { EndpointIndex } from "../record/endpoints.ts";
 import type { Ingestor } from "../record/ingest.ts";
 import type { RawEntry, RawStore } from "../record/raw.ts";
@@ -29,7 +28,7 @@ export type ObserveDeps = {
 /**
  * 观察：游标之后这个 learn 窗口发生的变化（页面、导航、请求、请求之间的依赖），然后把游标移到最新。
  * 晚到的请求（懒加载、轮询、防抖）下次观察时出现，不会丢也不会重复。
- * 请求默认只列这个窗口里第一次出现的 endpoint 和所有写请求，其余只计数；all 为真列全部。
+ * 请求默认只列这个窗口里第一次出现的 endpoint，其余只计数；all 为真列全部。
  * 列出的请求带一行「请求头」信号：每个要关心的头值怎么变、页面存储里的来源（在内存里比真值，只输出类别和来源），同时记进 endpoints.json。
  */
 export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | undefined, step?: string, all = false): Promise<string> {
@@ -54,14 +53,13 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   const merged = new Map<string, Stat>();
   for (const site of new Set(rows.map((r) => r.site ?? w.site))) for (const [k, v] of stats(site)) merged.set(k, v);
   const { shown, noise, periodic, assets } = shownRequests(rows, merged);
-  // 默认只列这个窗口里第一次出现的 endpoint 和所有写请求；页面重新加载时的 /me 这类不再列
+  // 默认只列这个窗口里第一次出现的 endpoint；页面重新加载时的 /me 这类不再列
   // 请求文件：时间线行的 file（相对窗口目录）；请求文件先写、行后追加，有行就有文件
   const fileOf = (r: Row): RequestFile | undefined => { const text = r.file ? d.log.readText(w.id, r.file) : undefined; try { return text ? (JSON.parse(text) as RequestFile) : undefined; } catch { return undefined; } };
   const files = new Map(shown.map((r) => [r.seq, fileOf(r)]));
-  const isWrite = (r: Row): boolean => { const f = files.get(r.seq); return !looksReadOnly(r.method, f?.url.bareUrl ?? r.url ?? "", f?.requestBody); };
   const seen = new Set(all ? [] : timeline.filter((r) => r.type === "request" && r.seq <= from && r.endpoint).map((r) => r.endpoint!));
   const picked = shown.filter((r) => {
-    if (all || !r.endpoint || isWrite(r)) return true;
+    if (all || !r.endpoint) return true;
     if (seen.has(r.endpoint)) return false;
     seen.add(r.endpoint);
     return true;
@@ -85,7 +83,7 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
       const site = r.site ?? w.site;
       const st = r.endpoint ? stats(site).get(r.endpoint) : undefined;
       const known = st?.descriptions?.find((x) => x.text !== step)?.text;
-      lines.push(`  ${describeRequest(r, f, { write: isWrite(r), other: site !== w.site ? site : undefined, known }).line.trimStart()}`);
+      lines.push(`  ${describeRequest(r, f, { other: site !== w.site ? site : undefined, known }).line}`);
       // 原始请求还在内存里就现算；不在（daemon 重启过、窗口关过）就用 endpoints.json 里上次记下的
       const raw = rawOf(r);
       let signals = st?.headers;

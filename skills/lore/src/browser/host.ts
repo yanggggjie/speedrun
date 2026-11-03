@@ -4,9 +4,9 @@ import type { ExtensionLink } from "./extension.ts";
 import type { Ingestor, SeenRequest } from "../record/ingest.ts";
 import type { RawEntry, RawStore } from "../record/raw.ts";
 import type { AuthSnapshot } from "../record/auth.ts";
-import { endpointKey, endpointOf, looksReadOnly } from "../record/digest.ts";
+import { endpointKey, endpointOf } from "../record/digest.ts";
 import { fetchableHeaders, headerKinds, notableHeaders } from "../record/headers.ts";
-import { STEP_TIMEOUT_MS } from "../utils/constants.ts";
+import { GOTO_WAIT_MS, QUIET_MAX_MS, STEP_TIMEOUT_MS, WAIT_REQUEST_MS } from "../utils/constants.ts";
 import { isSameSite, parseUrl, siteOfUrl } from "../utils/url.ts";
 import type { AgentWindows } from "./window.ts";
 
@@ -19,8 +19,8 @@ export class Session {
   readonly key: string;
   /** compose（run --compose-code，或 @compose 文件）：只许调用 action，任何页面操作都拒绝。 */
   composeOnly = false;
-  /** 最近一次 goto 打开页面的时间：刚打开的页面可能还没发请求，request 抄头前等一小会儿。 */
-  loadedAt: number | undefined;
+  /** 刚 goto 过、还没等过页面安静：request 抄头时这个窗口里还没有同站请求，就先等一次安静。 */
+  fresh = false;
   /** 这次 run 里真跑成功的 draft（action 文件路径），run 结束后由命令层判断变成 verified。嵌套调用并进父 session。 */
   readonly draftsOk: string[] = [];
   constructor(key: string) { this.key = key; }
@@ -29,13 +29,14 @@ export class Session {
 /** request 的请求头从哪来（只有名字）：from 抄自这次窗口里的哪些 endpoint，copied 抄了哪些头，skipped 因为每次都变没抄的，auth 现读的。 */
 export type RequestSource = { from: string[]; copied: string[]; skipped: string[]; auth: string[] };
 
-/** 刚 goto 的页面还没发同站请求：从打开起最多等这么久（只靠 cookie 的站点不该被拖慢）。 */
-const COPY_WAIT_MS = 1_500;
+
+/** 请求头的族：去掉最后一段（x-zse-93、x-zse-96 → x-zse）；只有一段的就是它自己。 */
+const familyOf = (name: string): string => (name.split("-").length >= 3 ? name.replace(/-[^-]*$/, "") : name);
 
 /** 被 401/403 拒时给 agent 的说明：抄了什么、没抄什么、下一步。 */
 function rejectHint(endpoint: string, status: number, src: RequestSource): string {
   const copied = src.copied.length ? `抄了 ${src.from.join("、")} 的 ${src.copied.join("、")}` : "这次窗口里没有可抄的请求头（只带了 cookie）";
-  const skipped = src.skipped.length ? `；没抄 ${src.skipped.join("、")}（这次窗口里每次都变）` : "";
+  const skipped = src.skipped.length ? `；没抄 ${src.skipped.join("、")}（这次窗口里每次都变、按 endpoint 变，或和它们同一族）` : "";
   return `${endpoint} 被拒（${status}）：${copied}${skipped}。像是登录失效就请用户登录后重跑；页面这次没发带某个头的请求的，看 learn 窗口观察里「请求头」给的来源写进 request 的 auth；每次都变的头被拒的，改用 waitRequest（goto 带参数的页面或点一下，收页面自己发的请求）或 DOM`;
 }
 
@@ -43,7 +44,8 @@ function rejectHint(endpoint: string, status: number, src: RequestSource): strin
 export type FailurePage = { url: string; title: string; screenshot?: string };
 
 type Wait = { key: string; method: string; path: string; pattern: RegExp; others: string[]; hit?: SeenRequest; resolve?: (r: SeenRequest | undefined) => void };
-const WAIT_REQUEST_MS = 15_000;
+/** 不算进「已发出的非 GET 请求」的方法。 */
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const pathOf = (url: string): string => { try { return new URL(url).pathname; } catch { return url.split("?")[0]!; } };
 
 export type HostDeps = { link: Pick<ExtensionLink, "request">; win: AgentWindows; ingest: Ingestor; raw: RawStore };
@@ -66,8 +68,8 @@ export class RunHost {
   /** waitRequest 登记的等待：只收登记之后、这个 agent 窗口里发出的请求。 */
   private readonly waits = new Map<number, Wait>();
   private nextWait = 1;
-  /** 正在统计 write 请求的窗口（run 窗口的名字，或正在 run action 的 learn 窗口句柄）：endpoint → 次数。 */
-  private readonly writes = new Map<string, Map<string, number>>();
+  /** 正在统计非 GET 请求的窗口（run 窗口的名字，或正在 run action 的 learn 窗口句柄）：endpoint → 次数。 */
+  private readonly sent = new Map<string, Map<string, number>>();
   /** 每个窗口最近一次被 401/403 拒的说明。 */
   private readonly rejected = new Map<string, string>();
   constructor(deps: HostDeps) {
@@ -75,23 +77,26 @@ export class RunHost {
     deps.ingest.onRequest?.((r) => this.seen(r));
   }
 
-  /** 从现在起统计这个窗口发出的 write 请求（request() 发的，和页面自己发的）。 */
-  watchWrites(key: string): void { this.writes.set(key, new Map()); }
+  /**
+   * 从现在起统计这个窗口发出的非 GET 请求（request() 发的，和页面自己发的）。只看方法、不判断有没有副作用：
+   * 那是 agent 的判断，lore 只列出实际发了什么，让 agent 核对有没有意料之外的、并告诉用户。
+   */
+  watchSent(key: string): void { this.sent.set(key, new Map()); }
   /** 停止统计，返回 `POST /api/x ×2` 这样的几行；没有就是空。 */
-  takeWrites(key: string): string[] {
-    if (this.writes.has(key)) this.d.ingest.flush(); // 页面自己发的请求可能还在收录队列里
-    const m = this.writes.get(key);
-    this.writes.delete(key);
+  takeSent(key: string): string[] {
+    if (this.sent.has(key)) this.d.ingest.flush(); // 页面自己发的请求可能还在收录队列里
+    const m = this.sent.get(key);
+    this.sent.delete(key);
     return m ? [...m].map(([ep, n]) => `${ep} ×${n}`) : [];
   }
-  private noteWrite(key: string, method: string, url: string, endpoint: string, body?: unknown): void {
-    const m = this.writes.get(key);
-    if (!m || looksReadOnly(method, url, body)) return;
+  private noteSent(key: string, method: string, endpoint: string): void {
+    const m = this.sent.get(key);
+    if (!m || READ_METHODS.has(method.toUpperCase())) return;
     m.set(endpoint, (m.get(endpoint) ?? 0) + 1);
   }
 
   private seen(r: SeenRequest): void {
-    if (!r.noise) this.noteWrite(r.win, r.method, r.url, r.endpoint, r.reqBody);
+    if (!r.noise) this.noteSent(r.win, r.method, r.endpoint);
     for (const w of this.waits.values()) {
       if (w.key !== r.win) continue;
       if (!r.noise) w.others.push(r.endpoint); // 超时时列给 agent 看的，埋点广告不列
@@ -223,19 +228,20 @@ export class RunHost {
     }
   }
 
-  private async goto(s: Session, a: { url: string; timeout?: number; description?: string }): Promise<{ url: string; title: string }> {
+  private async goto(s: Session, a: { url: string; timeout?: number; description?: string; settle?: boolean }): Promise<{ url: string; title: string }> {
     let url: URL;
     try { url = new URL(a.url.includes("://") ? a.url : `https://${a.url}`); if (!/^https?:$/.test(url.protocol)) throw new Error("协议"); } catch { throw new Error(`不是有效的网址：${a.url}`); }
     const tab = await this.bind(s, url.origin);
     await this.d.win.activate(tab);
     const safe = this.d.ingest.sanitizer.url(url.href);
     return this.log(tab, "goto", safe.bareUrl, { bareUrl: safe.bareUrl, query: safe.query, ...(a.description ? { description: a.description } : {}) }, async () => {
-      let res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as { url: string; title: string; loaded?: boolean };
+      let res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as { url: string; title: string; loaded?: boolean };
       // 新开的标签页还在加载占位的 robots.txt 时，这次跳转会被它盖掉：停在占位页上就再跳一次
-      if (/\/robots\.txt$/.test(res.url) && !/\/robots\.txt$/.test(url.pathname)) res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as typeof res;
+      if (/\/robots\.txt$/.test(res.url) && !/\/robots\.txt$/.test(url.pathname)) res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as typeof res;
       this.d.win.moved(tab, originOf(res.url || url.href));
       s.origin = originOf(res.url || url.href);
-      s.loadedAt = Date.now();
+      s.fresh = true;
+      if (a.settle) await this.quiet(s);
       return { url: res.url, title: res.title };
     }, undefined, siteOfUrl(url.href) || undefined);
   }
@@ -271,7 +277,7 @@ export class RunHost {
     const source = { from: copy.from, copied: Object.keys(copy.headers), skipped: copy.skipped, auth: Object.keys(auth) };
     const safe = this.d.ingest.sanitizer.url(target.href);
     const detail = { method, endpoint, bareUrl: safe.bareUrl, query: safe.query, ...(a.json !== undefined ? { reqBody: JSON.stringify(this.d.ingest.sanitizer.body(a.json)).slice(0, 4000) } : {}), headersFrom: source.from, copied: source.copied, ...(source.skipped.length ? { skipped: source.skipped } : {}) };
-    this.noteWrite(s.key, method, target.href, endpoint, a.json ?? body ?? undefined);
+    this.noteSent(s.key, method, endpoint);
     const res = await this.log(tab, "request", `${method} ${safe.bareUrl}`, detail, async () => {
       const r = await withTimeout(this.callTab(tab, "fetch", [{ method, url: target.href, headers, body, timeout: a.timeout ?? STEP_TIMEOUT_MS }]), (a.timeout ?? STEP_TIMEOUT_MS) + 3000, "请求");
       if (r.ok === false) throw new Error(`请求失败：${r.error}`);
@@ -281,28 +287,55 @@ export class RunHost {
     return res;
   }
 
-  /** 从这次窗口里页面发过的同站请求抄头（刚 goto 的页面可能还没发请求：等一小会儿；没打开过页面的不等，只靠 cookie 的站点不被拖慢）。 */
+  /** 从这次窗口里页面发过的同站请求抄头（刚 goto 的页面可能还没发请求：先等一次页面安静；没打开过页面的不等，只靠 cookie 的站点不被拖慢）。 */
   private async copyHeaders(s: Session, target: URL, endpoint: string): Promise<{ headers: Record<string, string>; from: string[]; skipped: string[] }> {
     const win = s.key;
     const same = (e: RawEntry): boolean => isSameSite(parseUrl(e.url), parseUrl(target.href));
     let entries = this.d.raw.inWindow(win).filter(same);
-    const loaded = s.loadedAt;
-    for (const deadline = (loaded ?? 0) + COPY_WAIT_MS; loaded !== undefined && !entries.length && Date.now() < deadline;) {
-      await new Promise((r) => setTimeout(r, 200));
-      this.d.ingest.flush();
+    if (!entries.length && s.fresh) {
+      await this.quiet(s);
       entries = this.d.raw.inWindow(win).filter(same);
     }
     const newest = [...entries].reverse();
     const own = newest.find((e) => e.endpoint === endpoint);
     if (own) return { headers: fetchableHeaders(own.headers), from: [own.endpoint], skipped: [] };
     const headers: Record<string, string> = {}, from = new Set<string>(), skipped: string[] = [];
-    for (const [name, kind] of headerKinds(entries)) {
-      if (kind === "varies" || kind === "endpoint") { skipped.push(name); continue; }
+    const kinds = headerKinds(entries);
+    // 和不抄的头同一族（x-zse-93 和 x-zse-96）的也不抄：只带签名族的一半，比都不带更容易被拒（知乎实测 403）
+    const off = new Set([...kinds].filter(([, k]) => k === "varies" || k === "endpoint").map(([n]) => familyOf(n)));
+    for (const [name, kind] of kinds) {
+      if (kind === "varies" || kind === "endpoint" || off.has(familyOf(name))) { skipped.push(name); continue; }
       const e = newest.find((x) => notableHeaders(x.headers)[name] !== undefined)!;
       headers[name] = notableHeaders(e.headers)[name]!;
       from.add(e.endpoint);
     }
     return { headers, from: [...from], skipped };
+  }
+
+  /**
+   * 等页面安静、记录送达：页面没有在途请求、DOM 一小段时间没变（页面自己判断），并且页面在这之前发出的记录 daemon 都收到了；
+   * 合起来不超过 maxMs。页面在这期间跳转了（执行上下文没了）就再试一次新页面。learn 每步之后、request 抄头前、goto / 操作带 settle 时用。
+   */
+  async quiet(s: Session, maxMs = QUIET_MAX_MS): Promise<{ settled: boolean; waitedMs: number }> {
+    s.fresh = false;
+    if (s.tab === undefined) return { settled: false, waitedMs: 0 };
+    const tab = s.tab, t0 = Date.now();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const left = maxMs - (Date.now() - t0);
+      if (left <= 0) break;
+      let r: { settled: boolean; d: string; n: number };
+      try { r = await withTimeout(this.callTab(tab, "quiet", [left]), left + 3000, "等页面安静"); }
+      catch (e) {
+        if (!NAVIGATED.test(e instanceof Error ? e.message : String(e))) throw e;
+        await new Promise((res) => setTimeout(res, 200)); // 页面在跳转：新页面的脚本就位要一小会儿
+        continue;
+      }
+      const arrived = await this.d.ingest.waitDelivered(tab, r.d, r.n, Math.max(0, maxMs - (Date.now() - t0)));
+      this.d.ingest.flush();
+      return { settled: r.settled && arrived, waitedMs: Date.now() - t0 };
+    }
+    this.d.ingest.flush();
+    return { settled: false, waitedMs: Date.now() - t0 };
   }
 
   /** 这个窗口最近一次被 401/403 拒的说明（run 失败时接在 hint 里），取过就清掉。 */
@@ -331,6 +364,7 @@ export class RunHost {
     const at = a.x !== undefined && a.y !== undefined ? `(${a.x},${a.y})` : "";
     const target = a.loc !== undefined ? JSON.stringify(a.loc).slice(0, 60) : at || (a.key ?? a.to ?? "");
     const base = { kind: a.kind, ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(at ? { x: a.x, y: a.y } : {}), ...(a.key ? { key: a.key } : {}), ...(a.dy !== undefined ? { dy: a.dy } : {}), ...(a.to ? { to: a.to } : {}), ...(a.checked !== undefined ? { checked: a.checked } : {}), ...(a.description ? { description: a.description } : {}) };
+    delete cmd.settle;
     return this.log(tab, a.kind, target, base, async () => {
       let res: any;
       try { res = await withTimeout(this.callTab(tab, fn, [cmd]), (a.timeout ?? 10_000) + 5_000, "页面操作"); }
@@ -343,6 +377,7 @@ export class RunHost {
         const loaded = (await this.d.link.request("tabs") as { tabs: { tabId: number; url: string; title: string }[] }).tabs.find((t) => t.tabId === tab);
         if (loaded) { res.url = loaded.url; res.title = loaded.title; s.origin = originOf(loaded.url); this.d.win.moved(tab, s.origin); }
       }
+      if (a.settle === true) res.settle = await this.quiet(s);
       return res;
     }, (r: any) => ({ loc: r.loc, ...((a.kind === "fill" || a.kind === "type") && r.target?.type !== "password" ? { text: String(a.text ?? "").slice(0, 200) } : {}), ...(a.kind === "select" ? { text: String(a.text ?? "") } : {}), url: r.url }));
   }

@@ -1,9 +1,8 @@
-// 观察里列什么：要包含 GET，但不能把静态资源、轮询、噪声列进去（折叠成计数）；写请求标 write（只读的 POST 不算写）；
+// 观察里列什么：要包含 GET，但不能把静态资源、轮询、噪声列进去（折叠成计数）；
 // 依赖链要能认出来（拿凭证 → 提交）；没有响应体要写出原因，agent 才知道转 DOM。
 import assert from "node:assert/strict";
 import { dependencies, describeRequest, isPeriodic, missingInSequence, shownRequests } from "./explore.ts";
 import type { RequestFile, Row } from "../record/types.ts";
-import { looksReadOnly } from "../record/digest.ts";
 
 const req = (seq: number, over: Partial<Row>): Row => ({ seq, t: seq, win: "x.com-20261101-120000", src: "agent", tab: 1, type: "request", requestType: "fetch", method: "GET", url: `https://x.com/api/${seq}`, endpoint: `GET /api/${seq}`, phase: "cmd", ...over });
 const stats = new Map([["POST /rpc/ReportViewing", { count: 121, idle: 120, cmdTriggered: 0 }], ["GET /api/list", { count: 5, idle: 1, cmdTriggered: 3 }]]);
@@ -24,11 +23,11 @@ assert.equal(isPeriodic({ count: 50, idle: 40, cmdTriggered: 1 }), true, "偶尔
 assert.equal(isPeriodic({ count: 30, idle: 15, cmdTriggered: 15 }), false, "一半由动作引发的不是轮询");
 
 const file = (over: Partial<RequestFile>): RequestFile => ({ seq: 8, win: "x.com-20261101-120000", endpoint: "", requestType: "fetch", method: "POST", url: { bareUrl: "", query: {} }, headers: {}, startedAt: 0, endedAt: 1, ...over });
-const none = describeRequest(rows[6]!, file({ responseHeaders: { "content-type": "application/connect+proto" }, bodyOmitted: "no-body" }), { write: true });
+const none = describeRequest(rows[6]!, file({ responseHeaders: { "content-type": "application/connect+proto" }, bodyOmitted: "no-body" }), {});
 assert.equal(none.readable, false);
-assert.match(none.line, /^write #8 POST \/rpc\/StreamTimeline → .*connect\+proto，无响应体（no-body）/);
-const ok = describeRequest({ ...rows[0]!, file: "requests/000001-GET-api-list.json" }, file({ responseHeaders: { "content-type": "application/json; charset=utf-8" }, responseBodyPath: "requests/000001-GET-api-list.response.json" }), { write: false, other: "api.x.com", known: "列出条目" });
-assert.equal(ok.readable, true); assert.match(ok.line, /^      #1 GET \/api\/list（api\.x\.com） → .*application\/json，有响应体，requests\/000001-GET-api-list\.json（以前：列出条目）$/);
+assert.match(none.line, /^#8 POST \/rpc\/StreamTimeline → .*connect\+proto，无响应体（no-body）/);
+const ok = describeRequest({ ...rows[0]!, file: "requests/000001-GET-api-list.json" }, file({ responseHeaders: { "content-type": "application/json; charset=utf-8" }, responseBodyPath: "requests/000001-GET-api-list.response.json" }), { other: "api.x.com", known: "列出条目" });
+assert.equal(ok.readable, true); assert.match(ok.line, /^#1 GET \/api\/list（api\.x\.com） → .*application\/json，有响应体，requests\/000001-GET-api-list\.json（以前：列出条目）$/);
 
 // 依赖：后一个请求带出去的值（长度 ≥ 6）等于前一个响应里的值
 const files: Record<number, RequestFile> = {
@@ -49,15 +48,4 @@ assert.deepEqual(dependencies([req(31, {}), req(32, {})], (q) => aliased[q], (f)
 // 多行 @endpoint：按顺序都要出现，中间可以夹别的
 assert.equal(missingInSequence(["GET /token", "POST /submit"], ["GET /x", "GET /token", "GET /y", "POST /submit"]), undefined);
 assert.equal(missingInSequence(["GET /token", "POST /submit"], ["POST /submit", "GET /token"]), "POST /submit", "顺序反了算缺");
-// 只读的非 GET 请求不算写（不标 write）；判断不出来就算写
-assert.equal(looksReadOnly("POST", "https://x.com/graphql", { query: "query Search { a }" }), true);
-assert.equal(looksReadOnly("POST", "https://x.com/graphql", JSON.stringify({ query: "mutation Like { a }" })), false);
-assert.equal(looksReadOnly("POST", "https://x.com/graphql", [{ query: "{ a }" }, { query: "mutation M { b }" }]), false, "批量里有一个 mutation 就是写");
-assert.equal(looksReadOnly("POST", "https://x.com/i/api/graphql/abc/SearchTimeline", { operationName: "SearchTimeline" }), true);
-assert.equal(looksReadOnly("POST", "https://x.com/i/api/graphql/abc/CreateTweet", { operationName: "CreateTweet" }), false);
-assert.equal(looksReadOnly("POST", "https://a.com/cgi/cms/getAllChangeOrders", { path: "x" }), true);
-assert.equal(looksReadOnly("POST", "https://a.com/api/comment", { text: "x" }), false);
-assert.equal(looksReadOnly("POST", "https://a.com/api/settings", { theme: "x" }), false, "settings 不是 set 开头的读");
-assert.equal(looksReadOnly("DELETE", "https://a.com/api/listing/1"), false, "listing 不是 list 动词");
-assert.equal(looksReadOnly("GET", "https://a.com/api/x"), true);
 console.log("explore.selfcheck ok");

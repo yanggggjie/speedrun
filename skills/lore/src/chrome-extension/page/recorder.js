@@ -46,7 +46,7 @@
   };
 
   let seq = 0;
-  const docId = Math.random().toString(36).slice(2, 10); // 这个页面文档的编号：rid = docId:请求序号，daemon 靠它找回这个请求的原始内容
+  const docId = T.doc; // 这次页面加载的编号：rid = docId:请求序号，daemon 靠它找回这个请求的原始内容
   // ---- fetch ----
   const prevFetch = window.fetch;
   window.fetch = function (input, init) {

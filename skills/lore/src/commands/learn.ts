@@ -11,10 +11,6 @@ import { descriptionOf, parseArgs, valueOf, type ArgSpec } from "./args.ts";
 import { DESCRIPTION_HINT, composeDirOf, idleMin, indent, type Ctx, type Output } from "./context.ts";
 import { outcomeLines } from "./run.ts";
 
-/** 页面操作之后等页面消息经扩展到 daemon 的时间。 */
-const AFTER_OP_MS = 300;
-/** 打开起点后等这么久再观察（加载期的请求）。 */
-const LOAD_SETTLE_MS = 1_500;
 
 const SUBS = new Set(["open", "screenshot", "click", "type", "key", "scroll", "observe", "run", "close"]);
 const NEEDS_DESCRIPTION = new Set(["open", "click", "type", "key", "scroll", "run"]);
@@ -71,7 +67,7 @@ async function startLearn(argv: string[], ctx: Ctx, out: Output): Promise<void> 
   await ctx.ensureExtension();
   const w = ctx.learn.create({ site: normalizeSite(siteOfUrl(start.url)), description, url: start.url });
   const { sess, opened } = await ctx.learn.page(w);
-  await new Promise((r) => setTimeout(r, LOAD_SETTLE_MS));
+  await ctx.host.quiet(sess); // 起点加载期的请求都到了再观察
   const obs = await observe(ctx, w, sess);
   ctx.learn.save(w);
   const guideFile = path.join(ctx.log.root, "learn-guide.md");
@@ -151,18 +147,19 @@ async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, 
     const o = await ctx.runner.runInLearn(target.name, target.params, sess);
     if (o.status !== "success") out.code = EXIT.fail;
     else if (target.site) for (const ep of target.endpoints) ctx.index.describe(target.site, ep, { text: description!, from: "learn" });
-    const lines = o.status === "ask" ? [`fail ${target.name}：action 里不能用 lore.ask`, ...(o.writes?.length ? [`已发出的 write 请求：\n${indent(o.writes.join("\n"))}`] : [])] : outcomeLines(target.name, o);
+    const lines = o.status === "ask" ? [`fail ${target.name}：action 里不能用 lore.ask`, ...(o.sent?.length ? [`已发出的非 GET 请求：\n${indent(o.sent.join("\n"))}`] : [])] : outcomeLines(target.name, o);
     first = lines[0]!;
     body.push(...lines.slice(1));
   } else if (parsed) {
-    const res = (await ctx.host.op(sess, "pointer", { ...parsed.cmd, settle: true, description })) as { navigated?: boolean; url?: string; title?: string; loc?: unknown; scrollY?: number; settle?: { settled: boolean; waitedMs: number } };
+    const res = (await ctx.host.op(sess, "pointer", { ...parsed.cmd, description })) as { navigated?: boolean; url?: string; title?: string; loc?: unknown; scrollY?: number };
     if (res.loc) body.push(`定位：${JSON.stringify(res.loc)}`);
     if (res.scrollY !== undefined) body.push(`滚动位置：${res.scrollY}`);
-    if (res.settle) body.push(res.settle.settled ? `稳定：页面已稳定，等了 ${(res.settle.waitedMs / 1000).toFixed(1)}s` : "稳定：等了很久页面还在变化");
     if (res.navigated) body.push(`跳转：${res.url ?? ""} "${res.title ?? ""}"`);
   }
   if (counted) w.ops++;
-  await new Promise((r) => setTimeout(r, AFTER_OP_MS));
+  // 等页面安静、这一步引发的记录都到 daemon，再观察（不用再单独 observe 才看到这一步的请求）
+  const q = await ctx.host.quiet(sess);
+  body.push(q.settled ? `稳定：页面已安静，等了 ${(q.waitedMs / 1000).toFixed(1)}s` : `稳定：等了 ${(q.waitedMs / 1000).toFixed(1)}s 页面还在变化（晚到的请求下次 observe 出现）`);
   const obs = await observe(ctx, w, sess, description);
   ctx.learn.save(w);
   out.line([first, ...head, ...body, obs].join("\n"));

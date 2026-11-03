@@ -37,7 +37,7 @@ export const lore = {
   ask: (question, data) => call("ask", { question, data }),
 };
 
-/** goto(url, options?)：打开网址并等加载完成。 */
+/** goto(url, { settle?, timeout? })：打开网址，等到页面可用（文档不再是 loading）；settle: true 再等页面安静（没有在途请求、DOM 一小段时间没变，最多 2 秒），等渲染完用它，不要 sleep。 */
 export const goto = (url, options = {}) => call("goto", { url, ...options });
 
 const withJson = (res) => ({
@@ -62,7 +62,7 @@ export async function request(options) {
 }
 
 // 定位：CSS 字符串 | { css } | { role, name, exact?, nth? } | { text, nth? }。元素没出现会等到 timeout（默认 10 秒）。
-// 操作之后默认不等页面“稳定”（有动静的页面会白等）；要等某个结果就用 waitFor 等具体元素，或传 { settle: true } 等在途请求结束。
+// 操作之后默认不等页面安静（有动静的页面会白等）；要等某个结果就用 waitFor 等具体元素，或传 { settle: true } 等页面安静（最多 2 秒）。
 /**
  * 等页面自己发出某个请求，拿它的响应：request 被拒（签名和参数绑定）、或请求体由页面拼出来时用；签名由页面自己算（介于 request() 和 DOM 之间）。
  * waitRequest(endpoint, () => goto(url), { timeout? }) → { status, ok, text, json(), ct, url, requestBody }
@@ -100,9 +100,3 @@ export const query = (spec) => call("query", spec);
 /** 兜底：evaluate(fn, ...参数) 在页面里执行任意函数，参数必须可 JSON 序列化。严格 CSP 的页面会被浏览器拒绝，那时改用 query / request。 */
 export const evaluate = (fn, ...args) => call("eval", { src: fn.toString(), args });
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-export function serializeUrl({ bareUrl, query: q = {} }) {
-  const u = new URL(bareUrl);
-  for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null) u.searchParams.set(k, String(v));
-  return u.href;
-}

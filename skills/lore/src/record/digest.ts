@@ -97,23 +97,3 @@ export function shapeOf(value: unknown): string {
   return path.join(".");
 }
 
-/** 名字像只读操作的 RPC / GraphQL 操作：getUser、listOrders、SearchTimeline、DescribeInstances…… */
-const READ_VERB = /^(get|list|query|search|fetch|find|count|describe|batchget|check|preview|load|read)(?=[A-Z_\-:.]|$)/i;
-
-/**
- * 非 GET 的请求是不是其实只读：GraphQL 的 query（不是 mutation），或 endpoint 名、操作名以 get / list / search 之类开头。
- * 观察据此给写请求标 write。宁可当成写请求：判断不出来就算写。
- */
-export function looksReadOnly(method: string | undefined, url: string, body?: unknown): boolean {
-  if (!method || ["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase())) return true;
-  let value = body;
-  if (typeof value === "string") { try { value = JSON.parse(value); } catch { /* 不是 JSON */ } }
-  const ops = Array.isArray(value) ? value : [value];
-  const objs = ops.filter((o): o is Record<string, unknown> => !!o && typeof o === "object");
-  if (objs.length && objs.every((o) => typeof o.query === "string")) return objs.every((o) => !/^\s*mutation\b/.test(String(o.query)));
-  const op = objs.map((o) => o.operationName ?? o.action ?? o.Action).find((x) => typeof x === "string") as string | undefined;
-  if (op) return READ_VERB.test(op);
-  let last = "";
-  try { last = new URL(url).pathname.split("/").filter(Boolean).at(-1) ?? ""; } catch { /* 地址不完整 */ }
-  return READ_VERB.test(last);
-}

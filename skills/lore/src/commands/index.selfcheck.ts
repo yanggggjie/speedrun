@@ -1,6 +1,6 @@
 // 命令层：参数解析，以及用假的 daemon 能力（假页面、假标签页、假 runner）端到端跑 learn / observe / run。
 // 读日志不是命令（是文件），这里只守住坏了会静默出错的点：观察按游标不漏不重（晚到的请求下次出现、不重复）、句柄持久（重启后读回）、
-// 不是句柄被拒、观察里给出 auth 来源和 request 草稿（没有真值）、learn 窗口里 run 输出真发出的 write 请求、run 真跑成功的 draft 变成 verified（多行 @endpoint 顺序不对就不变成 verified）。
+// 不是句柄被拒、观察里给出 auth 来源和 request 草稿（没有真值）、learn 窗口里 run 输出实际发出的非 GET 请求、run 真跑成功的 draft 变成 verified（多行 @endpoint 顺序不对就不变成 verified）。
 // 输出约定：第一行是 ok / fail / ask，退出码 0 / 1 / 2。
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -63,6 +63,7 @@ const host = {
     throw new Error(`没有预期的操作 ${name}`);
   },
   end: async (s: Session) => { s.tab = undefined; },
+  quiet: async () => { ingest.flush(); return { settled: true, waitedMs: 1 }; },
   // 页面存储：x-xsrftoken 的值在 cookie _xsrf 里
   authSnapshot: async () => ({ cookie: { _xsrf: "XSRF-REAL-0123456789" }, local: {}, session: {}, meta: {} }),
 };
@@ -70,7 +71,7 @@ let nextOutcome: Record<string, unknown> = {};
 const runner = {
   asks: new PendingAsks(),
   runAction: async (name: string) => ({ status: "success", result: { name }, ...nextOutcome }),
-  runInLearn: async (name: string) => ({ status: "success", result: { name }, writes: name === "like" ? ["POST /api/like ×1"] : [] }),
+  runInLearn: async (name: string) => ({ status: "success", result: { name }, sent: name === "like" ? ["POST /api/like ×1"] : [] }),
   runCompose: async () => ({ status: "success", result: 1, ...nextOutcome }),
 };
 const win = { isAgentTab: (t: number) => t === 20, windowIdOf: () => 9, isOpen: async () => true, dispose: async () => {} };
@@ -103,11 +104,11 @@ assert.equal(first.length, 1, `起点加载期的请求：${opened.stdout}`);
 const again = await run("learn", id, "observe");
 assert.deepEqual(seqsIn(again.stdout), [], "已经观察过的不再出现");
 
-// 页面操作自动附带观察：只列这一步之后的；写请求标 write，带语义化的请求文件名
+// 页面操作自动附带观察：只列这一步之后的；请求行没有 write 前缀，带语义化的请求文件名
 const clicked = await run("learn", id, "click", "100", "200", "--description", "点第一个赞同");
 const second = seqsIn(clicked.stdout);
 assert.equal(second.length, 1); assert.ok(second[0]! > first[0]!);
-assert.match(clicked.stdout, /write #\d+ POST \/api\/answers\/:id\/voters → 200 application\/json，有响应体，requests\/\d{6}-POST-api-answers-_id-voters\.json/);
+assert.match(clicked.stdout, /\n  #\d+ POST \/api\/answers\/:id\/voters → 200 application\/json，有响应体，requests\/\d{6}-POST-api-answers-_id-voters\.json/);
 
 // 请求头的信号：cookie 里的值认出来（给 auth 用）；输出里只有类别和来源，没有真值；不再有 request 草稿
 assert.match(clicked.stdout, /^ok click/);
@@ -122,7 +123,7 @@ const lateSeqs = seqsIn(late.stdout);
 assert.equal(lateSeqs.length, 1, late.stdout); assert.ok(lateSeqs[0]! > second[0]!);
 assert.deepEqual(seqsIn((await run("learn", id, "observe")).stdout), [], "不重复");
 
-// learn 窗口里 run：在当前页面跑 action；@write 不拦，输出列出真发出的 write 请求
+// learn 窗口里 run：在当前页面跑 action；@write 不拦，输出列出实际发出的非 GET 请求
 const actions = path.join(log.dir, "x.com", "actions");
 fs.mkdirSync(actions, { recursive: true });
 fs.writeFileSync(path.join(actions, "vote.js"), "/**\n * @status draft\n * @endpoint POST /api/answers/:id/voters\n */\n");
@@ -130,7 +131,7 @@ fs.writeFileSync(path.join(actions, "like.js"), "/**\n * @status draft\n * @writ
 const tried = await run("learn", id, "run", "--action", "vote", "--description", "试一下点赞同");
 assert.equal(tried.code, 0, tried.stdout); assert.match(tried.stdout, /^ok vote\n/); assert.match(tried.stdout, /结果：/);
 const liked = await run("learn", id, "run", "--action", "like", "--description", "点喜欢");
-assert.equal(liked.code, 0, liked.stdout); assert.match(liked.stdout, /已发出的 write 请求：\n  POST \/api\/like ×1/);
+assert.equal(liked.code, 0, liked.stdout); assert.match(liked.stdout, /已发出的非 GET 请求：\n  POST \/api\/like ×1/);
 assert.equal(actionSummary(path.join(actions, "vote.js")).status, "draft", "learn 窗口里 run 不变成 verified");
 
 // 句柄持久：新的登记（daemon 重启）从 meta.json 读回，游标接着上次，Chrome 窗口当作已关

@@ -53,5 +53,11 @@ export const UNNAMED_COMPOSE_MAX_AGE_MS = 30 * 24 * 3600_000;
 export const ACTION_TIMEOUT_MS = 115_000;
 /** action 里单个步骤（goto、request、等元素）的上限。 */
 export const STEP_TIMEOUT_MS = 60_000;
+/** 页面安静 + 记录送达（RunHost.quiet）最多等多久：一直有动静的页面（轮询、动画）会等满，所以要短。 */
+export const QUIET_MAX_MS = 2_000;
+/** goto 等页面可用（readyState interactive）的上限。 */
+export const GOTO_WAIT_MS = 15_000;
+/** waitRequest 等页面发出请求的默认上限。 */
+export const WAIT_REQUEST_MS = 15_000;
 /** learn 窗口里空闲的标签页保留多久再关掉。只录 agent 窗口，请求头只能从这些页面继承，留久一点少重开。 */
 export const AGENT_TAB_IDLE_MS = 30 * 60_000;
