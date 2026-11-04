@@ -72,7 +72,7 @@ fs.mkdirSync(path.join(HOME_DIR, "session"), { recursive: true });
 writeShim(process.execPath);
 console.log(`spr 命令 shim → ${BIN_DIR}`);
 
-const doctor = spawnSync(process.execPath, [path.join(DEST, "cli", "speedrun.ts"), "doctor"], {
+const doctor = spawnSync(process.execPath, [path.join(DEST, "cli", "spr.ts"), "doctor"], {
   stdio: "inherit",
 });
 process.exit(doctor.status ?? 0);
