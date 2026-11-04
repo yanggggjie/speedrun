@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 改名为 habit：skill、命令、数据目录 `~/.habit`、native host `com.habit.connect`、SDK 的 `habit.params` / `habit.ask`。
+- daemon 的启动和退出更可靠：daemon 只监听一个 socket，relay 和 CLI 连上后先说明角色；只有 daemon 自己删 socket 文件（以前 CLI 等 daemon 超时就会删，删掉后 habit 整个连不上）；daemon 发现 socket 文件被换掉就自己退出，不会两个并存；Chrome 退出、扩展刷新都不会让 daemon 退出。`habit daemon restart` 和升级只让旧 daemon 退出，下一条命令或扩展重连时拉起新的。扩展断开后固定 1 秒重连。`habit doctor` 新增 `launcher-node`（启动脚本里的 node 还在不在），并且不再建目录。
 - 不再开窗口、不抢前台：learn 窗口和 run 窗口改成用户窗口里 habit 自己的**标签组**（折叠，一个句柄或一次 run 一个），habit 从不选中自己的标签页。后台页面靠调试器照常渲染（懒加载、滚动加载都正常）；组闲置 20 秒就解除附着，「正在调试此浏览器」的横幅随之消失。页面在 habit 的标签页里要新开标签页时（`target=_blank`、cmd/中键点击、`window.open`），由 habit 开在同一个组里，不会把用户的标签页切走、不会把 Chrome 拉到前台；带窗口参数的弹出窗口照常。归属看组：把标签页拖进 habit 的组就交给 habit，拖出去就收回。扩展 ABI 14，新增 `tabGroups` 权限；去掉 anchor 页。
 - daemon 的工作目录改到 `~/.habit`：之前重装（build 没变、daemon 没重启）后 action 会报 `ENOENT uv_cwd`。
 - learn 的探索按 open-claude-in-chrome（Claude in Chrome）的做法：新增 `find`、`read_page`（a11y 树）、`get_page_text`、`form_input`；`computer` 的点击、悬停、拖拽、滚动可以用 `--ref ref_N` 指元素，不用看截图猜坐标。用 ref 的每一步输出「定位：」，写进 action。

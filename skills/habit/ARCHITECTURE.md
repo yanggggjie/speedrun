@@ -42,24 +42,24 @@ habit 的目标、设计原则和运行时实现：每一部分是谁实现的�
 
 ## 3. 进程与分层
 
-**所有逻辑和数据在 daemon，扩展、relay、CLI 只做 I/O。** 扩展的安装、分发不方便（首次只能手动加载；之后 `setup.js` 更新了扩展，daemon 发现它跑的不是磁盘上这一版就让它自己重新加载，见 §4），而 daemon、CLI 在 `~/.habit/src` 里，`setup.js` 镜像之后 `habit daemon restart` 就生效。
+**所有逻辑和数据在 daemon，扩展、relay、CLI 只做 I/O。** 扩展的安装、分发不方便（首次只能手动加载；之后 `setup.js` 更新了扩展，daemon 发现它跑的不是磁盘上这一版就让它自己重新加载，见 §4），而 daemon、CLI 在 `~/.habit/src` 里，`setup.js` 镜像之后让旧 daemon 退出，下一个连接的 relay 或 CLI 就拉起新代码。
 
 ```
-CLI（argv→RPC→打印） ──socket──▶ daemon（唯一的大脑） ◀──ext.sock── relay（字节管） ◀──native messaging── 扩展（固定 ABI，CDP 输入） ──▶ 页面脚本：元素模型 + 录制 + 执行
+CLI（argv→RPC→打印） ──sock──▶ daemon（唯一的大脑） ◀──sock── relay（字节管） ◀──native messaging── 扩展（固定 ABI，CDP 输入） ──▶ 页面脚本：元素模型 + 录制 + 执行
 ```
 
 | 层 | 只做 | 位置 |
 |---|---|---|
 | 扩展 | 固定的操作（见 §4）：唯一的输入路径（CDP），截图、执行 JS，加转发页面消息和标签页的地址变化、关闭 | `src/chrome-extension/` |
-| relay | 在 Chrome 的 stdio 与 `ext.sock` 之间原样转发字节；daemon 不在时拉起它 | `src/native-messaging-host/relay.ts` |
-| CLI | 把 argv 交给 daemon，打印它返回的文本，用它返回的退出码；`doctor`、`daemon restart` 留着（要诊断可能已死的 daemon） | `src/cli/` |
+| relay | 在 Chrome 的 stdio 与 daemon 的 socket 之间原样转发字节；daemon 不在时拉起它（和 CLI 共用 `session/client.ts`） | `src/native-messaging-host/relay.ts` |
+| CLI | 把 argv 交给 daemon，打印它返回的文本，用它返回的退出码；`doctor`、`daemon restart` 留着（要诊断或停掉一个可能已经不在的 daemon） | `src/cli/` |
 | 页面脚本 | `a11y.js` 找元素、算坐标（a11y 树、find、持久定位）；`recorder.js` 如实上报浏览器里发生的事；`executor.js` 等页面安静、取数、发请求 | `src/chrome-extension/page/` |
 | daemon | agent 窗口与 action 运行时、观察、脱敏、写日志与 endpoints.json、日志淘汰、原始请求的内存表、别名对照表、learn 窗口登记 | `src/daemon.ts`、`src/commands/`、`src/learn/`、`src/run/`、`src/browser/`、`src/record/` |
 
 | 进程 | 谁拉起 | 状态 | 生命周期 |
 |---|---|---|---|
 | relay | Chrome（native messaging host） | 无 | 任一端断开即退出，Chrome 下次连接时重新拉起 |
-| daemon | relay 或 CLI（socket 连不上时 detached 拉起） | 扩展链路、agent 窗口、开着的 learn 窗口、原始请求、`habit.ask` 的恢复记录、日志写入 | 不随 relay 断开退出；没有扩展连接、也没有命令请求超过 10 分钟才退出 |
+| daemon | relay 或 CLI（socket connect 不上时 detached 拉起） | 扩展链路、agent 窗口、开着的 learn 窗口、原始请求、`habit.ask` 的恢复记录、日志写入 | 不随 relay 断开、Chrome 退出而退出；只在三种情况下退出：扩展没连着并且 10 分钟没有命令、收到 SIGTERM、socket 文件不是自己的了（见下面的 8 条） |
 | 扩展 | Chrome | 无 | service worker 可随时重启 |
 
 daemon 内部分四层，上层只依赖下层：
@@ -73,11 +73,21 @@ daemon 内部分四层，上层只依赖下层：
 
 `daemon.ts` 只做组装（`build` 按依赖顺序一次建好）、socket 和定时任务。定时写盘出错（磁盘满、没权限）只记进运行时日志，不让 daemon 退出：退出会丢掉内存里的原始请求、ask 恢复记录和 learn 窗口的页面。
 
-- 命令入口：`src/cli/habit.ts` 没有命令逻辑，`habit <argv>` 原样发给 daemon 的 `run` RPC，daemon 调 `commands/index.ts` 的 `runCommand`，返回 `{ stdout, code }`。daemon 不在时 CLI 会拉起它，存活判据只有一条：socket 能不能回 `ping`。socket 权限 0600，连接按 UTF-8 解码。
+- 命令入口：`src/cli/habit.ts` 没有命令逻辑，`habit <argv>` 原样发给 daemon 的 `run` RPC，daemon 调 `commands/index.ts` 的 `runCommand`，返回 `{ stdout, code }`。
+- **daemon 的启动和退出**（`src/session/server.ts`、`src/session/client.ts`），8 条规则：
+  1. 只有一个 socket `~/.habit/session/sock`（权限 0600）。relay 和 CLI 都是客户端，连上后第一行说明角色：`{"role":"relay"}` / `{"role":"cli"}`；daemon 按 Buffer 收第一行再分流（relay 后面紧跟二进制帧），2 秒内没有合法的角色说明就断开。CLI 的 JSON-RPC 按 UTF-8 解码。
+  2. 只有一个函数拉起 daemon：`connectDaemon`（CLI 和 relay 共用）先 connect，连不上就 spawn 一个 detached 的 daemon，再每 100ms 重试，最多 10 秒。
+  3. listen 成功的就是唯一的 daemon；EADDRINUSE 时 connect 一下：连得上说明对方活着，自己退出；被拒绝说明是残留文件，删掉再 listen 一次。
+  4. 只有 daemon 自己删 socket 文件，并且只在 connect 被拒绝时删。CLI、relay、`setup.js` 都不删：超时只说明 daemon 忙，不说明它死了。
+  5. daemon 记住 socket 文件的 inode，每 2 秒检查一次；文件没了或被换掉就 flush 后退出。这条兜住所有「两个 daemon 并存」的情况，所以日志淘汰等定时任务要等第一次检查通过后才开始。
+  6. 只在三种情况下退出：扩展没连着并且 10 分钟没有命令、SIGTERM、第 5 条。都走同一个 `shutdown`：flush，inode 还是自己的才删 socket 文件（Node 的 `server.close()` 会按路径删文件，不是自己的就不调）。
+  7. 重启就是停掉：`setup.js` 和 `habit daemon restart` 用 `ping` 拿 pid、发 SIGTERM，等到 connect 不上为止，不等新的起来；新 daemon 由下一个连接的 relay 或 CLI 拉起。
+  8. 扩展和 daemon 断开后固定 1 秒重连，alarm 兜底。
+  `ping` 只是查信息（pid、build、ABI、扩展连没连着），daemon 在不在只看 connect。
 - 要经扩展的命令先 `ensureExtension`：没装 host → `need-install`；Chrome 没运行 → `need-chrome`；等不到扩展 → `need-extension`；扩展是旧的 → 能自己重新加载的（ABI ≥ 13）等它重新加载、重连，不能的明确让用户刷新扩展。`status`、`learn list`、`learn close` 不需要扩展。
 - **输出约定**（`protocol.ts`）：第一行是结论，以 `ok`、`fail`、`ask` 开头，退出码 0、1、2（`ask` 和 `fail need-*` 是 2：要 agent 判断或要用户做一件事，不算失败）；后面是「标题：内容」的几段，多行内容缩进两格：`页面`、`导航`、`请求`（下面可能有一行 `请求头`）、`依赖`、`没列出`（观察），`落在`、`被遮挡`、`定位`、`稳定`（页面操作），`结果`（action 的返回值，JSON）、`错误`、`已发出的非 GET 请求`、`run 窗口目录`、`已变成 verified`（run），`下一步`（建议，最多一两句，和事实分开）。路径一律是绝对路径。
 - relay 断开（刷新扩展、service worker 重启、Chrome 重启）是日常事件，daemon 只 `detach` 链路，日志照写。
-- daemon 启动时：按依赖顺序建好各部件（`daemon.ts` 的 `build`）、打开窗口日志、同步 action SDK、加载 adblock 规则；每 10 秒按额度淘汰日志；每分钟关掉空闲的 learn 窗口。
+- daemon 启动时：按依赖顺序建好各部件（`daemon.ts` 的 `build`）、打开窗口日志、同步 action SDK、加载 adblock 规则；第一次 inode 检查通过后（约 2 秒），每 10 秒按额度淘汰日志、每分钟关掉空闲的 learn 窗口。
 
 ## 4. 扩展
 
@@ -87,7 +97,7 @@ daemon 内部分四层，上层只依赖下层：
 - **CDP**（`cdp.js`，`chrome.debugger`）：habit 唯一的输入路径，learn 的 `computer` / `form_input` 和 action 的 `click` / `hover` / `key` / `scroll` / `form_input` 都走这里，发的是真实输入（`isTrusted` 为真）：鼠标 `mouseMoved → mousePressed → mouseReleased`（双击三击按 `clickCount`）、拖动分 10 步、滚轮 `mouseWheel`、按键 `dispatchKeyEvent`（键名表在 `keys.js`，扩展和自检共用；mac 上 cmd 组合键带 `commands`，如 `selectAll`）、输入文字每个 ASCII 字符 `rawKeyDown → insertText → keyUp`、中文只 `insertText`。截图是 `Page.captureScreenshot`（按 `1/devicePixelRatio` 缩，图上一个像素就是一个 CSS 像素，不用把标签页切到前台），`evaluate` 是 `Runtime.evaluate`（不受页面 CSP 限制）。只附着 habit 的标签页：标签页一开出来就附着（`call`、`goto` 之前也确保附着），附着后开 `Emulation.setFocusEmulationEnabled`。附着同时是后台标签页的「渲染开关」：没附着的后台标签页不渲染（rAF、IntersectionObserver 都停），在折叠的组里约 3 秒后还会被 Chrome 冻结（冻结的页面里 `chrome.scripting` 一直挂着）；附着后页面以为自己可见、有焦点，照常渲染，冻结的立刻解冻。组闲置 20 秒（`GROUP_IDLE_MS`）就解除附着（`idleGroup`），不吃 CPU，没有附着时「正在调试此浏览器」的横幅也消失（横幅是浏览器级别的，附着期间所有窗口都显示）；同时附着同一个标签页的调用共用一次附着；每条命令 20 秒超时；附着断了（用户点掉「正在调试此浏览器」提示条）下一次自动重新附着；habit 的标签页开着 DevTools 时附着失败，报清楚的错。
 - **握手和自动重新加载**：`hello` 带 `abi` 和 `build`（`setup.js` 写进 `chrome-extension/build.js` 的版本）。和 daemon 的 ABI 不一致时不工作；扩展支持 `reload`（ABI ≥ 13）并且跑的不是磁盘上这一版（ABI 不同，或 `build` 和 `~/.habit/src/.version` 不同）时，daemon 让它 `chrome.runtime.reload()` 从磁盘重新加载、重连，`ensureExtension` 等它回来。新代码跑在还没有 `debugger` 权限的旧 manifest 上时 `cdp.js` 也会自己重新加载。只有第一次加载要用户在 `chrome://extensions` 里操作。
 - 页面消息：页面脚本 `postMessage` → `bridge.js` → `chrome.runtime.sendMessage` → 扩展补上 tab、group、frame 转给 daemon。每条带这次页面加载的编号 `d` 和递增序号 `n`（`page/common.js`），daemon 据此判断记录有没有送达。页面自己的脚本也能发，所以日志只是观察记录，不能当权限依据。
-- 连接：Chrome 拉起的 relay 无状态，只转发字节；断开后扩展指数退避重连（上限 30 秒），点工具栏图标立即重连。daemon 不随扩展刷新退出。
+- 连接：Chrome 拉起的 relay 无状态，只转发字节；断开后扩展固定 1 秒重连（alarm 兜底 service worker 被停掉的情况），点工具栏图标立即重连。daemon 不随扩展刷新退出。
 
 ## 5. 页面脚本
 
@@ -148,7 +158,7 @@ daemon 内部分四层，上层只依赖下层：
 ## 8. 存储与安装
 
 - 用户数据：`~/.habit/learn-windows`、`~/.habit/run-windows`（日志）、`~/.habit/sites`（`endpoints.json`、`actions/`、`.seq`）、`~/.habit/compose`、`~/.habit/helpers`、`~/.habit/alias-salt`；habit 维护的 `~/.habit/lib`；运行时状态 `~/.habit/session`；运行时代码 `~/.habit/src`。
-- `setup.js` 把 skill 目录镜像到 `~/.habit`（只排除 `node_modules`、`.DS_Store`；本机数据目录不碰）、装依赖、注册 native host、生成命令、让过期的 daemon 换成新代码、运行 `doctor`。
+- `setup.js` 把 skill 目录镜像到 `~/.habit`（只排除 `node_modules`、`.DS_Store`；本机数据目录不碰）、装依赖、注册 native host、生成命令、`build` 不同时让旧 daemon 退出（扩展重连时拉起新代码）、运行 `doctor`。
 - 版本：`~/.habit/src/.version` 的 `build`；只有 `setup.js` 发现 `build` 不同、或用户 `habit daemon restart` 时才换代码。`habit doctor` 只读。
 
 ## 9. 排障
@@ -164,8 +174,10 @@ daemon 内部分四层，上层只依赖下层：
 | `need-extension` | 请用户确认 Chrome 里的 habit 扩展开着，点一下工具栏图标；从没加载过的属于安装问题 |
 | `need-install` | habit 没装好或 native host 丢了：告诉用户需要重新安装 habit |
 | `need-chrome` | 启动 Google Chrome |
-| 刷新扩展后连不上 | 刷新会断开旧 relay，Chrome 会重新拉起；等几秒，仍不行就重启 Chrome |
-| 升级后旧 daemon 还在跑 | `habit daemon restart` |
+| 刷新扩展后连不上 | 刷新会断开旧 relay，扩展 1 秒后重连、Chrome 拉起新的 relay；等几秒，仍不行看 `doctor` 的 `launcher-node`，再不行重启 Chrome |
+| `launcher-node` 失败 | 启动脚本里写死的 node 不在了（nvm 换了版本），relay 起不来：重新运行 `setup.js` |
+| 升级后旧 daemon 还在跑 | `habit daemon restart`（只让它退出，下一条命令拉起新的） |
+| 命令一直等着不返回 | daemon 在忙（或被暂停）；不要删 `session/sock`，删了旧 daemon 会在 2 秒内退出、内存里的状态就没了。真卡死了用 `habit daemon restart` |
 | `run` 的请求被 401/403 拒 | 失败的「下一步」写了抄了什么、没抄什么：登录失效就请用户登录；页面这次没发带某个头的请求，action 要先 `navigate` 会发它的页面，或照 learn 窗口观察「请求头」给的位置写 `auth`；每次都变的头被拒，改用 `waitRequest` 或 DOM |
 | learn 窗口的操作说"重新打开" | habit 组之前关了（`learn close`、空闲 30 分钟、daemon 重启、用户关了组），页面状态没了；回到了上次的 URL，需要的话重新点到那个状态 |
 | `learn <句柄> find` / `read_page` / `computer …` 报"页面里没有 habit 的脚本" | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |

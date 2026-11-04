@@ -68,6 +68,11 @@ export class WindowLog {
   /** 建目录，接上上次的编号，把已有窗口的占用量扫一遍。 */
   open(): void {
     fs.mkdirSync(this.dir, { recursive: true });
+    this.load();
+  }
+
+  /** 只读地扫一遍已有的窗口（doctor 用：不建目录）。 */
+  load(): void {
     try { this.seq = this.seqHigh = Math.max(0, Number(fs.readFileSync(this.seqFile(), "utf8").trim()) || 0); } catch { /* 第一次 */ }
     for (const kind of ["learn", "run"] as const) {
       const base = path.join(this.root, KIND_DIR[kind]);

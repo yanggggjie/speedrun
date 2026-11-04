@@ -68,7 +68,21 @@ npm run verify:pack
    - **description 与 compose**：操作的 `--description` 进了时间线，并出现在 endpoint 的 `endpoints.json` 的 `descriptions` 里；compose 文件出现在 `~/.habit/compose/`，`rg` 能用 description 里的词命中，`habit run --compose <名>` 带别的参数再跑一次，`@description` 多一句。
    - **@write 和 compose**：带 `@write` 的 draft 在 `habit status` 里标出；学出来的 action 里调用 `action()` 被拒；compose 里 `action()` 不用 import 就能用。
    - **SDK、参数、helpers**：`export default async () => …` 加 `navigate(url)`、`request({…})`、`click(定位)`、`hover(定位)`、`form_input(定位, 值)`、`key(…)`、`scroll({ direction })`、`get_page_text()` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.habit/helpers/` 里的函数被 action `import` 后能跑，`habit daemon restart` 后还在；`--compose` 写哈希前几位能跑。
-4. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露"等页面加载完"这类问题）：量 `habit learn <句柄> navigate`、`habit run` 的耗时（新开 run 窗口的代价，尤其是 daemon 刚重启、request 要等页面先发请求才能抄头时）。
+4. daemon 的启动和退出（`ARCHITECTURE.md` §3 的 8 条）：改了 `src/session/`、`daemon.ts`、`relay.ts` 或扩展的重连之后，逐条验证，每一条都要能自己恢复、不需要手动操作：
+
+   | 操作 | 期望 |
+   |---|---|
+   | `kill -STOP <daemon>`，5 秒后再 `kill -CONT` | 这段时间里发的 `habit status` 一直等，恢复后正常返回；`session/sock` 的 inode 没变；没有出现第二个 daemon |
+   | `kill -9 <daemon>` 后马上 `habit tabs` | 拉起新 daemon，命令成功 |
+   | 没有 daemon 时，同时跑 5 个 `habit status` | 都成功；最后只有一个 daemon 进程（`pgrep -f daemon.ts`） |
+   | `kill <relay>` | 扩展 1 秒内重连，daemon 的 pid 不变 |
+   | 在 `chrome://extensions` 刷新 habit | 同上；learn 句柄还在，下次操作不用从上次的 URL 重开 |
+   | 退出 Chrome，2 分钟内重新打开 | daemon 的 pid 不变；learn 句柄还在 |
+   | 退出 Chrome 超过 10 分钟 | daemon 退出，`session/sock` 被删掉 |
+   | `node skills/habit/setup.js`（build 变了） | 旧 daemon 退出；扩展重连后是新 build，`doctor` 全部通过 |
+   | 手动 `rm session/sock` | 2 秒内旧 daemon 退出；下一条命令拉起新的 |
+
+5. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露"等页面加载完"这类问题）：量 `habit learn <句柄> navigate`、`habit run` 的耗时（新开 run 窗口的代价，尤其是 daemon 刚重启、request 要等页面先发请求才能抄头时）。
 
 日常 Chrome 里测试时日志含登录态内容，在 `~/.habit/learn-windows`、`~/.habit/run-windows`；测完删除测试用的窗口目录。
 

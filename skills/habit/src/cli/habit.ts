@@ -3,13 +3,13 @@
  * 这里没有命令逻辑：参数原样交给 daemon（commands/index.ts），打印它返回的文本，用它返回的退出码。
  * 只有 doctor 和 daemon restart 留在这里，因为它们要诊断或重启一个可能已经不在的 daemon。
  */
-import { restartDaemon, runOnDaemon } from "./session.ts";
+import { runOnDaemon, stopDaemon } from "../session/client.ts";
 import { handleDoctor } from "./doctor.ts";
 import { USAGE, formatErrorStdout } from "../protocol.ts";
 import { assertNode24 } from "../utils/node.ts";
 
-function print(value: unknown): void {
-  console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+function print(text: string): void {
+  console.log(text);
 }
 
 function fail(error: string): void {
@@ -17,12 +17,12 @@ function fail(error: string): void {
   process.exitCode = 1;
 }
 
-/** habit daemon restart：按 pid 重启 daemon。换完代码后让新 daemon 生效用。 */
+/** habit daemon restart：让 daemon 退出（换完代码后让新代码生效用）。不等新的起来：下一条命令或扩展重连时会拉起新的。 */
 async function daemonRestart(): Promise<void> {
-  const result = await restartDaemon();
-  if (result.action === "none") return print("ok 没有运行中的 daemon，不用重启");
-  if (result.action === "failed") return fail("已让旧 daemon 退出，但新 daemon 还没连上；稍等，或在 chrome://extensions 刷新 habit");
-  print(result.action === "restarted" ? "ok daemon 已重启" : "ok 旧 daemon 已退出，扩展重连时会启动新的");
+  const result = await stopDaemon();
+  if (result === "none") return print("ok 没有运行中的 daemon，不用重启");
+  if (result === "timeout") return fail("daemon 10 秒内没有退出：看 ~/.habit/session/log.jsonl");
+  print("ok 旧 daemon 已退出；下一条命令或扩展重连时会启动新的");
 }
 
 async function main(argv: string[]): Promise<void> {

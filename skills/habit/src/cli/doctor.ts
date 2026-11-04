@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SESSION_DIR, HABIT_HOME } from "../utils/constants.ts";
-import { tryPing } from "./session.ts";
+import { SESSION_DIR, SESSION_SOCK, HABIT_HOME } from "../utils/constants.ts";
+import { ping as pingDaemon } from "../session/client.ts";
+import { connectable } from "../session/server.ts";
 import { WindowLog } from "../record/windowlog.ts";
 import { readVersion } from "../store/version.ts";
 import { chromeRunning } from "../browser/connect.ts";
@@ -24,6 +25,15 @@ interface Check {
 
 function exists(p: string): boolean {
   return fs.existsSync(p);
+}
+
+function isExecutable(p: string): boolean {
+  try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { return false; }
+}
+
+/** 启动脚本（nm-host.sh / nm-host.bat）里写死的 node 路径：第一对引号里的就是。 */
+function launcherNode(launcher: string): string | undefined {
+  try { return /"([^"]+)"/.exec(fs.readFileSync(launcher, "utf8"))?.[1]; } catch { return undefined; }
 }
 
 /** 只读检查：不写任何文件，不改注册表。 */
@@ -52,6 +62,10 @@ async function collectChecks(): Promise<Check[]> {
     const launcher = launcherPath();
     const launcherOk = exists(launcher) && exists(DAEMON_ENTRY) && exists(RELAY_ENTRY);
     add({ name: "launcher", ok: launcherOk, detail: launcher, fix: SETUP_FIX });
+    // 启动脚本里写死的 node：nvm 换版本、卸掉旧版本后它就不在了，relay 起不来，扩展一直重连
+    const node = launcherNode(launcher);
+    const nodeRunnable = !!node && isExecutable(node);
+    add({ name: "launcher-node", ok: nodeRunnable, detail: node ?? "启动脚本里没找到 node 路径", fix: SETUP_FIX });
 
     let idOk = false;
     try {
@@ -66,19 +80,21 @@ async function collectChecks(): Promise<Check[]> {
   const chrome = chromeRunning();
   add({ name: "chrome", ok: chrome, detail: chrome ? "running" : "未运行", fix: "启动 Google Chrome", optional: true });
 
-  // 判据只有 socket 能不能回 ping。pid 文件丢了不影响——它只是展示信息，不代表 daemon 不在。
-  const ping = await tryPing();
+  // daemon 在不在只看 socket 能不能 connect；ping 只用来补充 pid、扩展连没连着。doctor 不拉起 daemon。
+  const alive = await connectable(SESSION_SOCK);
+  const ping = alive ? await pingDaemon() : null;
   const responding = ping?.extension === true;
   add({
     name: "daemon",
     ok: responding,
-    detail: !ping ? "无" : responding ? `alive pid=${ping.pid}` : `pid=${ping.pid} 在运行，扩展未连接`,
+    detail: !alive ? "没有运行" : !ping ? "在运行，但 2 秒内没有应答（可能正忙）" : responding ? `alive pid=${ping.pid}` : `pid=${ping.pid} 在运行，扩展未连接`,
     fix: "在 Chrome 中点一下 habit 扩展的 service worker 或工具栏图标；仍无响应则在 chrome://extensions 刷新扩展",
     optional: true,
   });
 
   // 日志：几个窗口、占了多少空间
-  const usage = (() => { try { const l = new WindowLog(); l.open(); return { u: l.usage(), learn: l.listWindows("learn").length, run: l.listWindows("run").length }; } catch { return null; } })();
+  // 用 load() 不用 open()：open() 会建目录，doctor 只读
+  const usage = (() => { try { const l = new WindowLog(); l.load(); return { u: l.usage(), learn: l.listWindows("learn").length, run: l.listWindows("run").length }; } catch { return null; } })();
   const mb = (n: number): string => (n / 1024 / 1024).toFixed(1);
   add({
     name: "record",

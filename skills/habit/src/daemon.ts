@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
+import { StringDecoder } from "node:string_decoder";
 import { ABI, ExtensionLink, frame, parseFrames, type TabInfo } from "./browser/extension.ts";
 import { NeedExtensionError, handshakeError, missingStatus } from "./browser/connect.ts";
 import { loadAdblockEngine } from "./record/filter.ts";
@@ -18,7 +19,8 @@ import { RawStore } from "./record/raw.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
 import { readVersion } from "./store/version.ts";
 import { HANDSHAKE_GUIDES, RPC_ERRORS, handshakeStatusFromError, type JsonRpcRequest, type JsonRpcResponse } from "./protocol.ts";
-import { ALIAS_SALT_FILE, DAEMON_IDLE_EXIT_MS, DAEMON_READY_MS, SESSION_DIR, HABIT_HOME, SESSION_EXT_SOCK, SESSION_LOG, SESSION_SOCK, SESSION_SOCK_IS_FILE } from "./utils/constants.ts";
+import { ALIAS_SALT_FILE, DAEMON_IDLE_EXIT_MS, DAEMON_READY_MS, SESSION_DIR, HABIT_HOME, SESSION_LOG, SESSION_SOCK } from "./utils/constants.ts";
+import { OWNER_CHECK_MS, listenOwned, routeByRole, type Owned } from "./session/server.ts";
 import { createLogger, setLogFile } from "./utils/logger.ts";
 
 /**
@@ -29,8 +31,7 @@ const logger = createLogger("daemon");
 const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 
 let shuttingDown = false;
-let server: net.Server | null = null;
-let extServer: net.Server | null = null;
+let owned: Owned | null = null;
 let extSocket: net.Socket | null = null;
 let lastActivity = Date.now();
 /** 本 daemon 启动时部署目录的 build；doctor 拿它和磁盘上的对比，不一致时提示重启（habit daemon restart）。 */
@@ -130,17 +131,22 @@ function responseError(id: string, error: unknown): JsonRpcResponse {
   return { jsonrpc: "2.0", id, error: { code: typeof value?.code === "number" ? value.code : RPC_ERRORS.INTERNAL, message: error instanceof Error ? error.message : String(error), ...(value?.data === undefined ? {} : { data: value.data }) } };
 }
 
-/** CLI 连上来：一行一个 JSON-RPC 请求，一行一个应答。 */
+/** 新连接：第一行是角色说明，按它分给 CLI 或 relay。 */
 function onConnection(socket: net.Socket): void {
-  socket.setEncoding("utf8"); // 一个汉字的字节可能被拆在两个数据块里，按字节拼接会变成替换字符
+  routeByRole(socket, { cli: onCli, relay: onRelay });
+}
+
+/** CLI：一行一个 JSON-RPC 请求，一行一个应答。 */
+function onCli(socket: net.Socket, rest: Buffer): void {
+  const decoder = new StringDecoder("utf8"); // 一个汉字的字节可能被拆在两个数据块里，按字节拼接会变成替换字符
   let buffer = "";
   const write = (message: JsonRpcResponse): void => {
     const line = `${JSON.stringify(message)}\n`;
     if (Buffer.byteLength(line) > MAX_MESSAGE_BYTES) { write({ jsonrpc: "2.0", id: message.id, error: { code: RPC_ERRORS.INTERNAL, message: "应答超过上限，缩小查询范围" } }); return; }
     if (!socket.destroyed) socket.write(line);
   };
-  socket.on("data", (chunk) => {
-    buffer += chunk.toString();
+  const feed = (chunk: Buffer): void => {
+    buffer += decoder.write(chunk);
     if (Buffer.byteLength(buffer) > MAX_MESSAGE_BYTES) { write({ jsonrpc: "2.0", id: "", error: { code: RPC_ERRORS.INVALID_REQUEST, message: "RPC message too large" } }); socket.end(); return; }
     let nl: number;
     while ((nl = buffer.indexOf("\n")) >= 0) {
@@ -151,8 +157,9 @@ function onConnection(socket: net.Socket): void {
       if (req.jsonrpc !== "2.0" || typeof req.id !== "string" || typeof req.method !== "string") { write({ jsonrpc: "2.0", id: typeof req.id === "string" ? req.id : "", error: { code: RPC_ERRORS.INVALID_REQUEST, message: "Invalid Request" } }); continue; }
       void dispatch(req).then((result) => write({ jsonrpc: "2.0", id: req.id, result }), (error) => write(responseError(req.id, error)));
     }
-  });
-  socket.on("error", () => {});
+  };
+  socket.on("data", feed);
+  if (rest.length) feed(rest);
 }
 
 async function shutdown(code: number): Promise<void> {
@@ -160,46 +167,16 @@ async function shutdown(code: number): Promise<void> {
   shuttingDown = true;
   logger.info("daemon exit", { code });
   try { ingest.flush(); index.flush(); log.close(); } catch (error) { warnCatch("flush on exit")(error); }
-  server?.close();
-  extServer?.close();
   extSocket?.destroy();
-  if (SESSION_SOCK_IS_FILE) { fs.rmSync(SESSION_SOCK, { force: true }); fs.rmSync(SESSION_EXT_SOCK, { force: true }); }
+  owned?.release(); // 只删 inode 还是自己的 socket 文件
   process.exit(code);
 }
 
-/** 已有活的 daemon 在监听时返回 true：新 daemon 不应覆盖它。 */
-function socketAlive(sock: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (SESSION_SOCK_IS_FILE && !fs.existsSync(sock)) { resolve(false); return; }
-    const probe = net.connect(sock);
-    const done = (ok: boolean): void => { probe.destroy(); resolve(ok); };
-    probe.once("connect", () => done(true));
-    probe.once("error", () => done(false));
-    probe.setTimeout(500, () => done(false));
-  });
-}
-
-/** 抢占 socket：EADDRINUSE 且对方还活着时返回 null，本进程应退出；残留文件则删掉后重试。 */
-async function listenUnique(sock: string, onConn: (socket: net.Socket) => void): Promise<net.Server | null> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const srv = net.createServer(onConn);
-    try {
-      await new Promise<void>((resolve, reject) => { srv.once("error", reject); srv.listen(sock, () => { srv.off("error", reject); resolve(); }); });
-      if (SESSION_SOCK_IS_FILE) fs.chmodSync(sock, 0o600);
-      return srv;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || (await socketAlive(sock))) return null;
-      if (SESSION_SOCK_IS_FILE) fs.rmSync(sock, { force: true });
-    }
-  }
-  return null;
-}
-
-/** relay 连上来：同一时间只保留一个扩展链路，新连接替换旧连接。 */
-function onRelay(sock: net.Socket): void {
+/** relay 连上来：同一时间只保留一个扩展链路，新的合法 hello 替换旧连接。 */
+function onRelay(sock: net.Socket, rest: Buffer): void {
   let buffer: Buffer = Buffer.alloc(0);
   let helloDone = false;
-  sock.on("data", (chunk: Buffer) => {
+  const feed = (chunk: Buffer): void => {
     buffer = Buffer.concat([buffer, chunk]);
     try {
       buffer = parseFrames(buffer, (msg) => {
@@ -225,7 +202,8 @@ function onRelay(sock: net.Socket): void {
       logger.error("扩展消息处理失败", error);
       sock.destroy();
     }
-  });
+  };
+  sock.on("data", feed);
   sock.on("close", () => {
     if (extSocket !== sock) return;
     extSocket = null;
@@ -235,25 +213,31 @@ function onRelay(sock: net.Socket): void {
     logger.info("extension link closed");
   });
   sock.on("error", () => {});
+  if (rest.length) feed(rest);
 }
 
 export async function runDaemon(): Promise<void> {
   fs.mkdirSync(SESSION_DIR, { recursive: true });
   setLogFile(SESSION_LOG);
-  extServer = await listenUnique(SESSION_EXT_SOCK, onRelay);
-  if (!extServer) { logger.warn("已有 daemon 在运行，本进程退出"); process.exit(0); }
-  server = await listenUnique(SESSION_SOCK, onConnection);
-  if (!server) { logger.warn("CLI socket 被占用，本进程退出"); extServer.close(); if (SESSION_SOCK_IS_FILE) fs.rmSync(SESSION_EXT_SOCK, { force: true }); process.exit(0); }
+  owned = await listenOwned(SESSION_SOCK, onConnection);
+  if (!owned) { logger.warn("已有 daemon 在运行，本进程退出"); process.exit(0); }
+  // socket 文件没了或被换掉：出现了另一个 daemon（或被手动删了），本进程退出（plan 第 5 条）
+  owned.watch(() => { logger.warn("socket 文件不是自己的了，退出"); void shutdown(0); });
   log.open();
   try { syncActionLib(); } catch (error) { warnCatch("sync action lib")(error); }
   loadAdblockEngine().then(setAdblock).catch(warnCatch("adblock engine"));
   // 没有扩展连接、也没有命令请求超过 DAEMON_IDLE_EXIT_MS 就退出；下次需要时由 relay 或 CLI 重新拉起
   // 日志按窗口目录淘汰（run 窗口只留最近的；learn 窗口先只删响应体、页面和截图的旧文件，再删整个旧窗口；开着的和 endpoint 样本不动）
+  // 这些定时任务等第一次 inode 检查通过后才开始：极端竞争下两个 daemon 可能并存最多 OWNER_CHECK_MS，
+  // 被换掉的那个不能把另一个正开着的 learn 窗口当成已关，删掉里面的文件
   const retain = (): void => { try { enforce(log, { protect: () => index.protect(), isOpen: (w) => learn.get(w)?.open === true, changed: () => index.touchAll() }); } catch (error) { warnCatch("retention")(error); } };
-  retain();
-  setInterval(retain, 10_000).unref();
-  // 空闲太久的 learn 窗口关掉 Chrome 窗口（句柄和目录保留）
-  setInterval(() => { for (const w of learn.idle()) void learn.close(w).catch(warnCatch("close learn window")); }, 60_000).unref();
+  setTimeout(() => {
+    if (!owned?.stillMine()) return;
+    retain();
+    setInterval(retain, 10_000).unref();
+    // 空闲太久的 learn 窗口关掉 Chrome 窗口（句柄和目录保留）
+    setInterval(() => { for (const w of learn.idle()) void learn.close(w).catch(warnCatch("close learn window")); }, 60_000).unref();
+  }, OWNER_CHECK_MS + 100).unref();
   setInterval(() => { if (!extSocket && Date.now() - lastActivity > DAEMON_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();
   process.on("SIGINT", () => void shutdown(0));
   process.on("SIGTERM", () => void shutdown(0));

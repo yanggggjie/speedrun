@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mirrorPayload } from "./src/store/deploy.ts";
 import { writeVersion } from "./src/store/version.ts";
-import { restartDaemon, tryPing } from "./src/cli/session.ts";
+import { ping, stopDaemon } from "./src/session/client.ts";
 import { writeShim, BIN_DIR } from "./src/cli/shim.ts";
 import { EXTENSION_DIR, installNativeHost, manifestPath } from "./src/native-messaging-host/install.ts";
 
@@ -61,14 +61,13 @@ fs.mkdirSync(path.join(HOME_DIR, "session"), { recursive: true });
 writeShim(process.execPath);
 console.log(`habit 命令 shim → ${BIN_DIR}`);
 
-// 正在运行的 daemon 还是旧代码：build 不同才请它退出，扩展重连时会拉起新的（代码没变就不动，免得白白断一次扩展链路）。
-// 旧 daemon 的 ping 里没有 build，也算不同。
-const running = await tryPing();
+// 正在运行的 daemon 还是旧代码：build 不同才让它退出（代码没变就不动，免得白白断一次扩展链路）。
+// 不等新的起来：扩展重连时 relay 会拉起新代码的 daemon（下面的 doctor 不会拉起 daemon）。旧 daemon 的 ping 里没有 build，也算不同。
+const running = await ping();
 if (running && running.build !== version.build) {
-  const restarted = await restartDaemon();
-  if (restarted.action === "restarted") console.log("daemon 已更新为新版本");
-  else if (restarted.action === "killed") console.log("旧 daemon 已退出，扩展重连时会启动新的");
-  else if (restarted.action === "failed") console.log("旧 daemon 已退出，但新 daemon 还没连上；请稍等，或在 chrome://extensions 刷新 habit");
+  const stopped = await stopDaemon();
+  if (stopped === "stopped") console.log("旧 daemon 已退出，扩展重连时会启动新版本");
+  else if (stopped === "timeout") console.log("旧 daemon 10 秒内没有退出：看 ~/.habit/session/log.jsonl");
 }
 
 const doctor = spawnSync(process.execPath, [path.join(DEST, "cli", "habit.ts"), "doctor"], {

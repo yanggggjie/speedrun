@@ -25,7 +25,8 @@ import { BUILD } from "./build.js";
 
 const ABI = 14;
 const HOST = "com.habit.connect";
-const RETRY_MAX_MS = 30_000;
+/** 和 daemon 断开后固定隔这么久重连（relay 自己会等 daemon 起来；alarm 兜底 service worker 被停掉的情况）。 */
+const RETRY_MS = 1000;
 const KEEPALIVE_MINUTES = 0.5;
 const PAGE_FILES = ["page/common.js", "page/a11y.js", "page/recorder.js", "page/executor.js", "page/newtab.js"];
 const GROUP_TITLE = /^habit[·▶]/;
@@ -33,7 +34,6 @@ const GROUP_TITLE = /^habit[·▶]/;
 const STOLEN_MS = 3000;
 
 let port = null;
-let retryCount = 0;
 let retryTimer = null;
 
 function postToHost(message) {
@@ -193,7 +193,6 @@ async function connect() {
   const current = port;
   port.onMessage.addListener((msg) => { void handleHostMessage(msg); });
   port.onDisconnect.addListener(() => { port = null; scheduleRetry(); });
-  retryCount = 0;
   current.postMessage({ type: "hello", abi: ABI, build: BUILD, chromeVersion: navigator.userAgent, extensionVersion: chrome.runtime.getManifest().version });
   void injectExisting();
 }
@@ -214,12 +213,10 @@ async function injectExisting() {
 
 function scheduleRetry() {
   if (retryTimer) return;
-  const delay = Math.min(1000 * 2 ** retryCount, RETRY_MAX_MS);
-  retryCount++;
   retryTimer = setTimeout(() => {
     retryTimer = null;
     void connect();
-  }, delay);
+  }, RETRY_MS);
 }
 
 async function handleHostMessage(msg) {
