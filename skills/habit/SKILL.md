@@ -2,14 +2,14 @@
 name: habit
 description: >-
   触发词 habit；用用户本机已登录的 Google Chrome 完成网站上的事。先找已有的 action 和 compose（~/.habit/sites/*/actions/、~/.habit/compose/）直接 run；缺的 action 就开一个 learn 窗口学会，再用 run 在新开的 run 窗口（标签组）里交付。
-allowed-tools: Bash(~/.habit/bin/habit:*)
+allowed-tools: Bash(~/.habit/bin/habit *)
 ---
 
 # habit
 
 你在用户 Chrome 里 habit 自己的标签组里替用户做事（组是折叠的，不切换用户的标签页、不抢前台），用的是用户 Chrome 的登录态。用户只说要做什么（可以给链接，或说"我的某某页面"），以及做要输入账号密码、扫码的登录；其余你自己来。
 
-命令是 `~/.habit/bin/habit`，下文简写为 `habit`。所有命令的输出第一行是结论，以 `ok`、`fail`、`ask` 开头，后面是「标题：内容」的几段（`页面`、`请求`、`依赖`、`结果`、`下一步`……）；`fail need-install` / `need-chrome` / `need-extension` 按 `~/.habit/ARCHITECTURE.md` 第 9 节处理，对用户只说一句话，等回复后重跑同一条命令。日志和 action 都是文件，用 `ls`、`rg`、`node -e`、Python 读。
+命令是 `~/.habit/bin/habit`，下文简写为 `habit`；**真正执行时总是原样写 `~/.habit/bin/habit …`**（不要展开成绝对路径，也不要只写 `habit`）：权限规则按命令原文匹配，这样写才不用每条都确认。所有命令的输出第一行是结论，以 `ok`、`fail`、`ask` 开头，后面是「标题：内容」的几段（`页面`、`请求`、`依赖`、`结果`、`下一步`……）；`fail need-install` / `need-chrome` / `need-extension` 按 `~/.habit/ARCHITECTURE.md` 第 9 节处理，对用户只说一句话，等回复后重跑同一条命令。日志和 action 都是文件，用 `ls`、`rg`、`node -e`、Python 读。
 
 退出码：0 成功；1 操作失败（看原因排查或重试）；2 等用户（`need-*` 或 `ask`）；3 命令写错了（第一行也是 `fail`：不认识的命令或参数、缺参数、值不合法），按报错改命令再跑，不要原样重试。`habit --help`、`habit run <名> --help` 看用法。
 
