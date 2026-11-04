@@ -278,8 +278,9 @@ export class RunHost {
     const method = (a.method ?? (a.json !== undefined || a.body !== undefined ? "POST" : "GET")).toUpperCase();
     let target: URL;
     try { target = new URL(a.url); } catch { throw new Error(`request 需要完整的网址：${a.url}`); }
-    // 和当前页面同一注册域名（跨子域，如 api.x.com 和 x.com）就在当前页面上发，否则在请求自己的 origin 上开页面发
-    const tab = s.tab !== undefined && s.origin && isSameSite(parseUrl(s.origin), parseUrl(target.href)) ? this.page(s) : await this.bind(s, target.origin);
+    // 在当前页面上发：和它同 origin，或者这个页面在这次窗口里自己往这个 origin 发过请求（跨域是页面本来就在做的，CORS 放行）。
+    // 只看注册域名不够：同一个公司域名下的不同产品（app.example.com 和 app.example.com）互不放行跨域，从别的页面发会被 403。其余在请求自己的 origin 上开页面发
+    const tab = s.tab !== undefined && s.origin && (s.origin === target.origin || this.pageCalled(s, target.origin)) ? this.page(s) : await this.bind(s, target.origin);
     let body: string | null = null;
     if (a.json !== undefined) body = JSON.stringify(a.json);
     else if (a.body !== undefined) body = a.body;
@@ -308,6 +309,11 @@ export class RunHost {
     }, (r: any) => ({ status: r.status, size: r.size, ms: r.ms })) as { status?: number };
     if (res.status === 401 || res.status === 403) this.rejected.set(s.key, rejectHint(endpoint, res.status, source));
     return res;
+  }
+
+  /** 当前页面（session 的 origin）在这次窗口里是不是自己往 origin 发过请求。 */
+  private pageCalled(s: Session, origin: string): boolean {
+    return this.d.raw.inWindow(s.key).some((e) => { try { return new URL(e.url).origin === origin && new URL(e.page).origin === s.origin; } catch { return false; } });
   }
 
   /** 从这次窗口里页面发过的同站请求抄头（刚 goto 的页面可能还没发请求：先等一次页面安静；没打开过页面的不等，只靠 cookie 的站点不被拖慢）。 */

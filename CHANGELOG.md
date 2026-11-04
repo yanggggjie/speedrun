@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- `request()` 不再只按注册域名决定在哪个页面上发：同 origin、或者当前页面自己往那个 origin 发过请求才在当前页面上发，否则在目标 origin 上开页面发。以前同一个公司域名下的不同产品（`app.example.com` 页面上请求 `app.example.com`）会被 403。
 - 改名为 speedrun（快速通关），简称 spr（之前叫 lore、habit）：名字用 speedrun（产品、仓库、扩展显示名、标签组标题、数据目录 `~/.speedrun`、native host `com.speedrun.connect`）；要敲的用 spr（skill 名和触发词、命令 `~/.speedrun/bin/spr`、SDK 的 `spr.params` / `spr.ask`）。标签组标题都是 `speedrun`，learn 蓝色、run 灰色。扩展 ABI 16。数据目录换了位置，扩展要在 `chrome://extensions` 里从 `~/.speedrun/src/chrome-extension` 重新加载一次。
 - 观察里的「依赖」也能找到之前几步的来源（页面加载时拿的 token、几步之后提交时用），以前只在同一次观察列出的请求之间找。`request()` 的响应上限从 1MB 提到 16MB（和录制一样），被截断时 `json()` 直接说明截断了，不再报「不是 JSON」。
 - 升级更稳：`setup.js` 先让旧 daemon 退出再换代码（以前换代码的几秒里旧 daemon 还在跑）；启动脚本里的路径加了引号转义（路径里有空格、引号、`$` 也能用）；只删上次由安装拷过去、新版本里没有了的顶层文件，`~/.speedrun` 里你自己放的文件不再被删；`doctor` 去掉两项永远通过的检查。

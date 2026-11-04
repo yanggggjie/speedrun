@@ -60,7 +60,7 @@ const withJson = (res) => ({
  * 3. auth：{ 头: 来源 }，页面这次没发带这个头的请求时用，发送时在页面里现读；来源 cookie:名字、local:key[.JSON 路径]、session:key[.路径]、meta:名字，前面加 "Bearer " 会拼上前缀。来源看 learn 窗口观察里的「请求头」。
  * 4. 前序请求：先 request 拿到 token，再 headers: { "x-token": r.json().token }（照观察里的「依赖」写）。
  * headers 显式写的最后覆盖。被 401/403 拒时，失败输出里会写抄了什么、没抄什么、下一步；每次都变的头被拒，改用 waitRequest 或 DOM。
- * 和当前页面同一注册域名（api.a.com 和 a.com）的请求在当前页面上发，否则在请求自己的域名上开页面发。
+ * 和当前页面同 origin，或者当前页面自己往那个 origin 发过请求（a.com 页面调 api.a.com）的，在当前页面上发；否则在请求自己的 origin 上开页面发（同一个公司域名下的不同产品互不放行跨域）。
  */
 export async function request(options) {
   return withJson(await call("request", options));
