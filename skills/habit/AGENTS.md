@@ -69,7 +69,12 @@ npm run verify:pack
    - **@write 和 compose**：带 `@write` 的 draft 在 `habit status` 里标出；学出来的 action 里调用 `action()` 被拒；compose 里调用 `navigate` 这类页面操作被拒。
    - **同一个句柄串行**：在 Claude Code 里一次并行发两条 `habit learn <同一个句柄> computer …`：一条成功，一条报「上一条命令还没结束」。
    - **SDK、参数、helpers**：`export default async () => …` 加 `navigate(url)`、`request({…})`、`click(定位)`、`hover(定位)`、`form_input(定位, 值)`、`key(…)`、`scroll({ direction })`、`get_page_text()` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.habit/helpers/` 里的函数被 action `import` 后能跑，`habit daemon restart` 后还在。
-4. daemon 的启动和退出（`ARCHITECTURE.md` §3 的 8 条）：改了 `src/session/`、`daemon.ts`、`relay.ts` 或扩展的重连之后，逐条验证，每一条都要能自己恢复、不需要手动操作：
+4. 页面脚本只进 habit 的标签页：
+   - 用户的普通标签页里（用 Claude in Chrome 打开）`window.__habit` 是 `undefined`，`fetch.toString()` 含 `[native code]`。
+   - learn 窗口打开后第一次观察里有加载期的请求；有跨站 iframe 的页面，iframe 里的请求也录到。
+   - 把用户的标签页拖进 habit 的组：之后的请求录到；拖出去：不再录，刷新后 `window.__habit` 是 `undefined`。
+   - 组闲置 20 秒后再操作：照常录。`chrome://extensions` 里点 service worker 的「停止」后再操作：不报「开着 DevTools」，照常录。
+5. daemon 的启动和退出（`ARCHITECTURE.md` §3 的 8 条）：改了 `src/session/`、`daemon.ts`、`relay.ts` 或扩展的重连之后，逐条验证，每一条都要能自己恢复、不需要手动操作：
 
    | 操作 | 期望 |
    |---|---|
@@ -83,7 +88,7 @@ npm run verify:pack
    | `node skills/habit/setup.js`（build 变了） | 旧 daemon 退出；扩展重连后是新 build，`doctor` 全部通过 |
    | 手动 `rm session/sock` | 2 秒内旧 daemon 退出；下一条命令拉起新的 |
 
-5. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露"等页面加载完"这类问题）：量 `habit learn <句柄> navigate`、`habit run` 的耗时（新开 run 窗口的代价，尤其是 daemon 刚重启、request 要等页面先发请求才能抄头时）。
+6. 速度问题要用真实站点量（有统计脚本、被墙资源的页面最能暴露"等页面加载完"这类问题）：量 `habit learn <句柄> navigate`、`habit run` 的耗时（新开 run 窗口的代价，尤其是 daemon 刚重启、request 要等页面先发请求才能抄头时）。
 
 日常 Chrome 里测试时日志含登录态内容，在 `~/.habit/learn-windows`、`~/.habit/run-windows`；测完删除测试用的窗口目录。
 

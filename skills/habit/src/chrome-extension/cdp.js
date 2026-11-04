@@ -1,16 +1,59 @@
-// CDP（chrome.debugger）：habit 唯一的输入路径（learn 的 computer 和 action 回放都走这里），还有截图和执行 JS。
+// CDP（chrome.debugger）：habit 唯一的输入路径（learn 的 computer 和 action 回放都走这里），截图、执行 JS，以及把页面脚本放进 habit 的标签页。
 // 只附着 agent 标签页；附着期间 Chrome 在窗口顶部显示「正在调试此浏览器」，用户点掉或开了 DevTools 会断开，下一次操作重新附着。
+//
+// 页面脚本只经这里进 habit 的标签页（用户的网页里没有 habit 的任何代码）：附着后注册
+//   Page.addScriptToEvaluateOnNewDocument：之后每个新文档都在页面自己的脚本之前执行页面脚本（同站 iframe 也带上）；
+//   Runtime.addBinding：页面脚本调用 window.__habitSend(字符串) 上报，这里收到 Runtime.bindingCalled；
+//   Target.setAutoAttach（flatten）：跨站 iframe 作为子会话附着上来，同样注册后再放行。
+// 当前已经打开的文档补注入一次（脚本自己防重复）。解除附着后注册跟着没了，下一个文档就没有脚本（当前文档里的还在，拖出组时先 stopPage）。
 import { keySequence, modBits, typeSteps } from "./keys.js";
 
 const CMD_TIMEOUT_MS = 20_000;
+export const BINDING = "__habitSend";
 const attached = new Set();
 const attaching = new Map();
+/** 页面脚本（page/*.js 连起来）：background 启动时读好交给 setPageScript。 */
+let pageScript = null;
+let scriptReady;
+const scriptLoaded = new Promise((r) => { scriptReady = r; });
+export function setPageScript(src) { pageScript = src; scriptReady(); }
+/** 页面脚本上报的消息：(tabId, 子会话编号（0 是标签页本身，跨站 iframe 从 1 起）, 字符串)。 */
+let onMessage = () => {};
+export function onPageMessage(cb) { onMessage = cb; }
+/** 每个标签页的跨站 iframe 子会话 → 编号（只用来在日志里区分 frame）。 */
+const childNo = new Map();
 const mac = /Mac/i.test(navigator.userAgent);
 
 // 新代码跑在旧 manifest 上（还没有 debugger 权限）：从磁盘重新加载，拿到新的 manifest
 if (!chrome.debugger) setTimeout(() => chrome.runtime.reload(), 500);
-chrome.debugger?.onDetach.addListener((source) => { attached.delete(source.tabId); });
-chrome.tabs.onRemoved.addListener((tabId) => { attached.delete(tabId); });
+chrome.debugger?.onDetach.addListener((source) => { attached.delete(source.tabId); childNo.delete(source.tabId); });
+chrome.tabs.onRemoved.addListener((tabId) => { attached.delete(tabId); childNo.delete(tabId); });
+chrome.debugger?.onEvent.addListener((source, method, params) => {
+  if (method === "Runtime.bindingCalled" && params.name === BINDING) {
+    const no = source.sessionId ? childNo.get(source.tabId)?.get(source.sessionId) ?? 0 : 0;
+    onMessage(source.tabId, no, params.payload);
+    return;
+  }
+  // 子会话（跨站 iframe）附着上来时是暂停的：iframe 注册页面脚本后放行，其它类型直接放行。只处理标签页会话下的子会话
+  if (method === "Target.attachedToTarget" && source.tabId !== undefined && attached.has(source.tabId)) {
+    const child = { tabId: source.tabId, sessionId: params.sessionId };
+    let m = childNo.get(source.tabId);
+    if (!m) childNo.set(source.tabId, (m = new Map()));
+    m.set(params.sessionId, m.size + 1);
+    const prepare = params.targetInfo?.type === "iframe" ? register(child) : Promise.resolve();
+    void prepare.catch(() => {}).then(() => chrome.debugger.sendCommand(child, "Runtime.runIfWaitingForDebugger").catch(() => {}));
+  }
+});
+
+/** 让一个会话（标签页或跨站 iframe）以后的每个文档都带上页面脚本、能上报。 */
+async function register(target) {
+  await scriptLoaded;
+  await chrome.debugger.sendCommand(target, "Page.enable");
+  await chrome.debugger.sendCommand(target, "Runtime.enable");
+  await chrome.debugger.sendCommand(target, "Runtime.addBinding", { name: BINDING });
+  await chrome.debugger.sendCommand(target, "Page.addScriptToEvaluateOnNewDocument", { source: pageScript });
+  await chrome.debugger.sendCommand(target, "Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+}
 
 // 附着不是幂等的：两个调用同时附着同一个标签页，第二个会报「已经有调试器」。进行中的附着大家共用。
 // 附着同时是 habit 后台标签页的「渲染开关」：没附着的后台标签页不渲染，在折叠的组里几秒后还会被 Chrome 冻结（冻结的页面连 chrome.scripting 都执行不了）；
@@ -22,10 +65,23 @@ export async function attach(tabId) {
     try { await chrome.debugger.attach({ tabId }, "1.3"); }
     catch (e) {
       const msg = String((e && e.message) || e);
-      if (/already attached/i.test(msg)) throw new Error("连不上这个标签页的调试接口：这个 agent 窗口开着 DevTools（或别的调试器），关掉后重试");
-      throw new Error(`连不上这个标签页的调试接口：${msg}`);
+      if (!/already attached/i.test(msg)) throw new Error(`连不上这个标签页的调试接口：${msg}`);
+      // 「已经有调试器」：service worker 重启过时，habit 自己之前的附着还在（注册也还在）。能发命令就是自己的：解除再重新附着，清掉旧注册
+      const ours = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "1" }).then(() => true, () => false);
+      if (!ours) throw new Error("连不上这个标签页的调试接口：这个 agent 窗口开着 DevTools（或别的调试器），关掉后重试");
+      await chrome.debugger.detach({ tabId }).catch(() => {});
+      await chrome.debugger.attach({ tabId }, "1.3");
     }
     attached.add(tabId);
+    try {
+      await register({ tabId });
+      // 当前已经打开的文档补注入（新文档由注册接管）；脚本自己防重复
+      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: pageScript });
+    } catch (e) {
+      attached.delete(tabId);
+      await chrome.debugger.detach({ tabId }).catch(() => {});
+      throw new Error(`没能把 habit 的页面脚本放进这个标签页：${String((e && e.message) || e)}`);
+    }
     // 后台窗口（不在前台）的输入也要送到：让页面以为自己有焦点（和无头浏览器驱动未聚焦页面的做法一样）
     try { await chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true }); } catch {}
   })();
@@ -37,7 +93,14 @@ export async function attach(tabId) {
 export async function detach(tabId) {
   if (!attached.has(tabId)) return;
   attached.delete(tabId);
+  childNo.delete(tabId);
   try { await chrome.debugger.detach({ tabId }); } catch { /* 已经断开、标签页已关 */ }
+}
+
+/** 标签页不再是 habit 的（被拖出组）：先让当前文档里的页面脚本停止上报、不再拦新标签页，再解除附着（之后的文档就没有脚本了）。 */
+export async function release(tabId) {
+  if (attached.has(tabId)) await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "window.__habit && window.__habit.stop && window.__habit.stop()" }).catch(() => {});
+  await detach(tabId);
 }
 
 /** 发一条 CDP 命令；附着断了（用户点掉提示条）就重新附着再发一次。每条命令有超时，页面卡住时不会一直挂着。 */

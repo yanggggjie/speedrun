@@ -10,7 +10,7 @@
 import { EXTENSION_COMMAND_TIMEOUT_MS } from "../utils/constants.ts";
 
 /** 扩展 ABI 版本：daemon 和扩展之间的操作集合（call、tabs、goto、openTab、screenshot 等）。只有改 ABI 才加一，用户才需要刷新扩展。 */
-export const ABI = 14;
+export const ABI = 15;
 /** 从这个 ABI 起扩展支持 reload（从磁盘重新加载自己）：daemon 发现扩展旧了就自动让它重新加载，不用用户去 chrome://extensions 点。 */
 export const RELOADABLE_ABI = 13;
 

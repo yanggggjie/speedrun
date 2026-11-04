@@ -1,5 +1,7 @@
 # 计划：页面脚本只进 habit 的标签页
 
+> 状态：已实现（`feat/cdp-inject`）。真实 Chrome 里已验证：用户标签页里没有 habit 的代码、加载期和跨站 iframe 的请求录到、闲置后照常录、run 照常；还没验证：拖进拖出组、service worker 停掉后再操作（见 AGENTS.md §2.3 第 4 条）。
+
 > 目标：**habit 的页面脚本只出现在 habit 组里的标签页，用户自己的网页里一行 habit 的代码都没有。**
 > 上一份计划（daemon 的启动和退出、简化 CLI）已完成并合进 main（`98f320b`、`1810d9c`），原文在 git 历史里。
 > 背景：2026-11-04 review 扩展和页面脚本时发现，`manifest.json` 把页面脚本注册成静态内容脚本，范围是所有 http/https 页面、所有 iframe、MAIN world、`document_start`。用户打开的每个网页都被装上了 `fetch`、`XHR`、`history`、链接点击、`window.open` 的钩子，只是问过扩展「不是 habit 的」之后不上报。数据不会发出去，但用户的日常浏览会受影响（检测 `fetch` 被改写的站点、性能），和「不碰用户的标签页」不符。

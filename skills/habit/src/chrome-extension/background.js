@@ -1,4 +1,4 @@
-// habit Chrome 扩展：一个固定 ABI 的管道。没有业务逻辑；页面脚本是扩展包里的静态内容脚本（page/）。
+// habit Chrome 扩展：一个固定 ABI 的管道。没有业务逻辑；页面脚本（page/）只经 CDP 注入 habit 的标签页（cdp.js），不是内容脚本。
 // daemon 端的协议见 src/browser/extension.ts。改 ABI 才需要加 ABI 版本并让用户刷新扩展。
 //
 // daemon → 扩展：{ id, name, args }，应答 { id, result | error }
@@ -13,6 +13,7 @@
 //   input { tabId, action, x, y, … }   一次真实输入（CDP Input.*）：点击、悬停、拖拽、滚轮、按键、输入文字，见 cdp.js
 //   evaluate { tabId, src, args }      在页面里执行函数（CDP Runtime.evaluate，不受 CSP 限制），返回 { v }
 //   reload {}                          从磁盘重新加载扩展
+// 页面脚本只经 CDP 进 habit 的标签页（cdp.js：附着时注册、补注入），用户的网页里没有 habit 的任何代码；页面脚本经 CDP binding 上报。
 // 扩展 → daemon：{ type: "hello", abi, build, ... }（build 是 setup.js 写进 build.js 的版本，daemon 发现不是磁盘上的最新版就发 reload） | { type: "page", tab, group, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化、新开和关闭；group 是标签页所在的 habit 组）
 //
 // habit 的标签页都在用户窗口里 habit 自己的标签组中（一个 learn 句柄或一次 run 一个组，始终折叠）。归属只看组：标签页在 habit 的组里就是 habit 的，录、可以操作；
@@ -20,15 +21,17 @@
 // 不抢前台：habit 从不选中自己的标签页；新开标签页先开成 chrome://newtab/（Tab Activate 这类扩展会把新标签页切到前台，但跳过 newtab）；
 // 页面自己要新开标签页时（target=_blank、window.open）页面脚本拦下来交给这里开（page/newtab.js），否则 Chrome 会选中新标签页、把窗口和 Chrome 拉到前台。
 
-import { attach, cdp, detach, evaluate, input, screenshot } from "./cdp.js";
+import { attach, cdp, detach, evaluate, input, onPageMessage, release, screenshot, setPageScript } from "./cdp.js";
 import { BUILD } from "./build.js";
 
-const ABI = 14;
+const ABI = 15;
 const HOST = "com.habit.connect";
 /** 和 daemon 断开后固定隔这么久重连（relay 自己会等 daemon 起来；alarm 兜底 service worker 被停掉的情况）。 */
 const RETRY_MS = 1000;
 const KEEPALIVE_MINUTES = 0.5;
 const PAGE_FILES = ["page/common.js", "page/a11y.js", "page/recorder.js", "page/executor.js", "page/newtab.js"];
+// 页面脚本：连成一段，附着 habit 的标签页时经 CDP 注册（cdp.js）
+const pageScriptReady = Promise.all(PAGE_FILES.map((f) => fetch(chrome.runtime.getURL(f)).then((r) => r.text()))).then((parts) => setPageScript(parts.join("\n;\n")));
 const GROUP_TITLE = /^habit[·▶]/;
 /** habit 新开的标签页在这么久之内被选中，算别的扩展抢的，把选中还回去。 */
 const STOLEN_MS = 3000;
@@ -56,8 +59,14 @@ async function isAgentTab(tabId) {
 async function mustBeAgent(tabId) {
   if (!(await isAgentTab(tabId))) throw new Error("只能在 habit 自己的标签页（habit 的标签组里）操作页面");
 }
-// 附着调试器才会渲染、不被冻结（cdp.js）。DevTools 开着等附着不上时照常往下走，由真正要 CDP 的操作报错。
-const ensureRendering = (tabId) => attach(tabId).catch(() => {});
+// 附着调试器才会渲染、不被冻结，页面脚本也是附着时放进去的（cdp.js）。DevTools 开着等附着不上时照常往下走，由真正要 CDP 的操作报错。
+const ensureRendering = (tabId) => pageScriptReady.then(() => attach(tabId)).catch(() => {});
+
+// habit 标签页所在的组（页面消息要带上；按到达顺序同步转发，不能每条都异步查）
+const groupOfTab = new Map();
+/** 出现过的 habit 标签页：关掉时只告诉 daemon 这些（用户的标签页关了不发）。 */
+const habitTabs = new Set();
+const noteTab = (tabId, groupId) => { groupOfTab.set(tabId, groupId); habitTabs.add(tabId); };
 
 // ---- 不抢前台：记住每个窗口里用户上一个选中的标签页，habit 的标签页刚开出来就被选中时还回去 ----
 const lastUserTab = new Map(); // windowId → tabId（不是 habit 的）
@@ -121,6 +130,7 @@ async function openTab({ groupId, title, color, url }) {
     habitGroups.add(groupId); void saveGroups();
     await chrome.tabGroups.update(groupId, { title: String(title || "habit"), color: color || "blue", collapsed: true }).catch(() => {});
   }
+  noteTab(tabId, groupId);
   await chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
   await chrome.tabs.update(tabId, { url: "about:blank" });
   await waitUrl(tabId, "about:blank");
@@ -161,6 +171,7 @@ chrome.tabs.onCreated.addListener((tab) => {
     try {
       if (tab.windowId === opener.windowId) await chrome.tabs.group({ tabIds: [tab.id], groupId: opener.groupId });
     } catch { /* 弹出窗口里的标签页进不了组 */ }
+    noteTab(tab.id, opener.groupId);
     if ((await chrome.tabs.get(tab.id).catch(() => tab)).active) { const back = lastUserTab.get(tab.windowId); if (back !== undefined && back !== tab.id) await chrome.tabs.update(back, { active: true }).catch(() => {}); }
     void ensureRendering(tab.id);
     postToHost({ type: "page", tab: tab.id, group: opener.groupId, frame: 0, msg: { k: "tab", ev: "leaked", t: Date.now(), url, opener: opener.id } });
@@ -170,14 +181,14 @@ chrome.tabs.onCreated.addListener((tab) => {
 // 组被关掉（用户关了组或整个窗口）
 chrome.tabGroups.onRemoved.addListener((group) => { if (habitGroups.delete(group.id)) void saveGroups(); });
 
-// 用户把标签页拖进、拖出 habit 的组：告诉页面脚本开始或停止上报（拖进来的已经打开的页面要补注入）
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+// 用户把标签页拖进、拖出 habit 的组：拖进来就附着（注册页面脚本、给当前页面补注入，之后的请求开始录）；
+// 拖出去就让页面脚本停止上报、解除附着（之后的文档里没有 habit 的脚本）。
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.groupId === undefined) return;
   void (async () => {
     await loaded;
-    const on = isHabitGroup(changeInfo.groupId);
-    if (on && isWeb(tab.url)) await inject(tabId);
-    chrome.tabs.sendMessage(tabId, { __habitGate: 1, on }).catch(() => {});
+    if (isHabitGroup(changeInfo.groupId)) { noteTab(tabId, changeInfo.groupId); await ensureRendering(tabId); }
+    else if (groupOfTab.has(tabId)) { groupOfTab.delete(tabId); await release(tabId); }
   })();
 });
 
@@ -194,21 +205,13 @@ async function connect() {
   port.onMessage.addListener((msg) => { void handleHostMessage(msg); });
   port.onDisconnect.addListener(() => { port = null; scheduleRetry(); });
   current.postMessage({ type: "hello", abi: ABI, build: BUILD, chromeVersion: navigator.userAgent, extensionVersion: chrome.runtime.getManifest().version });
-  void injectExisting();
+  void rememberHabitTabs();
 }
 
-// 内容脚本只在新加载的页面里生效；已经打开的 habit 标签页补注入一次（脚本自己防重复）。用户的标签页不碰。
-async function inject(tabId) {
-  try {
-    const [probe] = await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", func: () => !!window.__habit });
-    if (probe?.result) return;
-    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, world: "MAIN", files: PAGE_FILES, injectImmediately: true });
-    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["page/bridge.js"], injectImmediately: true });
-  } catch { /* 受限页面（商店、PDF 查看器等）注入不了 */ }
-}
-async function injectExisting() {
+// service worker 重启后：把 habit 组里的标签页记回来（页面消息要带组号）；调试器和注册还在（cdp.js 的 attach 会认出来）
+async function rememberHabitTabs() {
   await loaded;
-  for (const tab of await chrome.tabs.query({})) if (tab.id != null && isWeb(tab.url) && isHabitGroup(tab.groupId)) await inject(tab.id);
+  for (const tab of await chrome.tabs.query({})) if (tab.id != null && isHabitGroup(tab.groupId)) noteTab(tab.id, tab.groupId);
 }
 
 function scheduleRetry() {
@@ -332,31 +335,30 @@ async function runOp(name, args) {
   }
 }
 
-// bridge 问"这个标签页录不录"：只有 habit 组里的标签页录。
-// 页面脚本经 bridge 发来的消息：只转 habit 标签页的，补上 tab、group、frame。页面自己的脚本也能发，所以只当观察记录；
-// 只有「新开标签页」会让扩展做事（在同一个组里开一个标签页），而它本来就只是打开一个网址。
-chrome.runtime.onMessage.addListener((m, sender, reply) => {
-  if (!m || sender.id !== chrome.runtime.id || !sender.tab) return;
-  const tab = sender.tab;
-  if (m.__habitMsg === 2) { void loaded.then(() => reply({ on: isHabitGroup(tab.groupId) })); return true; }
-  if (m.__habitMsg !== 1) return;
-  void loaded.then(() => {
-    if (!isHabitGroup(tab.groupId)) return;
-    const msg = m.msg ?? {};
-    if (msg.k === "newtab") { void openForPage(tab, String(msg.url ?? "")).catch(() => {}); return; }
-    postToHost({ type: "page", tab: tab.id, group: tab.groupId, frame: sender.frameId ?? 0, top: m.top, page: m.page, msg });
-  });
+// 页面脚本经 CDP binding 上报的消息（cdp.js）：只有附着了的 habit 标签页里才有页面脚本；仍只转 habit 组里的，补上 tab、group、frame。
+// 页面自己的脚本也能调用 binding，所以只当观察记录；只有「新开标签页」会让扩展做事（在同一个组里开一个标签页），而它本来就只是打开一个网址。
+onPageMessage((tabId, frame, payload) => {
+  const group = groupOfTab.get(tabId);
+  if (!isHabitGroup(group)) return;
+  let m;
+  try { m = JSON.parse(payload); } catch { return; }
+  const msg = m && typeof m.msg === "object" && m.msg ? m.msg : {};
+  if (msg.k === "newtab") { void openForPage({ id: tabId, groupId: group }, String(msg.url ?? "")).catch(() => {}); return; }
+  postToHost({ type: "page", tab: tabId, group, frame, top: m.top === true, page: typeof m.page === "string" ? m.page : undefined, msg });
 });
 
 // 标签页的地址变化和关闭：只转 habit 标签页的，daemon 记进日志
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tab?.groupId !== undefined && isHabitGroup(tab.groupId)) groupOfTab.set(tabId, tab.groupId);
   if (changeInfo.url == null || !isWeb(changeInfo.url)) return;
   void loaded.then(() => { if (isHabitGroup(tab?.groupId)) postToHost({ type: "page", tab: tabId, group: tab.groupId, frame: 0, msg: { k: "tab", ev: "url", t: Date.now(), url: changeInfo.url } }); });
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   freshTabs.delete(tabId);
+  groupOfTab.delete(tabId);
   for (const [w, t] of lastUserTab) if (t === tabId) lastUserTab.delete(w);
-  postToHost({ type: "page", tab: tabId, frame: 0, msg: { k: "tab", ev: "closed", t: Date.now(), url: "" } });
+  // 只告诉 daemon habit 的标签页关了；用户的标签页关了不发
+  if (habitTabs.delete(tabId)) postToHost({ type: "page", tab: tabId, frame: 0, msg: { k: "tab", ev: "closed", t: Date.now(), url: "" } });
 });
 
 // service worker 每次启动都尝试连接；onStartup / onInstalled 显式触发，alarm 兜底。

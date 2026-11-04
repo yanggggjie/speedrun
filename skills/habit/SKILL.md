@@ -127,4 +127,4 @@ for (const e of d.endpoints.filter((e) => !e.action && e.cmdTriggered > 0))
 ## 6. 对用户、遇到问题
 
 - 对用户只说要做的操作、需要用户做的（账号密码、扫码登录，确认删除这类写操作）和最终结果；不提 action、learn 窗口这些内部结构。
-- habit 以源码分发在 `~/.habit`：`ARCHITECTURE.md` 讲各部分怎么工作（第 9 节是故障表），`src/` 可以直接读、改，升级会覆盖。`habit doctor` 报失败从这里开始；扩展升级后要在 `chrome://extensions` 里刷新 habit。
+- habit 以源码分发在 `~/.habit`：`ARCHITECTURE.md` 讲各部分怎么工作（第 9 节是故障表），`src/` 可以直接读、改，升级会覆盖。`habit doctor` 报失败从这里开始。扩展升级后会自己从磁盘重新加载，只有第一次加载要在 `chrome://extensions` 里手动操作。

@@ -1,5 +1,5 @@
 // 页面里（MAIN world）的录制：fetch / XHR 的请求与响应、主文档的渲染结果、导航、页面快照。
-// 只在 habit agent 窗口里上报（common.js 的 T.post 按扩展的回答放行）；只如实上报发生的事，不改变页面行为。不记输入事件：agent 窗口里的操作都是 agent 的，由 daemon 记成 cmd 行。
+// 只在 habit 的标签页里（扩展经 CDP 注入）；被拖出组后 common.js 的 T.stop 让它停止上报；只如实上报发生的事，不改变页面行为。不记输入事件：agent 窗口里的操作都是 agent 的，由 daemon 记成 cmd 行。
 // 不录 WebSocket、sendBeacon、Worker 里的请求。
 (() => {
   const T = window.__habit;

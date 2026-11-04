@@ -1,37 +1,30 @@
 // 页面里（MAIN world）的共用部分：命名空间 window.__habit、发消息、前台判断、元素描述与快照、元素引用、DOM 变化计数。
-// 元素模型（a11y.js）、录制（recorder.js）和执行（executor.js）都建立在它上面。是扩展包里的静态内容脚本（manifest 的 content_scripts）。
+// 元素模型（a11y.js）、录制（recorder.js）和执行（executor.js）都建立在它上面。只由扩展经 CDP 注入 habit 的标签页（cdp.js），不是内容脚本。
 (() => {
   if (window.__habit) return;
   const T = (window.__habit = { exec: {} });
   T.origFetch = window.fetch; // 原始 fetch：action 的 request() 用它发请求，不会被录制端当成页面自己发的请求
 
-  // ---- 发消息：经 bridge.js 交给扩展，再到 daemon。限流，防止异常页面把日志刷爆 ----
+  // ---- 发消息：调用扩展经 CDP 注册的 binding（window.__habitSend），交给扩展，再到 daemon。限流，防止异常页面把日志刷爆 ----
+  // 页面脚本只在 habit 的标签页里（扩展经 CDP 注入，用户的网页里没有），所以不用再问"录不录"。
   // 每条消息带这次页面加载的编号 d 和递增序号 n：操作结束时页面报告最后的 n，daemon 等它到了，就知道这一步引发的记录都收齐了。
+  // 标签页被拖出 habit 的组时扩展先调 T.stop()：之后一条都不发，也不再拦新标签页（当前文档里的钩子还在，下一个文档就没有脚本了）。
   T.doc = Math.random().toString(36).slice(2, 10);
   T.n = 0;
-  // 只有 habit 组里的标签页才上报：bridge 问过扩展之前先缓存（有上限，加载期的请求不能漏），
-  // 答"录"就发出缓存并放行，答"不录"（用户的标签页）就清空缓存，之后一条都不发。
-  // 用户把标签页拖进、拖出 habit 的组时，扩展经 bridge 再告诉一次（之后开始或停止上报）。
-  const PENDING_MAX = 500;
-  let sent = 0, windowStart = Date.now(), gate = "ask", pending = [];
-  const send = (m) => { try { window.postMessage(m, "*"); } catch {} };
-  window.addEventListener("message", (e) => {
-    if (e.source !== window || !e.data || e.data.__habitGate !== 1) return;
-    gate = e.data.on ? "on" : "off";
-    const queued = pending; pending = [];
-    if (gate === "on") for (const m of queued) send(m);
-  });
-  T.recording = () => gate !== "off";
-  T.isHabit = () => gate === "on";
+  const BINDING = "__habitSend";
+  let sent = 0, windowStart = Date.now(), stopped = false;
+  const top = (() => { try { return window === window.top; } catch { return false; } })();
+  T.stop = () => { stopped = true; };
+  T.recording = () => !stopped;
+  T.isHabit = () => !stopped;
   T.post = (o) => {
-    if (gate === "off") return;
+    if (stopped) return;
     const now = Date.now();
     if (now - windowStart > 60000) { windowStart = now; sent = 0; }
     if (o.k !== "res" && ++sent > 3000) return;
-    if (gate !== "on" && pending.length >= PENDING_MAX) return;
-    const m = { __habitMsg: 1, t: now, ...o, d: T.doc, n: ++T.n };
-    if (gate === "on") send(m);
-    else pending.push(m);
+    const m = { t: now, ...o, d: T.doc, n: ++T.n };
+    // binding 每次现取：解除附着再重新附着后扩展会重新注册它
+    try { globalThis[BINDING](JSON.stringify({ top, page: location.href, msg: m })); } catch {}
   };
 
   // ---- 前台判断：页面可见，或刚离开前台不久（点击触发的请求可能还在路上）----
