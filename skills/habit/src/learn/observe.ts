@@ -8,7 +8,7 @@ import type { Ingestor } from "../record/ingest.ts";
 import type { RawEntry, RawStore } from "../record/raw.ts";
 import type { RequestFile, Row } from "../record/types.ts";
 import type { WindowLog } from "../record/windowlog.ts";
-import { siteOfUrl } from "../utils/url.ts";
+import { LOGIN_HINT, isLoginUrl, siteOfUrl } from "../utils/url.ts";
 import { dependencies, describeRequest, shownRequests } from "./explore.ts";
 import type { LearnWindow } from "./windows.ts";
 
@@ -101,6 +101,10 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   }
   const folded = [repeated ? `之前出现过的 ${repeated}` : "", noise ? `埋点广告 ${noise}` : "", periodic ? `轮询 ${periodic}` : "", assets ? `静态资源 ${assets}` : ""].filter(Boolean);
   if (folded.length) lines.push(`没列出：${folded.join("，")}（都在 timeline.jsonl 里）`);
+  // 像是登录失效：这一段里有同站请求被 401/403 拒，或者页面到了登录页。放在其它「下一步」前面，先解决登录
+  const denied = rows.filter((r) => r.type === "request" && !r.noise && (r.status === 401 || r.status === 403) && (r.site ?? w.site) === w.site).slice(-3);
+  const atLogin = current ? isLoginUrl(current.url) : navs.some((r) => isLoginUrl(String(r.url ?? "")));
+  if (denied.length || atLogin) lines.push(`下一步：像是登录失效（${[...denied.map((r) => `#${r.seq} ${r.endpoint ?? r.url} ${r.status}`), ...(atLogin ? ["页面在登录页"] : [])].join("、")}）：先 computer screenshot 或 read_page 看页面是什么样；${LOGIN_HINT}`);
   if (!picked.length && !repeated) lines.push("下一步：页面可能还在加载，computer wait 2 等一会儿再看；或者数据在页面里，用 DOM 取（get_page_text、read_page）");
   // 这一步引发了还没有 action 覆盖的 endpoint：提醒写成 action（computer 只是触发，结果要来自 habit run）
   if (step !== undefined) {

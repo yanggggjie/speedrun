@@ -72,7 +72,7 @@ export class LearnWindows {
   forOp(id: string): LearnWindow | { error: string } {
     const w = this.get(id);
     if (!w) return { error: `没有 learn 窗口 ${id}：habit learn list 列出有哪些，或 habit learn new --url <链接|tab 号> --description "…" 开一个` };
-    if (w.ops >= LEARN_MAX_OPS) return { error: `learn 窗口 ${id} 的页面操作用完了（${LEARN_MAX_OPS} 次）：卡在登录页：点一下能登录的自己点，要账号密码、二维码的请用户登录；学不会的 action 在文件头写 @status blocked 和 @note` };
+    if (w.ops >= LEARN_MAX_OPS) return { error: `learn 窗口 ${id} 已经操作了 ${LEARN_MAX_OPS} 次，多半在原地打转：先停下看清楚卡在哪。登录失效（观察里有 401/403、页面在登录页）就按观察里的提示登录；学不会的 action 在文件头写 @status blocked 和 @note，向用户说明卡在哪；确实还要接着学，用 habit learn new 开一个新窗口` };
     return w;
   }
 

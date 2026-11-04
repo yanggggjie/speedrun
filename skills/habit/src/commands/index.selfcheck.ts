@@ -147,6 +147,10 @@ const late = await run("learn", id, "computer", "wait", "0.1");
 const lateSeqs = seqsIn(late.stdout);
 assert.equal(lateSeqs.length, 1, late.stdout); assert.ok(lateSeqs[0]! > second[0]!);
 assert.deepEqual(seqsIn((await run("learn", id, "computer", "wait", "0.1")).stdout), [], "不重复");
+// 同站请求被 401 拒：观察里提醒像是登录失效，先看页面（不然 agent 会以为 action 写错了，重新 learn）
+assert.ok(!late.stdout.includes("像是登录失效"), "没有 401 时不提醒");
+ingest.handleBatch([net(Date.now() + 5000, { id: 4, rid: "p:4", url: "https://www.x.com/api/me", status: 401, body: "{}", size: 2 })]);
+assert.match((await run("learn", id, "computer", "wait", "0.1")).stdout, /下一步：像是登录失效（#\d+ .*401）：先 computer screenshot 或 read_page 看页面/);
 // 不再有 observe（computer wait 就是等一会儿再观察）
 assert.match((await run("learn", id, "observe")).stdout, /^fail 不认识的操作「observe」/);
 // 同一个句柄上两条命令同时到：后到的立刻报错，先到的照常完成，之后句柄又能用

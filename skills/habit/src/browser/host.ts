@@ -147,7 +147,7 @@ export class RunHost {
   }
 
   private page(s: Session): number {
-    if (s.tab === undefined) throw new Error("还没有打开页面：先 goto（learn 窗口里 habit learn <句柄> open <网址>）");
+    if (s.tab === undefined) throw new Error("还没有打开页面：action 第一步先 navigate(url)；learn 窗口里用 habit learn <句柄> navigate <网址>");
     s.lastUsed = Date.now();
     return s.tab;
   }

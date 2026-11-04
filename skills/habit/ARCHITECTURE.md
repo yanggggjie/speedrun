@@ -12,14 +12,16 @@ habit 的目标、设计原则和运行时实现：每一部分是谁实现的�
 **action** 是 habit 的基本单位：学出来、带参数、能复用的业务动作，由一个或几个 endpoint（录到的一个请求，写成 `方法 路径`）实现，或用 DOM 实现。**compose** 是用 action 串成的流程，只能调用 action 和别的 compose，不能碰页面；它是 action 的使用者，不是 action 的一种。
 
 设计原则（agent 的使用原则在 `SKILL.md` 第 2 节）：
-1. **唯一目标：更快完成眼前的任务。** 结果只来自 `habit run`（毫秒级）。存下来的东西是顺带的：action 和 compose 是 agent 写的文件，一直留着复用；description 由 habit 自动存。这是 SKILL 里的约定，没有强制检查。
-2. **只录 agent 的窗口。** 用户的窗口和标签页不录、不碰，只读标签页列表（地址、标题）；要看用户手上的页面，就在 learn 窗口里重新打开它，从加载开始录。用户很久以前做的操作，agent 不知道请求的来源和意图；只学 agent 自己做出来的请求才准。
+1. **唯一目标：更快完成眼前的任务。** 结果只来自 `habit run`：用请求代替页面操作，比点页面快一个量级。存下来的东西是顺带的：action 和 compose 是 agent 写的文件，一直留着复用；description 由 habit 自动存。这是 SKILL 里的约定，没有强制检查。
+2. **只录 agent 的窗口。** 归属按标签组认：habit 组里的标签页是 agent 的（用户自己拖进 habit 组的也算，拖出去就收回），其余用户的窗口和标签页不录、不碰，只读标签页列表（地址、标题）；要看用户手上的页面，就在 learn 窗口里重新打开它，从加载开始录。用户很久以前做的操作，agent 不知道请求的来源和意图；只学 agent 自己做出来的请求才准。
 3. **秘密不落盘、不进上下文。** 原始请求（含 token 真值）只在 daemon 内存里；日志、请求文件、观察输出里是别名。这不是对 agent 的隔离：action 和页面脚本与用户同权限（`evaluate` 能读页面的 cookie、localStorage，action 的 worker 有完整的 Node 权限），保证的只是真值不写盘、不出现在 agent 读到的文字里。原始请求按窗口存，窗口关掉（learn `close`、run 结束）就清掉。
 4. **日志和 action 都是文件。** 能读文件的不做命令，agent 用 `rg`、`node`、Python 直接读；habit 的命令只做必须由它做的事（控制浏览器、持有不能落盘的原始请求）。
 5. **命令面最小，显式区分优于隐式区分。** 同一条命令不因为 agent 看不到的状态做不同的事。run 窗口每次从空白开始、`habit run <名>` 只按名字找文件，都是为此。run 的行为只取决于 action 文件和这次窗口里发生的事：不读 `endpoints.json`，不用以前或别的窗口的原始请求。
 6. **habit 给信号，run 的结果和 agent 来定。** habit 只做必须由它做、而且做得准的事：用内存里的真值统计、按固定规则继承复用、把失败说清楚；不提前替 agent 下「这个请求该怎么发」的结论。用哪个请求、用 `request`、`waitRequest` 还是 DOM，由 agent 看信号决定，以 run 的真实结果为准。
 
-## 2. 两种窗口与它们的保证
+## 2. 两种窗口，以及 action 和 compose 的运行
+
+### 2.1 两种窗口
 
 | 窗口 | 用途 | 录不录 |
 |---|---|---|
@@ -29,10 +31,13 @@ habit 的目标、设计原则和运行时实现：每一部分是谁实现的�
 
 为什么这样分：learn 需要页面状态接得上（点到某个状态，接着在这个状态上跑 action），run 需要每次一样（不因上次留下的页面而不同）；试错、响应原文、截图都留在窗口目录里，不占 agent 的上下文；两种窗口的每个操作和请求都在各自的时间线里，run 出问题时对照着看。
 
-- **learn 窗口**（`learn/windows.ts`）：`habit learn new --url … --description …` 是唯一入口，返回句柄（同一秒重名加 `-2`）和 learn 指引（`learn/guide.ts`，存在 `~/.habit/learn-guide.md`，内容变了才在输出里给全文）。句柄持久：`learn-windows/<句柄>/meta.json` 存起点、描述、当前 URL、标题、观察游标、操作次数，daemon 重启后读回。所有工具、观察、`try_action` 都作用在它当前的页面上。关窗口：`habit learn close <句柄>`、空闲 30 分钟、daemon 重启；关了再操作就重开、回到上次的 URL（页面状态丢失，输出写明），日志接着写。操作上限 200 次，只有成功的页面操作计数。
+- **learn 窗口**（`learn/windows.ts`）：`habit learn new --url … --description …` 是唯一入口，返回句柄（同一秒重名加 `-2`）和 learn 指引（`learn/guide.ts`，存在 `~/.habit/learn-guide.md`，内容变了才在输出里给全文）。句柄持久：`learn-windows/<句柄>/meta.json` 存起点、描述、当前 URL、标题、观察游标、操作次数，daemon 重启后读回。所有工具、观察、`try_action` 都作用在它当前的页面上。关窗口：`habit learn close <句柄>`、空闲 30 分钟、daemon 重启；关了再操作就重开、回到上次的 URL（页面状态丢失，输出写明），日志接着写。重开后这个窗口的原始请求是空的（关窗口时已清掉），`request` 抄头要等页面重新发过请求。操作上限 200 次（只有成功的页面操作计数，不清零）：到了多半是在原地打转，报错让 agent 先停下看卡在哪，确实还要学就开新窗口。同一个句柄一次只跑一条命令（`LearnWindows.claim`），后到的直接 `fail`。
 - **run 窗口**：每次 `habit run` 新开一个，整个 run（含 compose 调用的 action）共用，跑完立刻关；失败时先截图（`screenshots/failure.*`）再关。不同的 run 可以同时跑，没有排队锁。
-- **观察按游标**（`learn/observe.ts`，`learn/explore.ts`）：返回游标之后这个窗口的变化并推进游标（请求只列这个窗口里第一次出现的 endpoint，全部都在 `timeline.jsonl` 里）：页面状态、导航（跳到别的站点时写明站点）、请求（去掉噪声、静态资源、轮询；`describeRequest` 一行：编号、`方法 路径`、状态、内容类型、有没有响应体、请求文件名、以前的 description）、请求之间的依赖（`dependencies`：后一个请求里长度 ≥ 6 的值等于前一个响应里的值）。改变页面的操作执行完等页面安静、记录送达（`RunHost.quiet`，见 §7），自动附带一次观察；`computer wait` 等完也附带一次（晚到的请求用它看）。"这一步之后发生了什么"以两次观察之间为准，不靠 `cause` 猜。
+- **观察按游标**（`learn/observe.ts`，`learn/explore.ts`）：返回游标之后这个窗口的变化并推进游标（请求只列这个窗口里第一次出现的 endpoint，全部都在 `timeline.jsonl` 里）：页面状态、导航（跳到别的站点时写明站点）、请求（去掉噪声、静态资源、轮询；`describeRequest` 一行：编号、`方法 路径`、状态、内容类型、有没有响应体、请求文件名、以前的 description）、请求之间的依赖（`dependencies`：后一个请求里长度 ≥ 6 的值等于前一个响应里的值）。改变页面的操作执行完等页面安静、记录送达（`RunHost.quiet`，见 §7），自动附带一次观察；`computer wait` 等完也附带一次（晚到的请求用它看）。"这一步之后发生了什么"以两次观察之间为准，不靠 `cause` 猜。这一段里有同站请求被 401/403 拒，或者页面在登录页（`utils/url.ts` 的 `isLoginUrl`），观察里先给一条「像是登录失效」的下一步：先看页面，点一下能登录的自己点，要账号密码、扫码的请用户登录；run 失败时同样判断（`looksLoggedOut`）。
 - **写请求不拦，也不判断**：learn 窗口里页面发什么就真的发什么，`try_action` 和 `run` 带 `@write` 的 action 也直接发。一个请求有没有副作用、多严重，由 agent 按 SKILL 的标准判断（原则 6）；`@write` 是 agent 写的提示。每次 `run`（run 窗口，或 learn 窗口里的 `try_action`）统计这次实际发出的非 GET 请求（`request()` 发的和页面自己发的，只看方法、不是 GET / HEAD / OPTIONS 就算，`browser/host.ts` 的 `watchSent` / `takeSent`），输出里列成「已发出的非 GET 请求」，也写进 run 窗口 `meta.json` 的 `sent`；agent 拿它核对有没有意料之外的、告诉用户真发了什么。
+
+### 2.2 action 和 compose 的运行
+
 - **compose 只能调用 action**：`~/.habit/compose/` 下的文件跑起来时会话标为 compose-only，任何页面操作都被 `RunHost` 拒绝；反过来，学出来的 action 里调用别的 action（`action()`）被 `ActionRunner` 拒绝。compose 可以调用 draft。
 - **draft 变成 verified**（`commands/run.ts` 的 `finishRun`）：run 成功、执行过的 draft 都变成 verified（跑成功就是事实，action 自己检查状态码和返回值）。`blocked` 的 action `run` 拒绝。
 - **参数**（`run/actions.ts` 的 `checkParams`、`coerceParams`）：对照文件头 `@param 名字[?][:类型]` 检查缺的、多的，再按类型（`number`、`boolean`、`json`，默认字符串）转换后交给 action；compose 里 `action()` 传的参数也一样。
@@ -113,7 +118,7 @@ daemon 内部分四层，上层只依赖下层：
 
 - **目录**（`record/windowlog.ts`）：一个窗口一个目录（`learn-windows/<句柄>/`、`run-windows/<名字>/`），时间线只追加；文件名以全局递增的编号开头，后面是语义。**站点是发出请求的页面的 host（去 `www.`）**，判断不出是 `_other`。`~/.habit/sites/<站点>/` 只有 `endpoints.json` 和 `actions/`，只在 learn 窗口里出现了非噪声请求或有 action 时才建。
 - **编号**：`seq` 全局递增，崩溃重启只会留下空洞，不会重复。每次请求都写一行，不去重（轮询间隔也是信息）。
-- **因果与阶段**（`record/ingest.ts`）：`cause`、`phase` 是启发式，离线读日志用；learn 时以观察（§2）为准。
+- **因果与阶段**（`record/ingest.ts`）：`cause`、`phase` 是启发式，离线读日志用；learn 时以观察（§2.1）为准。
 - **保留**（`record/retention.ts`）：run 窗口目录只留最近的若干个；learn 窗口分两类额度（时间线和请求文件；响应体、页面和截图），超了先删最旧的关着的窗口里的大文件，再删整个窗口。开着的 learn 窗口、每个 endpoint 最近几次成功请求（样本）不动。
 - **endpoints.json**（`record/endpoints.ts`）：只由 learn 窗口的请求增量更新，run 窗口的不进。不排序、不下结论，只给信号。endpoint 名由 `digest.ts` 的 `endpointOf` 算：长数字、哈希、uuid 换成 `:id`，GraphQL 取操作名，同一路径上请求体里的操作名拼在后面（`/graphql#FavoriteTweet`）。
 - **过滤**（`filter.ts`）：adblock 规则加第一方埋点启发式标 `noise`；只存同站的响应体。

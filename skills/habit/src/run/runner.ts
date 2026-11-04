@@ -6,6 +6,7 @@ import { RunHost, Session, type FailurePage } from "../browser/host.ts";
 import type { AgentWindows } from "../browser/window.ts";
 import type { WindowLog } from "../record/windowlog.ts";
 import { PendingAsks } from "./asks.ts";
+import { LOGIN_HINT, isLoginUrl } from "../utils/url.ts";
 import { actionSummary, actionTimeoutMs, checkParams, coerceParams, findAction, isCompose } from "./actions.ts";
 
 /** 最外层 compose 里每次 action() 调用的记录，按调用顺序；恢复时前几次直接返回记下的结果，不再执行。 */
@@ -21,10 +22,9 @@ export type Outcome = (
 
 const ASK_DATA_LIMIT = 100 * 1024;
 
-const LOGIN_URL = /(?:^|[/.\-_?=])(login|signin|sign-in|sso|passport|oauth|authorize|auth|cas)(?:[/.\-_?=]|$)|登录/i;
 /** 失败时的页面看起来像登录页，或错误里是 401/403：多半是登录失效，不是 action 坏了。 */
 export function looksLoggedOut(error: string, url: string | undefined): boolean {
-  if (url && LOGIN_URL.test(url)) return true;
+  if (url && isLoginUrl(url)) return true;
   return /\b(401|403)\b|unauthori[sz]ed|未登录|登录/i.test(error);
 }
 
@@ -100,7 +100,7 @@ export class ActionRunner {
       if (out.status === "failure" && !nested && !composed) {
         const page = await this.host.failureShot(session, this.windows.failureFile(key));
         if (page) out.page = page;
-        if (looksLoggedOut(out.error, page?.url)) out.hint = "像是登录失效：用读图片的方式看 page.screenshot。点一下就能登录的（快速登录、使用此账号继续），用 habit learn new --url <这个页面> 打开 learn 窗口点登录，确认登进去后重跑同一条命令；要账号密码、二维码、验证码的请用户在 Chrome 里登录后重跑。不要重新 learn、不要改 action。";
+        if (looksLoggedOut(out.error, page?.url)) out.hint = `像是登录失效：用读图片的方式看 page.screenshot。要点登录的，用 habit learn new --url <这个页面> 打开 learn 窗口去点；${LOGIN_HINT}。`;
         else if (page?.screenshot) out.hint = "看 page.screenshot 判断页面停在了哪；页面正常但 action 失败，才是 action 坏了。";
       }
       if (out.status === "failure" && !nested) this.addRejected(out, key);

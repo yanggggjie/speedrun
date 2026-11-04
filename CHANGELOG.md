@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- learn 的观察里有同站请求被 401/403 拒、或者页面在登录页时，先提醒「像是登录失效」：先看页面，点一下能登录的自己点，要账号密码、扫码的请用户登录。learn 窗口操作满 200 次的报错改成先停下看卡在哪，确实还要学就开新窗口。
 - 简化命令：`habit run <名>` 跑 action 或 compose（去掉 `--action`、`--compose`、`--compose-code`、`--timeout`）；`habit resume <编号> --answer …` 从 `habit.ask` 停下的地方接着跑（`--description` 说明为什么这样回答）。新增 `habit --help`、`habit learn --help`、`habit run --help`、`habit run <名> --help`（从文件头列参数、时间上限）。
 - compose 改成 agent 自己写的文件 `~/.habit/compose/<名>.js`，和 action 一样的文件头和 `export default`，一直保留；不再按代码哈希自动保存、不再淘汰。时间上限只看文件头 `@timeout`。恢复 `habit.ask` 时用停下那一刻的代码。
 - 退出码 3：命令写错了（不认识的命令或参数、缺参数、值不合法），改命令再跑。参数的值不能以 `--` 开头（漏写了值时不再把下一个参数吞掉）；拼错的参数名给「是不是想写」。
