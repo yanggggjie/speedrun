@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mirrorPayload } from "./src/store/deploy.ts";
-import { writeVersion } from "./src/store/version.ts";
+import { computeVersion, writeVersion } from "./src/store/version.ts";
 import { ping, stopDaemon } from "./src/session/client.ts";
 import { writeShim, BIN_DIR } from "./src/cli/shim.ts";
 import { EXTENSION_DIR, installNativeHost, manifestPath } from "./src/native-messaging-host/install.ts";
@@ -22,6 +22,17 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOME_DIR = path.join(os.homedir(), ".habit");
 const DEST = path.join(HOME_DIR, "src");
 const DEPS_MARKER = path.join("node_modules", "tldts", "dist", "cjs", "index.js");
+
+// 先让旧代码的 daemon 退出，再换代码：换代码的这几秒里旧 daemon 还在接命令，会从磁盘上拉起新代码的 worker（或者文件正好不在）。
+// 版本号只看运行时代码，拷过去之后算出来是同一个；代码没变就不动，免得白白断一次扩展链路。旧 daemon 的 ping 里没有 build，也算不同。
+// 不等新的起来：扩展重连时 relay 会拉起新代码的 daemon（最后的 doctor 不会拉起 daemon）。
+const nextBuild = computeVersion(path.join(HERE, "src")).build;
+const running = await ping();
+if (running && running.build !== nextBuild) {
+  const stopped = await stopDaemon();
+  if (stopped === "stopped") console.log("旧 daemon 已退出，扩展重连时会启动新版本");
+  else if (stopped === "timeout") console.log("旧 daemon 10 秒内没有退出：看 ~/.habit/session/log.jsonl");
+}
 
 mirrorPayload(HERE, HOME_DIR);
 console.log(`habit 源码镜像 → ${HOME_DIR}`);
@@ -60,15 +71,6 @@ console.log(`扩展目录 → ${EXTENSION_DIR}`);
 fs.mkdirSync(path.join(HOME_DIR, "session"), { recursive: true });
 writeShim(process.execPath);
 console.log(`habit 命令 shim → ${BIN_DIR}`);
-
-// 正在运行的 daemon 还是旧代码：build 不同才让它退出（代码没变就不动，免得白白断一次扩展链路）。
-// 不等新的起来：扩展重连时 relay 会拉起新代码的 daemon（下面的 doctor 不会拉起 daemon）。旧 daemon 的 ping 里没有 build，也算不同。
-const running = await ping();
-if (running && running.build !== version.build) {
-  const stopped = await stopDaemon();
-  if (stopped === "stopped") console.log("旧 daemon 已退出，扩展重连时会启动新版本");
-  else if (stopped === "timeout") console.log("旧 daemon 10 秒内没有退出：看 ~/.habit/session/log.jsonl");
-}
 
 const doctor = spawnSync(process.execPath, [path.join(DEST, "cli", "habit.ts"), "doctor"], {
   stdio: "inherit",

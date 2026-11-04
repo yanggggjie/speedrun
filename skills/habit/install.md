@@ -85,6 +85,7 @@ node <安装目录>/setup.js
   | Node 低于 24；`npm install` 失败；`doctor` 的 `home`、`src`、`deps`、`session`、`native-host`、`launcher` 失败 | 升级 Node / 解决 npm 的报错后重跑 `node <安装目录>/setup.js`（可重复执行，`npx skills ls -g` 找安装目录） |
   | `need-extension`，从没加载过扩展 | 按第 4 步请用户加载 `~/.habit/src/chrome-extension` |
   | `need-extension`，扩展已加载 | 请用户确认 habit 开着，点一下工具栏图标 |
+  | `doctor` 的 `launcher-node` 失败（启动脚本里写死的 Node 不在了，常见于 nvm 换了或卸掉了版本） | 用现在的 Node 重跑 `node <安装目录>/setup.js`，启动脚本会改成这个 Node 的路径 |
   | 找不到 `habit` 命令 | 用绝对路径 `~/.habit/bin/habit` |
 
 - 在线安装失败时，可以 clone 仓库，按本地安装处理（安装目录就是仓库里的 `skills/habit`）。

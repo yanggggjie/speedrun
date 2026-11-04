@@ -33,7 +33,7 @@ export function isMirrorPath(root: string, p: string): boolean {
 
 /**
  * 把 skill 的整个目录镜像到 homeAbs（~/.habit）：顶层文件直接覆盖，顶层目录（src、scripts）先清空再拷。
- * 只动 payload 里有的名字，不碰 sites、learn-windows、run-windows、compose、lib、session、bin、alias-salt 这些本机数据。
+ * 只动 payload 里有的名字（和上次拷过去、这次删掉了的顶层文件），不碰 sites、learn-windows、run-windows、compose、lib、session、bin、alias-salt 这些本机数据。
  */
 export function mirrorPayload(payloadAbs: string, homeAbs: string): void {
   fs.mkdirSync(homeAbs, { recursive: true });
@@ -48,6 +48,15 @@ export function mirrorPayload(payloadAbs: string, homeAbs: string): void {
       fs.copyFileSync(from, to);
     }
   }
-  // 新版本删掉的文档（如 TROUBLESHOOTING.md）不留在本机：顶层的 .md 只保留 payload 里有的。数据目录和文件不动
-  for (const name of fs.readdirSync(homeAbs)) if (name.endsWith(".md") && !fs.existsSync(path.join(payloadAbs, name))) safeRemove(path.join(homeAbs, name));
+  // 新版本删掉的顶层文件（如以前的 TROUBLESHOOTING.md）不留在本机：只删上次由这里拷过去、这次 payload 里没有的。
+  // 记录在 ~/.habit/.payload-files；habit 自己生成的（learn-guide.md）、用户放的文件、数据目录都不在记录里，不会被删
+  const record = path.join(homeAbs, PAYLOAD_RECORD);
+  const now = fs.readdirSync(payloadAbs, { withFileTypes: true }).filter((e) => e.isFile() && isMirrorPath(payloadAbs, path.join(payloadAbs, e.name))).map((e) => e.name);
+  let before: string[] = [];
+  try { before = JSON.parse(fs.readFileSync(record, "utf8")) as string[]; } catch { /* 第一次 */ }
+  for (const name of before) if (typeof name === "string" && !now.includes(name) && !name.includes("/") && !name.includes(path.sep)) safeRemove(path.join(homeAbs, name));
+  fs.writeFileSync(record, `${JSON.stringify(now)}\n`);
 }
+
+/** 记下上次镜像过去的顶层文件名（只记文件，不记目录）。 */
+export const PAYLOAD_RECORD = ".payload-files";

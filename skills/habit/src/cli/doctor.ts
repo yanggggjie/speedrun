@@ -31,9 +31,13 @@ function isExecutable(p: string): boolean {
   try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { return false; }
 }
 
-/** 启动脚本（nm-host.sh / nm-host.bat）里写死的 node 路径：第一对引号里的就是。 */
+/** 启动脚本（nm-host.sh / nm-host.bat）里写死的 node 路径：第一个加了引号的路径（sh 是单引号，bat 是双引号，见 utils/shell.ts）。 */
 function launcherNode(launcher: string): string | undefined {
-  try { return /"([^"]+)"/.exec(fs.readFileSync(launcher, "utf8"))?.[1]; } catch { return undefined; }
+  let text: string;
+  try { text = fs.readFileSync(launcher, "utf8"); } catch { return undefined; }
+  const m = /'((?:[^']|'\\'')*)'|"([^"]*)"/.exec(text);
+  if (!m) return undefined;
+  return m[1] !== undefined ? m[1].replace(/'\\''/g, "'") : m[2]!.replace(/%%/g, "%");
 }
 
 /** 只读检查：不写任何文件，不改注册表。 */
@@ -44,9 +48,7 @@ async function collectChecks(): Promise<Check[]> {
   const major = Number(process.versions.node.split(".")[0]);
   const nodeOk = Number.isFinite(major) && major >= 24;
   add({ name: "node", ok: nodeOk, detail: process.version, fix: "安装 Node >=24" });
-  add({ name: "platform", ok: true, detail: process.platform, fix: "" });
   add({ name: "home", ok: exists(HABIT_HOME), detail: HABIT_HOME, fix: SETUP_FIX });
-  add({ name: "entry", ok: true, detail: import.meta.dirname, fix: "" });
 
   const srcPath = path.join(HABIT_HOME, "src");
   add({ name: "src", ok: exists(srcPath), detail: srcPath, fix: SETUP_FIX });

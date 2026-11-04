@@ -6,6 +6,7 @@ import * as child_process from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { cmdQuote, shQuote } from "../utils/shell.ts";
 
 export const NATIVE_HOST_NAME = "com.habit.connect";
 /** 由 chrome-extension/manifest.json 的 key 决定；改 key 会改变这个 ID。 */
@@ -47,9 +48,9 @@ export function installNativeHost(nodePath: string = process.execPath): string {
   const launcher = launcherPath();
   fs.mkdirSync(path.dirname(launcher), { recursive: true });
   if (process.platform === "win32") {
-    fs.writeFileSync(launcher, `@echo off\r\n"${nodePath}" "${RELAY_ENTRY}" %*\r\n`);
+    fs.writeFileSync(launcher, `@echo off\r\n${cmdQuote(nodePath)} ${cmdQuote(RELAY_ENTRY)} %*\r\n`);
   } else {
-    fs.writeFileSync(launcher, `#!/bin/sh\nexec "${nodePath}" "${RELAY_ENTRY}" "$@"\n`, { mode: 0o755 });
+    fs.writeFileSync(launcher, `#!/bin/sh\nexec ${shQuote(nodePath)} ${shQuote(RELAY_ENTRY)} "$@"\n`, { mode: 0o755 });
     fs.chmodSync(launcher, 0o755);
   }
   const manifest = {
