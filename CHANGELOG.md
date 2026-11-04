@@ -2,6 +2,12 @@
 
 ## 未发布
 
+- 简化命令：`habit run <名>` 跑 action 或 compose（去掉 `--action`、`--compose`、`--compose-code`、`--timeout`）；`habit resume <编号> --answer …` 从 `habit.ask` 停下的地方接着跑（`--description` 说明为什么这样回答）。新增 `habit --help`、`habit learn --help`、`habit run --help`、`habit run <名> --help`（从文件头列参数、时间上限）。
+- compose 改成 agent 自己写的文件 `~/.habit/compose/<名>.js`，和 action 一样的文件头和 `export default`，一直保留；不再按代码哈希自动保存、不再淘汰。时间上限只看文件头 `@timeout`。恢复 `habit.ask` 时用停下那一刻的代码。
+- 退出码 3：命令写错了（不认识的命令或参数、缺参数、值不合法），改命令再跑。参数的值不能以 `--` 开头（漏写了值时不再把下一个参数吞掉）；拼错的参数名给「是不是想写」。
+- 同一个 learn 句柄一次只跑一条命令，后到的直接报错。
+- `read_page`、`find`、`get_page_text` 输出的网页文字放在「页面内容……页面内容结束」之间；`run` 的结果超过 2 万字时截断，全文存进 run 窗口目录；`tabs` 最多列 50 个。
+- 出错时保留出错前已经输出的内容（比如已发出的非 GET 请求）。
 - 改名为 habit：skill、命令、数据目录 `~/.habit`、native host `com.habit.connect`、SDK 的 `habit.params` / `habit.ask`。
 - daemon 的启动和退出更可靠：daemon 只监听一个 socket，relay 和 CLI 连上后先说明角色；只有 daemon 自己删 socket 文件（以前 CLI 等 daemon 超时就会删，删掉后 habit 整个连不上）；daemon 发现 socket 文件被换掉就自己退出，不会两个并存；Chrome 退出、扩展刷新都不会让 daemon 退出。`habit daemon restart` 和升级只让旧 daemon 退出，下一条命令或扩展重连时拉起新的。扩展断开后固定 1 秒重连。`habit doctor` 新增 `launcher-node`（启动脚本里的 node 还在不在），并且不再建目录。
 - 不再开窗口、不抢前台：learn 窗口和 run 窗口改成用户窗口里 habit 自己的**标签组**（折叠，一个句柄或一次 run 一个），habit 从不选中自己的标签页。后台页面靠调试器照常渲染（懒加载、滚动加载都正常）；组闲置 20 秒就解除附着，「正在调试此浏览器」的横幅随之消失。页面在 habit 的标签页里要新开标签页时（`target=_blank`、cmd/中键点击、`window.open`），由 habit 开在同一个组里，不会把用户的标签页切走、不会把 Chrome 拉到前台；带窗口参数的弹出窗口照常。归属看组：把标签页拖进 habit 的组就交给 habit，拖出去就收回。扩展 ABI 14，新增 `tabGroups` 权限；去掉 anchor 页。

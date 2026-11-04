@@ -5,16 +5,16 @@
  */
 import { runOnDaemon, stopDaemon } from "../session/client.ts";
 import { handleDoctor } from "./doctor.ts";
-import { USAGE, formatErrorStdout } from "../protocol.ts";
+import { EXIT, USAGE, formatErrorStdout } from "../protocol.ts";
 import { assertNode24 } from "../utils/node.ts";
 
 function print(text: string): void {
   console.log(text);
 }
 
-function fail(error: string): void {
+function fail(error: string, code: number = EXIT.fail): void {
   console.log(formatErrorStdout(error));
-  process.exitCode = 1;
+  process.exitCode = code;
 }
 
 /** habit daemon restart：让 daemon 退出（换完代码后让新代码生效用）。不等新的起来：下一条命令或扩展重连时会拉起新的。 */
@@ -28,9 +28,9 @@ async function daemonRestart(): Promise<void> {
 async function main(argv: string[]): Promise<void> {
   assertNode24();
   const [cmd, sub] = argv;
-  if (!cmd) return fail(USAGE);
+  if (!cmd) return fail(USAGE, EXIT.usage);
   if (cmd === "doctor") return handleDoctor(argv.includes("--json"));
-  if (cmd === "daemon") return sub === "restart" ? daemonRestart() : fail(USAGE);
+  if (cmd === "daemon") return sub === "restart" && argv.length === 2 ? daemonRestart() : fail(`用法：habit daemon restart`, EXIT.usage);
   const { stdout, code } = await runOnDaemon(argv);
   console.log(stdout);
   process.exitCode = code;

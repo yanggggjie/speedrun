@@ -171,7 +171,7 @@ habit resume <编号> --answer '<json>' [--description "…"]
 
 - **compose 就是 `~/.habit/compose/<名>.js` 这个文件**，由 agent 用 Write 写好，再 `habit run <名>` 跑。不再有 `--compose-code`，也不再有「跑通就按代码哈希自动保存」。
 - **compose 要一直保留**：每个 compose 都是用户做过的一件有意义的事，下次直接换参数复用。SKILL.md 里写明：名字要起得能看懂（和 action 一样的命名规则），写好就留着，不删、不做一次性的 compose。
-- **文件格式和 action 一致**：文件头 `@description`、`@status draft`、`@param`、可选的 `@timeout`；代码写成 `export default async () => { … }`，里面用 `action("名字", 参数)` 和 `habit.params.名字`、`habit.ask`。`action()` 沿用 action 里 SDK 函数不用 import 的做法（实现时先确认 action 的 SDK 函数是怎么注入的，compose 走同一种方式）。
+- **文件格式和 action 一致**：文件头 `@description`、`@status draft`、`@param`、可选的 `@timeout`；代码写成 `export default async () => { … }`，里面用 `action("名字", 参数)` 和 `habit.params.名字`、`habit.ask`。compose 和 action 一样从 SDK import：`import { habit, action } from "../lib/index.js"`（实现时确认 action 的 SDK 函数本来就是 import 进来的）。
 - **怎么认出是 compose**：放在 `~/.habit/compose/` 下的就是 compose，放在 `sites/<站点>/actions/` 下的就是 action，不再靠文件头的 `@compose`。
 - **跑成功后 habit 只改一处**：把 `@status draft` 改成 `verified`（和 action 一样，用现有的 `promoteAction`）。不再重写文件头，不再记 `@ok` 次数和 description 历史；每次 run 的 `--description` 照旧进 run 窗口的日志。
 - **从 `habit.ask` 停下的地方接着跑，用的是停下那一刻的代码**：恢复记录里照旧存代码原文，agent 中途改了文件也不影响这次重放。

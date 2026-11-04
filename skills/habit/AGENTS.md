@@ -62,12 +62,13 @@ npm run verify:pack
    - **请求头和 try_action**：观察里带非浏览器头的请求有一行「请求头」（值怎么变、页面里的位置），和实际相符、没有真值；action 只写 `request({ url, method, json })`，`habit learn <句柄> try_action <名> --参数 值` 在当前页面跑通、换参数也跑通，不变成 verified；run 窗口里同样跑通（头从这次窗口里页面发过的请求抄）；故意去掉 `navigate` 让它被拒，失败输出写清抄了什么、没抄什么。
    - **写请求**：点赞这类轻量写操作真的发出（站点上看得到结果）；带 `@write` 的 action 在 learn 窗口里 `try_action` 直接发，输出的「已发出的非 GET 请求」和实际一致；观察里的请求行没有 `write` 前缀。
    - **工具对齐和「下一步」**：`computer` 的 13 个 action 都能用，坐标和 `--ref` 两种写法都行（`zoom` 的图只有那块、`hover` 出悬停菜单、`left_click_drag` 拖得动、`type` 时页面收到按键事件、`key "Enter"` 能提交表单、`key "cmd+a"` 能全选）；`form_input` 填文本框、选下拉、勾复选框，填完核对；`navigate back` 能后退；这一步引发了没有 action 覆盖的 endpoint 时有「下一步」提醒，已有 action 覆盖的没有；`habit learn close` 前没跑过成功的 `habit run` 有提醒。
-   - **一个窗口学多个 action**：在同一个窗口里写两个 action（draft），`run --compose-code …` 新开 run 窗口、跑完窗口消失、`run-windows/<名字>/` 有日志和 meta、两个 draft 变成 verified、`endpoints.json` 没有多出 run 窗口的请求；多行 `@endpoint` 漏了前置请求时不变成 verified 并说明。
+   - **一个窗口学多个 action**：在同一个窗口里写两个 action（draft），写一个调用这两个 action 的 compose（`~/.habit/compose/<名>.js`），`habit run <名>` 新开 run 窗口、跑完窗口消失、`run-windows/<名字>/` 有日志和 meta、两个 draft 变成 verified、`endpoints.json` 没有多出 run 窗口的请求；多行 `@endpoint` 漏了前置请求时不变成 verified 并说明。
    - **持久**：`habit learn close <句柄>` 后、`habit daemon restart` 后（旧组被关掉）、用户手动关掉组后，对同一个句柄 `computer screenshot` / `computer left_click`：新建组，从上次的 URL 重新打开，日志接着写进同一个目录，游标接着上次；新句柄不重名。learn 窗口空闲 30 分钟自动关。
    - **run 窗口**：`run` 期间出现一个 `habit▶<名字>` 组，跑完组消失；同一个站点连跑两次 `run`，第二次不沿用第一次的页面；两个 `run` 同时跑，各开各的组，互不排队。
-   - **description 与 compose**：操作的 `--description` 进了时间线，并出现在 endpoint 的 `endpoints.json` 的 `descriptions` 里；compose 文件出现在 `~/.habit/compose/`，`rg` 能用 description 里的词命中，`habit run --compose <名>` 带别的参数再跑一次，`@description` 多一句。
-   - **@write 和 compose**：带 `@write` 的 draft 在 `habit status` 里标出；学出来的 action 里调用 `action()` 被拒；compose 里 `action()` 不用 import 就能用。
-   - **SDK、参数、helpers**：`export default async () => …` 加 `navigate(url)`、`request({…})`、`click(定位)`、`hover(定位)`、`form_input(定位, 值)`、`key(…)`、`scroll({ direction })`、`get_page_text()` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.habit/helpers/` 里的函数被 action `import` 后能跑，`habit daemon restart` 后还在；`--compose` 写哈希前几位能跑。
+   - **description 与 compose**：操作的 `--description` 进了时间线，并出现在 endpoint 的 `endpoints.json` 的 `descriptions` 里；写一个 `@status draft` 的 compose 文件 → `habit run <名>` 停在 ask → `habit resume` 继续 → 成功，compose 和它调用的 draft 都变成 verified，compose 文件除了 `@status` 一个字节没变；`habit run <名> --help` 列出的参数和文件头一致。
+   - **@write 和 compose**：带 `@write` 的 draft 在 `habit status` 里标出；学出来的 action 里调用 `action()` 被拒；compose 里调用 `navigate` 这类页面操作被拒。
+   - **同一个句柄串行**：在 Claude Code 里一次并行发两条 `habit learn <同一个句柄> computer …`：一条成功，一条报「上一条命令还没结束」。
+   - **SDK、参数、helpers**：`export default async () => …` 加 `navigate(url)`、`request({…})`、`click(定位)`、`hover(定位)`、`form_input(定位, 值)`、`key(…)`、`scroll({ direction })`、`get_page_text()` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.habit/helpers/` 里的函数被 action `import` 后能跑，`habit daemon restart` 后还在。
 4. daemon 的启动和退出（`ARCHITECTURE.md` §3 的 8 条）：改了 `src/session/`、`daemon.ts`、`relay.ts` 或扩展的重连之后，逐条验证，每一条都要能自己恢复、不需要手动操作：
 
    | 操作 | 期望 |

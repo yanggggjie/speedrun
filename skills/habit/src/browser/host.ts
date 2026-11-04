@@ -17,7 +17,7 @@ export class Session {
   lastUsed = Date.now();
   /** 所在的 agent 窗口：learn 窗口的句柄，或 run 窗口的名字。 */
   readonly key: string;
-  /** compose（run --compose-code，或 @compose 文件）：只许调用 action，任何页面操作都拒绝。 */
+  /** compose（~/.habit/compose/ 下的文件）：只许调用 action，任何页面操作都拒绝。 */
   composeOnly = false;
   /** 刚 goto 过、还没等过页面安静：request 抄头时这个窗口里还没有同站请求，就先等一次安静。 */
   fresh = false;

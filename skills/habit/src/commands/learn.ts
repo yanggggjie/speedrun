@@ -4,11 +4,11 @@ import { EXIT } from "../protocol.ts";
 import { HANDLE, type LearnWindow } from "../learn/windows.ts";
 import { makeLearnGuide } from "../learn/guide.ts";
 import { observe } from "../learn/observe.ts";
-import { actionSummary, findAction, isComposed } from "../run/actions.ts";
+import { actionSummary, findAction, isCompose } from "../run/actions.ts";
 import { normalizeSite } from "../record/digest.ts";
 import { siteDirName, siteOfUrl } from "../utils/url.ts";
 import { descriptionOf, parseArgs, valueOf, type ArgSpec } from "./args.ts";
-import { DESCRIPTION_HINT, composeDirOf, idleMin, indent, type Ctx, type Output } from "./context.ts";
+import { DESCRIPTION_HINT, composeDirOf, idleMin, indent, pageContent, type Ctx, type Output } from "./context.ts";
 import { outcomeLines } from "./run.ts";
 import type { Session } from "../browser/host.ts";
 import type { Row } from "../record/types.ts";
@@ -21,24 +21,29 @@ const LOOK_TOOLS = new Set(["read_page", "find", "get_page_text"]);
 /** computer 里只看不动的（不计次数、不要 --description）：screenshot、zoom 不附带观察；wait 等完附带一次观察（等晚到的请求就用它）。 */
 const LOOK_ONLY = new Set(["screenshot", "zoom", "wait"]);
 const LEARN_USAGE = 'habit learn new --url <链接|tab 号> --description "要做的事"（打开 learn 窗口，返回句柄）；habit learn list；habit learn close <句柄>；habit learn <句柄> read_page | find "<查询>" | get_page_text | computer <action> … | form_input <ref> <值> | navigate <网址|back|forward> | try_action <名> [--参数 值]';
+export const LEARN_HELP = `${LEARN_USAGE}
+  只看不动（不要 --description，不计次数）：read_page [--filter interactive|all] [--depth 15] [--ref ref_N] [--max-chars 50000]、find "<查询>"、get_page_text [--max 20000]、computer screenshot | zoom <x0> <y0> <x1> <y1> | wait <秒>
+  会改变页面（要带 --description）：computer left_click | right_click | double_click | triple_click | hover | left_click_drag | scroll | scroll_to | type | key …（坐标或 --ref ref_N）、form_input <ref_N> <值>、navigate <网址|back|forward>、try_action <名> [--参数 值]
+  同一个句柄上一次只能有一条命令：上一条还没返回时，后到的直接报错。`;
 
 /** habit learn new …：打开；habit learn list：列出；habit learn close <句柄>：关掉；habit learn <句柄> <工具>：在那个 learn 窗口里探索。学 action 都在这里，每一步都进日志，改变页面的操作后附带一次观察。 */
 export async function learnCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
   const [first, ...rest] = args;
   if (first === "new") return startLearn(rest, ctx, out);
   if (first === "list") {
-    if (rest.length) return out.fail(`habit learn list 不接受参数，收到：${rest.join(" ")}`);
+    if (rest.length) return out.usage(`habit learn list 不接受参数，收到：${rest.join(" ")}`);
     return listLearn(ctx, out);
   }
   if (first === "close") {
-    if (rest.length !== 1) return out.fail(`用法：habit learn close <句柄>`);
+    if (rest.length !== 1) return out.usage(`用法：habit learn close <句柄>`);
     return closeLearn(rest[0]!, ctx, out);
   }
-  if (!first || first.startsWith("--")) return out.fail(`用法：${LEARN_USAGE}`);
+  if (first === "--help" || first === "-h") { out.line(`ok ${LEARN_HELP}`); return; }
+  if (!first || first.startsWith("--")) return out.usage(`用法：${LEARN_USAGE}`);
   const [sub, ...more] = rest;
   if (!sub || !TOOLS.has(sub)) {
-    if (HANDLE.test(first)) return out.fail(`不认识的操作「${sub ?? ""}」。用法：${LEARN_USAGE}`);
-    return out.fail(`「${first}」不是 learn 窗口的句柄。用法：${LEARN_USAGE}`);
+    if (HANDLE.test(first)) return out.usage(`不认识的操作「${sub ?? ""}」。用法：${LEARN_USAGE}`);
+    return out.usage(`「${first}」不是 learn 窗口的句柄。用法：${LEARN_USAGE}`);
   }
   return windowCommand(first, sub, more, ctx, out);
 }
@@ -67,14 +72,14 @@ async function resolveStartUrl(ctx: Ctx, given: string): Promise<{ url: string }
 async function startLearn(argv: string[], ctx: Ctx, out: Output): Promise<void> {
   const usage = `用法：${LEARN_USAGE}`;
   const a = parseArgs(argv, { values: ["url", "description"] });
-  if ("error" in a) return out.fail(`${a.error}：learn 窗口只要 --url 和 --description。${usage}`);
-  if (a.rest.length) return out.fail(`多余的参数：${a.rest.join(" ")}。${usage}`);
+  if ("error" in a) return out.usage(`${a.error}：learn 窗口只要 --url 和 --description。${usage}`);
+  if (a.rest.length) return out.usage(`多余的参数：${a.rest.join(" ")}。${usage}`);
   const given = valueOf(a, "url");
   const description = descriptionOf(a);
-  if (!given) return out.fail(`要带 --url（起点：链接，或 habit tabs 列出的标签页号）。${usage}`);
-  if (!description) return out.fail(`要带 --description "要做的事"（用户的话，如"在知乎搜 agent，给硬核技术的回答点赞同"）。${usage}`);
+  if (!given) return out.usage(`要带 --url（起点：链接，或 habit tabs 列出的标签页号）。${usage}`);
+  if (!description) return out.usage(`要带 --description "要做的事"（用户的话，如"在知乎搜 agent，给硬核技术的回答点赞同"）。${usage}`);
   const start = await resolveStartUrl(ctx, given);
-  if ("error" in start) return out.fail(start.error);
+  if ("error" in start) return out.usage(start.error);
   await ctx.ensureExtension();
   const w = ctx.learn.create({ site: normalizeSite(siteOfUrl(start.url)), description, url: start.url });
   const { sess, opened } = await ctx.learn.page(w);
@@ -110,47 +115,60 @@ const SPECS: Record<string, ArgSpec> = {
 
 async function closeLearn(id: string, ctx: Ctx, out: Output): Promise<void> {
   const w = ctx.learn.get(id);
-  if (!w) return out.fail(`没有 learn 窗口 ${id}：habit learn list 列出有哪些`);
+  if (!w) return out.usage(`没有 learn 窗口 ${id}：habit learn list 列出有哪些`);
   if (!w.open) return out.line(`ok learn 窗口 ${id} 的 Chrome 窗口已经关了\n窗口目录：${ctx.log.winDir(id)}`);
   await ctx.learn.close(w);
   const delivered = ctx.log.runsSince(w.createdAt).some((m) => m.status === "success");
-  out.line([`ok 已关掉 learn 窗口 ${id}`, `窗口目录：${ctx.log.winDir(id)}（句柄和目录保留，再对它操作会从 ${w.url} 重新打开）`, ...(delivered ? [] : ["下一步：这个窗口学到的还没用 habit run 交付过：用户要的结果要来自 habit run（把要的请求写成 action，habit run --action / --compose-code）"])].join("\n"));
+  out.line([`ok 已关掉 learn 窗口 ${id}`, `窗口目录：${ctx.log.winDir(id)}（句柄和目录保留，再对它操作会从 ${w.url} 重新打开）`, ...(delivered ? [] : ["下一步：这个窗口学到的还没用 habit run 交付过：用户要的结果要来自 habit run（把要的请求写成 action，写成 compose，habit run <名字>）"])].join("\n"));
 }
 
+/**
+ * 同一个句柄一次只跑一条命令：几条同时到（agent 并行发了几个 Bash 调用）时，后到的直接报错，不排队，
+ * 否则操作在同一个页面上交错，观察的游标也会把一条命令引发的请求算到另一条头上。
+ */
 async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, out: Output): Promise<void> {
+  if (!ctx.learn.claim(id)) return out.fail(`learn 窗口 ${id} 上一条命令还没结束：等它返回后再发（同一个句柄上的命令要一条一条发，不要并行）`);
+  try {
+    return await windowCommandInner(id, sub, argv, ctx, out);
+  } finally {
+    ctx.learn.release(id);
+  }
+}
+
+async function windowCommandInner(id: string, sub: string, argv: string[], ctx: Ctx, out: Output): Promise<void> {
   const a = parseArgs(argv, SPECS[sub] ?? { values: ["description"] });
-  if ("error" in a) return out.fail(a.error);
+  if ("error" in a) return out.usage(a.error);
   const description = descriptionOf(a);
   // 先检查参数，再碰浏览器
   let computer: ComputerCmd | undefined;
   if (sub === "computer") {
     const parsed = parseComputer(a.rest, { scale: valueOf(a, "scale"), modifiers: valueOf(a, "modifiers"), repeat: valueOf(a, "repeat"), ref: valueOf(a, "ref"), to: valueOf(a, "to") });
-    if ("error" in parsed) return out.fail(parsed.error);
+    if ("error" in parsed) return out.usage(parsed.error);
     computer = parsed.cmd;
   }
   let look: Record<string, unknown> | undefined;
   if (sub === "read_page") {
     const filter = valueOf(a, "filter") ?? "all";
-    if (filter !== "all" && filter !== "interactive") return out.fail("--filter 是 interactive 或 all");
+    if (filter !== "all" && filter !== "interactive") return out.usage("--filter 是 interactive 或 all");
     const depth = Number(valueOf(a, "depth") ?? 15), maxChars = Number(valueOf(a, "max-chars") ?? 50_000);
-    if (!(depth >= 1 && depth <= 100) || !(maxChars >= 1000)) return out.fail("--depth 是 1 到 100，--max-chars 至少 1000");
+    if (!(depth >= 1 && depth <= 100) || !(maxChars >= 1000)) return out.usage("--depth 是 1 到 100，--max-chars 至少 1000");
     const ref = valueOf(a, "ref");
-    if (ref !== undefined && !REF.test(ref)) return out.fail(`--ref 要写成 ref_数字（read_page、find 给出的），收到：${ref}`);
-    if (a.rest.length) return out.fail(`多余的参数：${a.rest.join(" ")}。用法：habit learn ${id} read_page [--filter interactive|all] [--depth 15] [--ref ref_N] [--max-chars 50000]`);
+    if (ref !== undefined && !REF.test(ref)) return out.usage(`--ref 要写成 ref_数字（read_page、find 给出的），收到：${ref}`);
+    if (a.rest.length) return out.usage(`多余的参数：${a.rest.join(" ")}。用法：habit learn ${id} read_page [--filter interactive|all] [--depth 15] [--ref ref_N] [--max-chars 50000]`);
     look = { filter, depth, maxChars, ...(ref ? { ref } : {}) };
   } else if (sub === "find") {
-    if (!a.rest.length) return out.fail(`用法：habit learn ${id} find "<查询>"（按目的或文字找，如 "搜索框"、"评论"）`);
+    if (!a.rest.length) return out.usage(`用法：habit learn ${id} find "<查询>"（按目的或文字找，如 "搜索框"、"评论"）`);
     look = { query: a.rest.join(" ") };
   } else if (sub === "get_page_text") {
     const max = Number(valueOf(a, "max") ?? 20_000);
-    if (!(max >= 100)) return out.fail("--max 至少 100");
-    if (a.rest.length) return out.fail(`多余的参数：${a.rest.join(" ")}。用法：habit learn ${id} get_page_text [--max 20000]`);
+    if (!(max >= 100)) return out.usage("--max 至少 100");
+    if (a.rest.length) return out.usage(`多余的参数：${a.rest.join(" ")}。用法：habit learn ${id} get_page_text [--max 20000]`);
     look = { max };
   }
   let form: { ref: string; value: string } | undefined;
   if (sub === "form_input") {
     const [ref, ...value] = a.rest;
-    if (!ref || !REF.test(ref) || !value.length) return out.fail(`用法：habit learn ${id} form_input <ref_N> <值> --description "…"（文本框写文字，下拉框写选项文字或值，复选框写 true / false）`);
+    if (!ref || !REF.test(ref) || !value.length) return out.usage(`用法：habit learn ${id} form_input <ref_N> <值> --description "…"（文本框写文字，下拉框写选项文字或值，复选框写 true / false）`);
     form = { ref, value: value.join(" ") };
   }
   const lookOnly = LOOK_TOOLS.has(sub) || (computer !== undefined && LOOK_ONLY.has(computer.action));
@@ -158,16 +176,16 @@ async function windowCommand(id: string, sub: string, argv: string[], ctx: Ctx, 
   const found = counted ? ctx.learn.forOp(id) : ctx.learn.get(id) ?? { error: `没有 learn 窗口 ${id}：habit learn list 列出有哪些` };
   if ("error" in found) return out.fail(found.error);
   const w: LearnWindow = found;
-  if (counted && !description) return out.fail(`learn ${id} ${sub}${computer ? ` ${computer.action}` : ""} ${DESCRIPTION_HINT}`);
+  if (counted && !description) return out.usage(`learn ${id} ${sub}${computer ? ` ${computer.action}` : ""} ${DESCRIPTION_HINT}`);
   let target: { name: string; params: Record<string, string>; site?: string; endpoints: string[] } | undefined;
-  if (sub === "navigate" && !a.rest[0]) return out.fail(`用法：habit learn ${id} navigate <网址|back|forward> --description "…"`);
+  if (sub === "navigate" && !a.rest[0]) return out.usage(`用法：habit learn ${id} navigate <网址|back|forward> --description "…"`);
   if (sub === "try_action") {
     const name = a.rest[0];
-    if (!name || a.rest.length > 1) return out.fail(`用法：habit learn ${id} try_action <名> [--参数 值] --description "…"`);
+    if (!name || a.rest.length > 1) return out.usage(`用法：habit learn ${id} try_action <名> [--参数 值] --description "…"`);
     const found = findAction(ctx.log.dir, name, composeDirOf(ctx));
-    if (!found) return out.fail(`action 不存在：${name}（在 ${ctx.log.dir}/<站点>/actions/ 下）`);
+    if (!found) return out.usage(`action 不存在：${name}（在 ${ctx.log.dir}/<站点>/actions/ 下）`);
     const summary = actionSummary(found.file, found.site);
-    if (isComposed(summary)) return out.fail(`${name} 是 compose：用 habit run --compose ${name} 跑`);
+    if (isCompose(found)) return out.usage(`${name} 是 compose：用 habit run ${name} --description "…" 跑`);
     target = { name, params: a.params, site: found.site, endpoints: summary.endpoints };
   }
 
@@ -240,7 +258,7 @@ async function lookTool(ctx: Ctx, w: LearnWindow, sess: Session, tool: string, a
     return [
       `ok read_page ${what} ${r.count} 个（全文：${ctx.log.abs(w.id, rel)}）`,
       `页面：${r.url} "${r.title}"（视口 ${r.viewport.join("×")}）`,
-      r.text.trimEnd() || "（没有可列的元素：页面可能还在加载，computer wait 2 再看；或者内容在 iframe 里）",
+      ...(r.text.trim() ? pageContent([r.text.trimEnd()]) : ["（没有可列的元素：页面可能还在加载，computer wait 2 再看；或者内容在 iframe 里）"]),
       ...(r.truncated ? [`（超过 ${args.maxChars} 字，截断了：用 --ref 只看某一块，或 --filter interactive、--depth 小一点）`] : []),
       "下一步：用 ref 操作（computer left_click --ref ref_N、form_input ref_N 值），ref 只在这个页面里有效；写 action 用操作输出的「定位：」",
     ];
@@ -250,11 +268,11 @@ async function lookTool(ctx: Ctx, w: LearnWindow, sess: Session, tool: string, a
     if (!r.items.length) return [`ok find 没有找到「${args.query}」`, "下一步：换个说法（页面上的原文、控件类型如 textbox / button），或 read_page --filter interactive 看全部"];
     return [
       `ok find ${r.items.length} 个${r.more ? `（还有 ${r.more} 个没列，写得更具体些）` : ""}`,
-      ...r.items.map((e) => `  ${e.ref} ${e.role} "${e.name}" (${e.x},${e.y})${e.offViewport ? " 视口外" : ""}  定位：${JSON.stringify(e.loc)}`),
+      ...pageContent(r.items.map((e) => `  ${e.ref} ${e.role} "${e.name}" (${e.x},${e.y})${e.offViewport ? " 视口外" : ""}  定位：${JSON.stringify(e.loc)}`)),
     ];
   }
   const r = (await ctx.host.op(sess, "get_page_text", args)) as { url: string; title: string; source: string; total: number; text: string };
-  return [`ok get_page_text ${r.total} 字（取自 ${r.source}${r.total > r.text.length ? `，列前 ${r.text.length} 字` : ""}）`, `页面：${r.url} "${r.title}"`, r.text];
+  return [`ok get_page_text ${r.total} 字（取自 ${r.source}${r.total > r.text.length ? `，截断了，只列前 ${r.text.length} 字：要更多用 --max 调大` : ""}）`, `页面：${r.url} "${r.title}"`, ...pageContent([r.text])];
 }
 
 /** 输入的结果（host 的 input）。 */

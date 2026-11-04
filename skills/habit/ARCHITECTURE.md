@@ -12,11 +12,11 @@ habit 的目标、设计原则和运行时实现：每一部分是谁实现的�
 **action** 是 habit 的基本单位：学出来、带参数、能复用的业务动作，由一个或几个 endpoint（录到的一个请求，写成 `方法 路径`）实现，或用 DOM 实现。**compose** 是用 action 串成的流程，只能调用 action 和别的 compose，不能碰页面；它是 action 的使用者，不是 action 的一种。
 
 设计原则（agent 的使用原则在 `SKILL.md` 第 2 节）：
-1. **唯一目标：更快完成眼前的任务。** 结果只来自 `habit run`（毫秒级）。存下来的东西（action、compose、description）是顺带的，由 habit 自动存，agent 不做单独的保存、维护。这是 SKILL 里的约定，没有强制检查。
+1. **唯一目标：更快完成眼前的任务。** 结果只来自 `habit run`（毫秒级）。存下来的东西是顺带的：action 和 compose 是 agent 写的文件，一直留着复用；description 由 habit 自动存。这是 SKILL 里的约定，没有强制检查。
 2. **只录 agent 的窗口。** 用户的窗口和标签页不录、不碰，只读标签页列表（地址、标题）；要看用户手上的页面，就在 learn 窗口里重新打开它，从加载开始录。用户很久以前做的操作，agent 不知道请求的来源和意图；只学 agent 自己做出来的请求才准。
 3. **秘密不落盘、不进上下文。** 原始请求（含 token 真值）只在 daemon 内存里；日志、请求文件、观察输出里是别名。这不是对 agent 的隔离：action 和页面脚本与用户同权限（`evaluate` 能读页面的 cookie、localStorage，action 的 worker 有完整的 Node 权限），保证的只是真值不写盘、不出现在 agent 读到的文字里。原始请求按窗口存，窗口关掉（learn `close`、run 结束）就清掉。
 4. **日志和 action 都是文件。** 能读文件的不做命令，agent 用 `rg`、`node`、Python 直接读；habit 的命令只做必须由它做的事（控制浏览器、持有不能落盘的原始请求）。
-5. **命令面最小，显式区分优于隐式区分。** 同一条命令不因为 agent 看不到的状态做不同的事。run 窗口每次从空白开始、`run` 的 `--action` / `--compose` / `--compose-code` 三选一，都是为此。run 的行为只取决于 action 文件和这次窗口里发生的事：不读 `endpoints.json`，不用以前或别的窗口的原始请求。
+5. **命令面最小，显式区分优于隐式区分。** 同一条命令不因为 agent 看不到的状态做不同的事。run 窗口每次从空白开始、`habit run <名>` 只按名字找文件，都是为此。run 的行为只取决于 action 文件和这次窗口里发生的事：不读 `endpoints.json`，不用以前或别的窗口的原始请求。
 6. **habit 给信号，run 的结果和 agent 来定。** habit 只做必须由它做、而且做得准的事：用内存里的真值统计、按固定规则继承复用、把失败说清楚；不提前替 agent 下「这个请求该怎么发」的结论。用哪个请求、用 `request`、`waitRequest` 还是 DOM，由 agent 看信号决定，以 run 的真实结果为准。
 
 ## 2. 两种窗口与它们的保证
@@ -33,12 +33,12 @@ habit 的目标、设计原则和运行时实现：每一部分是谁实现的�
 - **run 窗口**：每次 `habit run` 新开一个，整个 run（含 compose 调用的 action）共用，跑完立刻关；失败时先截图（`screenshots/failure.*`）再关。不同的 run 可以同时跑，没有排队锁。
 - **观察按游标**（`learn/observe.ts`，`learn/explore.ts`）：返回游标之后这个窗口的变化并推进游标（请求只列这个窗口里第一次出现的 endpoint，全部都在 `timeline.jsonl` 里）：页面状态、导航（跳到别的站点时写明站点）、请求（去掉噪声、静态资源、轮询；`describeRequest` 一行：编号、`方法 路径`、状态、内容类型、有没有响应体、请求文件名、以前的 description）、请求之间的依赖（`dependencies`：后一个请求里长度 ≥ 6 的值等于前一个响应里的值）。改变页面的操作执行完等页面安静、记录送达（`RunHost.quiet`，见 §7），自动附带一次观察；`computer wait` 等完也附带一次（晚到的请求用它看）。"这一步之后发生了什么"以两次观察之间为准，不靠 `cause` 猜。
 - **写请求不拦，也不判断**：learn 窗口里页面发什么就真的发什么，`try_action` 和 `run` 带 `@write` 的 action 也直接发。一个请求有没有副作用、多严重，由 agent 按 SKILL 的标准判断（原则 6）；`@write` 是 agent 写的提示。每次 `run`（run 窗口，或 learn 窗口里的 `try_action`）统计这次实际发出的非 GET 请求（`request()` 发的和页面自己发的，只看方法、不是 GET / HEAD / OPTIONS 就算，`browser/host.ts` 的 `watchSent` / `takeSent`），输出里列成「已发出的非 GET 请求」，也写进 run 窗口 `meta.json` 的 `sent`；agent 拿它核对有没有意料之外的、告诉用户真发了什么。
-- **compose 只能调用 action**：`run --compose-code` 和 `@compose` 文件的会话标为 compose-only，任何页面操作都被 `RunHost` 拒绝；反过来，学出来的 action 里调用别的 action（`action()`）被 `ActionRunner` 拒绝。compose 可以调用 draft。
+- **compose 只能调用 action**：`~/.habit/compose/` 下的文件跑起来时会话标为 compose-only，任何页面操作都被 `RunHost` 拒绝；反过来，学出来的 action 里调用别的 action（`action()`）被 `ActionRunner` 拒绝。compose 可以调用 draft。
 - **draft 变成 verified**（`commands/run.ts` 的 `finishRun`）：run 成功、执行过的 draft 都变成 verified（跑成功就是事实，action 自己检查状态码和返回值）。`blocked` 的 action `run` 拒绝。
 - **参数**（`run/actions.ts` 的 `checkParams`、`coerceParams`）：对照文件头 `@param 名字[?][:类型]` 检查缺的、多的，再按类型（`number`、`boolean`、`json`，默认字符串）转换后交给 action；compose 里 `action()` 传的参数也一样。
-- **`--description`**：打开 learn 窗口、页面操作、`run` 必须带，没带就拒绝（不占操作次数）。存进时间线 cmd 行（它引发的请求经 `cause` 指向它）、`endpoints.json` 每个 endpoint 的 `descriptions`（只收成功的，最近 5 句，`record/endpoints.ts`）、compose 文件头。学出来的 action 文件不自动改。
-- **compose 存下来**（`run/actions.ts` 的 `composeTarget`、`saveComposed`、`pruneUnnamed`）：`--compose-code` 跑通后按代码哈希前 12 位存进 `~/.habit/compose/`（`--compose` 认唯一前缀，`resolveCompose`），头由 habit 填（`// 描述`、`@description` 最多 5 句、`@compose`、`@params`、`@ok` 次数和最近时间）；按名字 `run` 成功也累加 description 和次数，代码以文件当前内容为准（哈希名只在第一次存时算）。淘汰：`@ok` ≥2 次的永远保留且不占名额；只跑过一次的超过 30 天删，最多留 300 个。失败的不存。
-- **`habit.ask`**（`run/runner.ts` 的 `work()`、`commands/run.ts` 的 `handleAsk`）：run 停下输出 `ask <问题>`、`数据`、`恢复`（`habit run --resume <编号> --answer …`），不存 compose；`--resume` 恢复时新开 run 窗口、从头重跑代码，最外层 compose 里记下的 `action()` 直接返回上次的结果，第 i 次 ask 返回第 i 个回答。恢复时核对每次调用的名字和参数，不同就失败。只有最外层的 compose 能 ask；`data` 超过 100KB 失败。恢复记录只在 daemon 内存里（`run/asks.ts`，归 `ActionRunner`），最多 20 条、30 分钟过期，用过就作废（恢复失败时保留）。
+- **`--description`**：打开 learn 窗口、页面操作、`run` 必须带，没带就拒绝（不占操作次数）。存进时间线 cmd 行（它引发的请求经 `cause` 指向它）、`endpoints.json` 每个 endpoint 的 `descriptions`（只收成功的，最近 5 句，`record/endpoints.ts`）、run 窗口的 meta。`resume` 的 `--description` 说明为什么这样回答，记进 run 窗口的 meta（`answerWhy`）。action 和 compose 文件除了 `@status` 都不自动改。
+- **compose 是 agent 写的文件**（`~/.habit/compose/<名>.js`）：和 action 一样的文件头（`@description` `@status` `@param` `@timeout` `@write`）和 `export default async () => 结果`，从 `../lib/index.js` 引 `habit`、`action`。放在这个目录里的就是 compose，不看文件头。一直保留、不淘汰；跑成功后 habit 只把 `@status draft` 改成 `verified`。`ActionRunner` 跑 compose 时把这一刻读到的代码写成它旁边的临时文件 `.run-*.mjs` 再跑（相对 import 照样能用），跑完删掉。
+- **`habit.ask`**（`run/runner.ts` 的 `work()`、`commands/run.ts` 的 `handleAsk`）：run 停下输出 `ask <问题>`、`数据`、`恢复`（`habit resume <编号> --answer …`）。恢复记录存下停下那一刻的 compose 代码；`habit resume` 新开 run 窗口、用这份代码从头重跑（agent 中途改了文件也不影响），最外层 compose 里记下的 `action()` 直接返回上次的结果，第 i 次 ask 返回第 i 个回答。恢复时核对每次调用的名字和参数，不同就失败。只有 `habit run` 直接跑的那个 compose 能 ask；`data` 超过 100KB 失败。恢复记录只在 daemon 内存里（`run/asks.ts`，归 `ActionRunner`），最多 20 条、30 分钟过期，用过就作废（恢复失败时保留）。
 
 ## 3. 进程与分层
 
@@ -85,7 +85,7 @@ daemon 内部分四层，上层只依赖下层：
   8. 扩展和 daemon 断开后固定 1 秒重连，alarm 兜底。
   `ping` 只是查信息（pid、build、ABI、扩展连没连着），daemon 在不在只看 connect。
 - 要经扩展的命令先 `ensureExtension`：没装 host → `need-install`；Chrome 没运行 → `need-chrome`；等不到扩展 → `need-extension`；扩展是旧的 → 能自己重新加载的（ABI ≥ 13）等它重新加载、重连，不能的明确让用户刷新扩展。`status`、`learn list`、`learn close` 不需要扩展。
-- **输出约定**（`protocol.ts`）：第一行是结论，以 `ok`、`fail`、`ask` 开头，退出码 0、1、2（`ask` 和 `fail need-*` 是 2：要 agent 判断或要用户做一件事，不算失败）；后面是「标题：内容」的几段，多行内容缩进两格：`页面`、`导航`、`请求`（下面可能有一行 `请求头`）、`依赖`、`没列出`（观察），`落在`、`被遮挡`、`定位`、`稳定`（页面操作），`结果`（action 的返回值，JSON）、`错误`、`已发出的非 GET 请求`、`run 窗口目录`、`已变成 verified`（run），`下一步`（建议，最多一两句，和事实分开）。路径一律是绝对路径。
+- **输出约定**（`protocol.ts`）：第一行是结论，以 `ok`、`fail`、`ask` 开头。退出码：0 成功；1 操作失败；2 是 `ask` 和 `fail need-*`（要 agent 判断或要用户做一件事，不算失败）；3 是命令写错了（第一行也是 `fail`，`Output.usage`：不认识的命令或参数、缺参数、值不合法，agent 要改命令而不是重试）。参数的值不能以 `--` 开头（多半是漏了上一个参数的值），确实需要时写 `--名字=值`；拼错的参数名给「是不是想写」。`read_page`、`find`、`get_page_text` 输出的网页文字放在「页面内容……页面内容结束」之间，说明只是数据；`run` 的结果超过 2 万字时截断，全文存进 run 窗口目录的 `result.json`；`tabs` 最多列 50 个。同一个 learn 句柄一次只跑一条命令（`LearnWindows.claim`），后到的直接 `fail`，不排队。后面是「标题：内容」的几段，多行内容缩进两格：`页面`、`导航`、`请求`（下面可能有一行 `请求头`）、`依赖`、`没列出`（观察），`落在`、`被遮挡`、`定位`、`稳定`（页面操作），`结果`（action 的返回值，JSON）、`错误`、`已发出的非 GET 请求`、`run 窗口目录`、`已变成 verified`（run），`下一步`（建议，最多一两句，和事实分开）。路径一律是绝对路径。
 - relay 断开（刷新扩展、service worker 重启、Chrome 重启）是日常事件，daemon 只 `detach` 链路，日志照写。
 - daemon 启动时：按依赖顺序建好各部件（`daemon.ts` 的 `build`）、打开窗口日志、同步 action SDK、加载 adblock 规则；第一次 inode 检查通过后（约 2 秒），每 10 秒按额度淘汰日志、每分钟关掉空闲的 learn 窗口。
 
@@ -123,7 +123,7 @@ daemon 内部分四层，上层只依赖下层：
 ### 数据格式
 
 - **文件名**：以 6 位**日志编号**开头，后面是语义（请求是方法和 endpoint 名，页面是路径）。编号全局唯一、递增；只知道编号时 `ls ~/.habit/*-windows/*/requests/001203-*` 只会命中一个。观察输出里的文件名是相对窗口目录的。
-- **action 文件头**：学出来的是 `@summary` `@status draft|verified|blocked` `@endpoint`（可多行）`@param` `@write` `@timeout` `@note`；compose 是 `// 描述` 加 `@description`（最多 5 句）`@compose` `@params` `@ok`（成功次数和最近时间），下面是代码原文。名字全局唯一（action 和 compose 共用），`habit run --action <名>` / `--compose <名>` 在所有站点的 `actions/` 和 `~/.habit/compose/` 里找。
+- **action 文件头**：学出来的是 `@summary` `@status draft|verified|blocked` `@endpoint`（可多行）`@param` `@write` `@timeout` `@note`；compose 的文件头写法一样（用 `@description` 不用 `@summary`，没有 `@endpoint`）。名字全局唯一（action 和 compose 共用），`habit run <名>` 先在所有站点的 `actions/` 里找，再找 `~/.habit/compose/`。
 - **站点**是页面的 host，去掉前导 `www.`（非默认端口带上，目录名里 `:` 变 `_`）：`app.example.com`、`docs.google.com`、`x.com`。请求属于**发出请求的页面**的站点，不是请求地址的站点：`x.com` 页面调 `api.x.com` 记在 `x.com` 里。
 
 **timeline 一行**（JSON）：

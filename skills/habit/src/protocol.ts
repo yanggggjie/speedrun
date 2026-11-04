@@ -1,4 +1,4 @@
-export const USAGE = "用法：habit learn new --url <链接|tab 号> --description \"…\" | learn <句柄> <工具> … | learn list | learn close <句柄> | run --action <名> | run --compose <名> | run --compose-code '代码' | run --resume <编号> --answer '<json>' | tabs | status | daemon restart | doctor [--json]；日志在 ~/.habit/learn-windows/、run-windows/，action 和 endpoints.json 在 ~/.habit/sites/<站点>/，见 SKILL.md";
+export const USAGE = "用法：habit learn new --url <链接|tab 号> --description \"…\" | learn <句柄> <工具> … | learn list | learn close <句柄> | run <名> --description \"…\" [--参数 值] | resume <编号> --answer '<json>' | tabs | status | daemon restart | doctor [--json]；habit --help 看全部用法和退出码";
 export type HandshakeStatus = "need-install" | "need-chrome" | "need-extension";
 export type RpcMethod = "ping" | "run";
 export type JsonRpcRequest = { jsonrpc: "2.0"; id: string; method: RpcMethod; params?: Record<string, unknown> };
@@ -13,9 +13,6 @@ export const HANDSHAKE_GUIDES: Record<HandshakeStatus, string> = {
   "need-extension": "habit 的 Chrome 扩展没有连上。",
 };
 
-export function isHandshakeStatus(status: string): status is HandshakeStatus {
-  return status in HANDSHAKE_GUIDES;
-}
 export function handshakeStatusFromError(error: unknown): HandshakeStatus | null {
   if (!(error instanceof Error)) return null;
   if (error.name === "NeedInstallError") return "need-install";
@@ -25,9 +22,11 @@ export function handshakeStatusFromError(error: unknown): HandshakeStatus | null
 }
 /**
  * 所有命令的输出约定：第一行是结论，以 ok、fail、ask 开头；后面是「标题：内容」的几段（多行的内容缩进两格）。
- * 退出码：ok 是 0，fail 是 1，ask 和 need-* 是 2（要 agent 判断或要用户做一件事，不算失败）。
+ * 退出码：ok 是 0；fail 是 1（操作失败，看原因排查或重试）；ask 和 need-* 是 2（要 agent 判断或要用户做一件事，不算失败）；
+ * 命令写错了是 3（第一行也是 fail：不认识的命令或参数、缺参数、值不合法），改命令再跑，不要原样重试。
  */
-export const EXIT = { ok: 0, fail: 1, wait: 2 } as const;
+export const EXIT = { ok: 0, fail: 1, wait: 2, usage: 3 } as const;
+export const EXIT_TABLE = "退出码：0 成功；1 操作失败（看原因排查或重试）；2 等用户（need-* 或 ask）；3 命令写错了（改命令再跑，不要原样重试）";
 export function formatHandshakeStdout(status: HandshakeStatus): string {
   return `fail ${status}：${HANDSHAKE_GUIDES[status]}`;
 }

@@ -16,7 +16,7 @@ parentPort?.on("message", (m) => {
 });
 
 function call(op, args = {}) {
-  if (!parentPort) throw new Error("这个 SDK 只能在 habit 的 action 里运行：habit run --action <名字>");
+  if (!parentPort) throw new Error("这个 SDK 只能在 habit 的 action 里运行：habit run <名字>");
   const id = nextId++;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
@@ -31,7 +31,7 @@ console.log = console.info = console.warn = console.error = toLog;
 /** 命令行 `--名字 值` 传进来的参数：按文件头 `@param 名字:类型` 转好（number、boolean、json），不写类型是字符串；没传的可选参数不存在。 */
 export const habit = {
   params: workerData?.params ?? {},
-  /** 只能用在最外层的 compose 代码里：run 在这里停下，把 question 和 data 交给 agent；agent 用 habit run --resume <编号> --answer … 恢复时，返回它的回答。 */
+  /** 只能用在最外层的 compose 代码里：run 在这里停下，把 question 和 data 交给 agent；agent 用 habit resume <编号> --answer … 恢复时，返回它的回答。 */
   ask: (question, data) => call("ask", { question, data }),
 };
 

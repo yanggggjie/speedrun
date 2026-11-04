@@ -94,7 +94,7 @@ export function makeLearnGuide(info: LearnInfo): string {
 \`\`\`
    前置请求也要发时，@endpoint 按发送顺序写多行；run 时会检查实际发出的顺序，不对就不变成 verified。
 5. 在这个窗口里试：\`${cmd} try_action <名字> --参数 值 --description "…"\`。在当前页面执行，日志进这个窗口，不变成 verified；换参数多试几次，改了文件再试。
-6. 学完一个就接着学下一个；都写好后 \`habit run --compose-code '代码' --description "…"\`（或单个 \`habit run --action <名字>\`）在新的 run 窗口里交付。draft 真跑成功就变成 verified。
+6. 学完一个就接着学下一个；单个 action 用 \`habit run <名字> --description "…"\` 交付；要串起几个，把 compose 写进 \`~/.habit/compose/<名字>.js\` 再 \`habit run <名字>\`。都在新的 run 窗口里跑，draft 真跑成功就变成 verified。
 7. run 出问题：回到这个窗口继续观察、在窗口里 try_action，或对比本窗口和 run 窗口目录里的 timeline.jsonl 找原因，改了再 run。
 8. 学不会：把 action 文件头改成 \`@status blocked\`，\`@note\` 写原因和证据（试过哪些请求编号、为什么 network 和 DOM 都不行），最终回复说明卡在哪。verified 的坏了：改回 \`@status draft\`，\`@note\` 写原因，回来修，run 通过再变成 verified。
 9. 事情做完由你决定 \`habit learn close <句柄>\`（关掉这个组，句柄和目录保留）。

@@ -1,7 +1,7 @@
 // 命令层：参数解析，以及用假的 daemon 能力（假页面、假标签页、假 runner）端到端跑 learn / run。
 // 读日志不是命令（是文件），这里只守住坏了会静默出错的点：观察按游标不漏不重（晚到的请求下次出现、不重复）、句柄持久（重启后读回）、
 // 不是句柄被拒、观察里给出请求头的信号（没有真值）、learn 窗口里 run 输出实际发出的非 GET 请求、run 真跑成功的 draft 变成 verified（漏了就一直是 draft）。
-// 输出约定：第一行是 ok / fail / ask，退出码 0 / 1 / 2。
+// 输出约定：第一行是 ok / fail / ask，退出码 0 / 1 / 2；命令写错了是 fail、退出码 3（agent 要改命令，不是重试）。
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -88,7 +88,6 @@ const runner = {
   asks: new PendingAsks(),
   runAction: async (name: string) => ({ status: "success", result: { name }, ...nextOutcome }),
   runInLearn: async (name: string) => ({ status: "success", result: { name }, sent: name === "like" ? ["POST /api/like ×1"] : [] }),
-  runCompose: async () => ({ status: "success", result: 1, ...nextOutcome }),
 };
 const win = { isAgentTab: (t: number) => t === 20, groupOf: () => 5, isOpen: async () => true, dispose: async () => {}, busy: () => () => {} };
 const learn = new LearnWindows({ log, host, win });
@@ -104,8 +103,13 @@ const seqsIn = (text: string): number[] => [...text.matchAll(/#(\d+) (?:GET|POST
 
 // 不是句柄、不带 new 都被拒
 const old = await run("learn", "zhihu-search", "--url", page, "--description", "搜");
-assert.equal(old.code, 1); assert.match(old.stdout, /^fail 「zhihu-search」不是 learn 窗口的句柄/);
-assert.equal((await run("learn", "--url", page, "--description", "搜")).code, 1, "打开要写 learn new");
+assert.equal(old.code, 3); assert.match(old.stdout, /^fail 「zhihu-search」不是 learn 窗口的句柄/);
+assert.equal((await run("learn", "--url", page, "--description", "搜")).code, 3, "打开要写 learn new");
+assert.equal((await run("nope")).code, 3, "不认识的命令是用法错误");
+// 值不能以 -- 开头：漏写了 --description 的值时，--url 不能被当成 description 吞掉
+const swallowed = await run("learn", "new", "--description", "--url", page);
+assert.equal(swallowed.code, 3); assert.match(swallowed.stdout, /--description 缺少值.*--description=--url/);
+assert.match((await run("learn", "new", "--descripton", "x")).stdout, /是不是想写 --description/, "拼错的参数名给提示");
 
 // 打开 learn 窗口：返回句柄、窗口目录，起点加载期的请求在第一次观察里
 const opened = await run("learn", "new", "--url", page, "--description", "给第一条回答点赞同");
@@ -145,6 +149,11 @@ assert.equal(lateSeqs.length, 1, late.stdout); assert.ok(lateSeqs[0]! > second[0
 assert.deepEqual(seqsIn((await run("learn", id, "computer", "wait", "0.1")).stdout), [], "不重复");
 // 不再有 observe（computer wait 就是等一会儿再观察）
 assert.match((await run("learn", id, "observe")).stdout, /^fail 不认识的操作「observe」/);
+// 同一个句柄上两条命令同时到：后到的立刻报错，先到的照常完成，之后句柄又能用
+const [earlier, later] = await Promise.all([run("learn", id, "computer", "wait", "0.2"), run("learn", id, "computer", "wait", "0.1")]);
+assert.equal(earlier.code, 0, earlier.stdout);
+assert.equal(later.code, 1); assert.match(later.stdout, /上一条命令还没结束/);
+assert.equal((await run("learn", id, "computer", "wait", "0.1")).code, 0, "前一条结束后句柄又能用");
 
 // learn 窗口里 try_action：在当前页面跑 action；@write 不拦，输出列出实际发出的非 GET 请求
 const actions = path.join(log.dir, "x.com", "actions");
@@ -167,7 +176,11 @@ assert.equal(reborn.open, false);
 fs.writeFileSync(path.join(actions, "two.js"), "/**\n * @status draft\n * @endpoint GET /api/token\n * @endpoint POST /api/save\n */\n");
 log.openWindow("vote-20261101-120000", "run", { action: "vote" });
 nextOutcome = { runWindow: "vote-20261101-120000", drafts: [path.join(actions, "vote.js"), path.join(actions, "two.js")] };
-const ran = await run("run", "--action", "vote", "--description", "给回答点赞同");
+assert.equal((await run("run", "vote")).code, 3, "run 要带 --description");
+assert.equal((await run("run", "missing", "--description", "x")).code, 3, "名字不对是用法错误");
+const help = await run("run", "vote", "--help");
+assert.equal(help.code, 0, help.stdout); assert.match(help.stdout, /^ok vote（action/); assert.match(help.stdout, /时间上限：/);
+const ran = await run("run", "vote", "--description", "给回答点赞同");
 assert.equal(ran.code, 0, ran.stdout);
 assert.equal(actionSummary(path.join(actions, "vote.js")).status, "verified", "真跑成功的 draft 变成 verified");
 assert.equal(actionSummary(path.join(actions, "two.js")).status, "verified", "多行 @endpoint 的也一样：跑成功就是 verified");
@@ -175,22 +188,27 @@ assert.match(ran.stdout, /已变成 verified：vote、two/);
 assert.match(ran.stdout, /^ok vote\n/); assert.match(ran.stdout, /run 窗口目录：.*run-windows\/vote-20261101-120000/);
 assert.match(ran.stdout, new RegExp(`learn 窗口 ${id.replace(/\./g, "\\.")}.*还开着`), "提醒开着的 learn 窗口");
 
-// 停在 habit.ask 之前已经成功的 draft：恢复时不会再执行，最终成功时也要变成 verified
+// 停在 habit.ask 之前已经成功的 draft：恢复时不会再执行，最终成功时也要变成 verified；恢复用停下那一刻的代码
 fs.writeFileSync(path.join(actions, "search.js"), "/**\n * @status draft\n * @endpoint GET /api/search\n */\n");
-log.openWindow("compose-20261101-130000", "run");
-log.openWindow("compose-20261101-130100", "run");
-let composeCalls = 0;
-(runner as { runCompose: () => Promise<unknown> }).runCompose = async () => (++composeCalls === 1
-  ? { status: "ask", question: "挑", data: [1], journal: [], runWindow: "compose-20261101-130000", drafts: [path.join(actions, "search.js")] }
-  : { status: "success", result: 1, runWindow: "compose-20261101-130100", drafts: [] });
+fs.mkdirSync(path.join(root, "compose"), { recursive: true });
+fs.writeFileSync(path.join(root, "compose", "pick.js"), "/**\n * @description 搜了再挑\n */\n");
+log.openWindow("pick-20261101-130000", "run");
+log.openWindow("pick-20261101-130100", "run");
+const calls: Array<{ name: string; code?: string }> = [];
+(runner as { runAction: (name: string, p: unknown, n: unknown, o: { code?: string }) => Promise<unknown> }).runAction = async (name, _p, _n, o) => (calls.push({ name, ...(o?.code ? { code: o.code } : {}) }), calls.length === 1
+  ? { status: "ask", question: "挑", data: [1], journal: [], code: "停下时的代码", runWindow: "pick-20261101-130000", drafts: [path.join(actions, "search.js")] }
+  : { status: "success", result: 1, runWindow: "pick-20261101-130100", drafts: [] });
 nextOutcome = {};
-const asked = await run("run", "--compose-code", "return 1", "--description", "搜了再挑");
+const asked = await run("run", "pick", "--description", "搜了再挑");
 assert.equal(asked.code, 2, asked.stdout); assert.match(asked.stdout, /^ask 挑\n/);
-const resumeId = /--resume (AS-[0-9a-f]+)/.exec(asked.stdout)![1]!;
+const resumeId = /habit resume (AS-[0-9a-f]+)/.exec(asked.stdout)![1]!;
 assert.equal(actionSummary(path.join(actions, "search.js")).status, "draft", "停在 ask 时还不变成 verified");
-const resumedRun = await run("run", "--resume", resumeId, "--answer", "[1]");
+assert.equal((await run("resume", resumeId)).code, 3, "resume 要带 --answer");
+const resumedRun = await run("resume", resumeId, "--answer", "[1]", "--description", "选第一个");
 assert.equal(resumedRun.code, 0, resumedRun.stdout);
+assert.deepEqual(calls.at(-1), { name: "pick", code: "停下时的代码" }, "恢复用停下那一刻的代码");
 assert.equal(actionSummary(path.join(actions, "search.js")).status, "verified", "ask 之前成功的 draft 在最终成功时变成 verified");
+assert.equal(log.readMeta("pick-20261101-130100")?.answerWhy, "选第一个", "恢复时的 --description 记进 run 窗口");
 
 // 落盘的文件里也没有 auth 头的真值（日志、请求文件、endpoints.json 只有别名和来源）
 index.flush();

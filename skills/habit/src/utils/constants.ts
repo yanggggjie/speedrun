@@ -42,11 +42,8 @@ export const LOG_LIMITS = {
 /** endpoints.json 脏了之后最多隔这么久写一次。 */
 export const ENDPOINTS_FLUSH_MS = 2_000;
 
-/** compose（按代码哈希命名）。以前起过名字的 compose 也可能在这里，或在站点的 actions/ 下。 */
+/** compose：agent 写的 <名>.js，一直保留。 */
 export const COMPOSE_DIR = path.join(HABIT_HOME, "compose");
-/** 哈希命名的 compose 里只跑过一次的：最多留这么多个、最多留这么久；被复用过（@ok ≥2）的和以前起过名字的不删。 */
-export const UNNAMED_COMPOSE_KEEP = 300;
-export const UNNAMED_COMPOSE_MAX_AGE_MS = 30 * 24 * 3600_000;
 /** 整个 action 默认最长运行时间；文件头 `@timeout <秒>` 可改。 */
 export const ACTION_TIMEOUT_MS = 115_000;
 /** action 里单个步骤（goto、request、等元素）的上限。 */

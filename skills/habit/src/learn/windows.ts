@@ -27,9 +27,20 @@ export class LearnWindows {
   private readonly d: LearnDeps;
   private readonly map = new Map<string, LearnWindow>();
   private readonly sessions = new Map<string, Session>();
+  /** 正在执行命令的句柄：同一个句柄一次只跑一条命令。 */
+  private readonly running = new Set<string>();
 
   constructor(deps: LearnDeps) { this.d = deps; }
   private get log(): WindowLog { return this.d.log; }
+
+  /** 占住这个句柄跑一条命令；已经有一条在跑就返回 false。用完调 release。 */
+  claim(id: string): boolean {
+    if (this.running.has(id)) return false;
+    this.running.add(id);
+    return true;
+  }
+
+  release(id: string): void { this.running.delete(id); }
 
   /** 开一个新的 learn 窗口（登记、建目录、写 meta）。 */
   create(info: { site: string; description: string; url: string }, now = Date.now()): LearnWindow {
