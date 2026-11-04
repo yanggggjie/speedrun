@@ -5,6 +5,8 @@
   if (!T || T.executor) return;
   T.executor = 1;
   const TEXTY = /json|text|xml|javascript|html|x-www-form|graphql/i;
+  // request() 的响应最多交回这么多（和录制端的上限一样）：再大要经扩展和 native messaging 送回 daemon（单条上限 64MiB）
+  const RESPONSE_MAX = 16 * 1024 * 1024;
 
   // ---- 在途请求数：等页面稳定要用（自己数，不依赖录制端）----
   let inflight = 0;
@@ -108,7 +110,7 @@
       const textual = !ct || TEXTY.test(ct);
       return {
         ok: true, status: res.status, ct, size: buf.byteLength, finalUrl: res.url, ms: Math.round(performance.now() - t0),
-        text: textual ? new TextDecoder().decode(buf.slice(0, 1000000)) : "", truncated: textual && buf.byteLength > 1000000,
+        text: textual ? new TextDecoder().decode(buf.slice(0, RESPONSE_MAX)) : "", truncated: textual && buf.byteLength > RESPONSE_MAX,
       };
     } catch (e) {
       return { ok: false, error: e && e.name === "AbortError" ? `请求超时（${Math.round(limit / 1000)} 秒）` : String((e && e.message) || e) };

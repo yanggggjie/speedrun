@@ -45,4 +45,8 @@ const aliasedBodies: Record<string, string> = { r31: JSON.stringify({ data: { to
 assert.deepEqual(dependencies([req(31, {}), req(32, {})], (q) => aliased[q], (f) => (f.responseBodyPath ? aliasedBodies[f.responseBodyPath] : undefined)), [{ from: 31, to: 32, field: "data.token" }], "两边都是同一个别名：对上");
 assert.deepEqual(dependencies([req(31, {}), req(32, {})], (q) => aliased[q], (f) => (f.responseBodyPath ? bodies[f.responseBodyPath] : undefined), (f) => (f.rid === "r:32" ? { url: "https://x.com/api/save", body: JSON.stringify({ token: "tok_998877" }) } : undefined)), [{ from: 31, to: 32, field: "data.token" }], "用原始请求对上");
 
+// 来源在之前几步（这次没列出）：onlyTo 只找这次列出的请求的来源，来源可以是更早的
+assert.deepEqual(dependencies([req(31, {}), req(32, {}), req(33, {})], (q) => files[q], (f) => (f.responseBodyPath ? bodies[f.responseBodyPath] : undefined), undefined, new Set([32])), [{ from: 31, to: 32, field: "data.token" }], "更早的请求能当来源");
+assert.deepEqual(dependencies([req(31, {}), req(32, {})], (q) => files[q], (f) => (f.responseBodyPath ? bodies[f.responseBodyPath] : undefined), undefined, new Set([31])), [], "不在 onlyTo 里的不报");
+
 console.log("explore.selfcheck ok");

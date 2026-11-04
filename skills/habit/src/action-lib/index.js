@@ -1,5 +1,6 @@
 // action 的 SDK：action 脚本跑在 daemon 的 worker 线程里，每个函数都是向 daemon 发一个操作，daemon 在 habit agent 窗口的标签页里执行。
-// 这个目录由 daemon 启动时同步到 ~/.habit/lib（整个覆盖，别在那里改），action 里 `import { ... } from "../../../lib/index.js"`（action 在 ~/.habit/sites/<站点>/actions/ 下）。
+// 这个目录由 daemon 启动时同步到 ~/.habit/lib（整个覆盖，别在那里改）。action 在 ~/.habit/sites/<站点>/actions/ 下，`import { ... } from "../../../lib/index.js"`；
+// compose 在 ~/.habit/compose/ 下，`import { habit, action } from "../lib/index.js"`。
 // agent 自己抽出来的纯函数放 ~/.habit/helpers/，`import { ... } from "../../../helpers/<文件>.js"`，不会被覆盖。
 import { parentPort, workerData } from "node:worker_threads";
 
@@ -31,11 +32,11 @@ console.log = console.info = console.warn = console.error = toLog;
 /** 命令行 `--名字 值` 传进来的参数：按文件头 `@param 名字:类型` 转好（number、boolean、json），不写类型是字符串；没传的可选参数不存在。 */
 export const habit = {
   params: workerData?.params ?? {},
-  /** 只能用在最外层的 compose 代码里：run 在这里停下，把 question 和 data 交给 agent；agent 用 habit resume <编号> --answer … 恢复时，返回它的回答。 */
+  /** 只能用在 habit run 直接跑的那个 compose 里：run 在这里停下，把 question 和 data 交给 agent；agent 用 habit resume <编号> --answer … 恢复时，返回它的回答。 */
   ask: (question, data) => call("ask", { question, data }),
 };
 
-/** compose 代码里调用一个 action：action(名字, 参数)，返回它的 result，失败时抛错（compose 代码里已经能直接用，不用 import）。学出来的 action 里不能用。 */
+/** compose 里调用一个 action（或别的 compose）：action(名字, 参数)，返回它的 result，失败时抛错。学出来的 action 里不能用。 */
 export const action = (name, params = {}) => call("action", { name, params });
 
 /** navigate(url | "back" | "forward", { settle?, timeout? })：和 learn 的 navigate 一样，打开网址或后退、前进，等到页面可用（文档不再是 loading）；settle: true 再等页面安静（没有在途请求、DOM 一小段时间没变，最多 2 秒），等渲染完用它，不要 sleep。 */
@@ -44,7 +45,10 @@ export const navigate = (url, options = {}) => call("navigate", { url, ...option
 const withJson = (res) => ({
   ...res,
   ok: res.status >= 200 && res.status < 300,
-  json() { try { return JSON.parse(res.text); } catch { throw new Error(`响应不是 JSON（${res.status}）：${String(res.text).slice(0, 120)}`); } },
+  json() {
+    if (res.truncated) throw new Error(`响应有 ${res.size} 字节，超过上限被截断了，解析不了：缩小查询范围（分页、少要字段）`);
+    try { return JSON.parse(res.text); } catch { throw new Error(`响应不是 JSON（${res.status}）：${String(res.text).slice(0, 120)}`); }
+  },
 });
 
 /**

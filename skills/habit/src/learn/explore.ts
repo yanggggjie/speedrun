@@ -1,6 +1,6 @@
 /**
  * learn 窗口里"观察"用的纯函数：游标之后发生的请求里哪些值得列出（含 GET，写明有没有响应体）、一行怎么写、
- * 请求之间的依赖（后一个用了前一个响应里的值），以及可贴进 action 的一行。没有请求时这一行就是 DOM 步骤的 draft。
+ * 请求之间的依赖（后一个用了前一个响应里的值）。
  */
 import type { RequestFile, Row } from "../record/types.ts";
 
@@ -81,11 +81,16 @@ function sentValues(file: RequestFile, raw?: { url: string; body: string | null;
  * 请求之间的依赖：后一个请求的查询参数或请求体里，有长度 ≥ 6 的值和前一个请求的响应体里某个值完全相等。
  * 例如 "#813 用了 #812 响应的 data.token"。agent 据此判断几个请求是一条依赖链（放进同一个 action，或拆开再用 compose 串起来），还是互不相干。只输出字段路径，不输出值。
  */
-export function dependencies(rows: Row[], fileOf: (seq: number) => RequestFile | undefined, bodyOf: (file: RequestFile) => string | undefined, rawOf?: (file: RequestFile) => { url: string; body: string | null; headers?: Record<string, string> } | undefined): Dependency[] {
+/**
+ * 请求之间的依赖：后一个请求里的值等于前面某个响应里的值，就记下来源（最近的那个）。
+ * onlyTo 给了就只找这些请求的来源（观察里只报这次列出的请求），来源可以是 rows 里更早的任何请求（之前几步的也算：页面加载时拿的 token、几步之后提交时用）。
+ */
+export function dependencies(rows: Row[], fileOf: (seq: number) => RequestFile | undefined, bodyOf: (file: RequestFile) => string | undefined, rawOf?: (file: RequestFile) => { url: string; body: string | null; headers?: Record<string, string> } | undefined, onlyTo?: ReadonlySet<number>): Dependency[] {
   const reqs = rows.filter((r) => r.type === "request").sort((a, b) => a.seq - b.seq);
   const responses = new Map<number, Map<string, string>>();
   const out: Dependency[] = [];
   for (let j = 1; j < reqs.length; j++) {
+    if (onlyTo && !onlyTo.has(reqs[j]!.seq)) continue;
     const fb = fileOf(reqs[j]!.seq);
     if (!fb) continue;
     const sent = sentValues(fb, rawOf?.(fb));

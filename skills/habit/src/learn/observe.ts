@@ -14,6 +14,8 @@ import type { LearnWindow } from "./windows.ts";
 
 /** 一次观察最多列多少个请求（列最近的）。 */
 const OBSERVE_MAX = 30;
+/** 找依赖的来源时，往前看这个窗口里最近多少个请求。 */
+const DEP_SOURCES = 50;
 
 export type ObserveDeps = {
   ingest: Ingestor;
@@ -96,7 +98,13 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
       }
       if (signals && Object.keys(signals).length) lines.push(`    请求头：${describeHeaders(signals)}`);
     }
-    const deps = dependencies(list, (seq) => files.get(seq), (f) => (f.responseBodyPath ? d.log.readText(w.id, f.responseBodyPath) : undefined), (f) => (f.tab !== undefined && f.rid ? d.raw.get(w.id, f.tab, f.rid) : undefined));
+    // 依赖的来源不只看这次列出的：这个窗口里更早的请求（之前几步的、这次没列出的重复 endpoint）也算，最近 DEP_SOURCES 个
+    const listed = new Set(list.map((r) => r.seq));
+    const upto = Math.max(...list.map((r) => r.seq));
+    const sources = timeline.filter((r) => r.type === "request" && !r.noise && r.file && r.seq < upto && !listed.has(r.seq)).slice(-DEP_SOURCES);
+    const rowOf = new Map(sources.map((r) => [r.seq, r]));
+    const fileAt = (seq: number): RequestFile | undefined => { if (!files.has(seq) && rowOf.has(seq)) files.set(seq, fileOf(rowOf.get(seq)!)); return files.get(seq); };
+    const deps = dependencies([...sources, ...list], fileAt, (f) => (f.responseBodyPath ? d.log.readText(w.id, f.responseBodyPath) : undefined), (f) => (f.tab !== undefined && f.rid ? d.raw.get(w.id, f.tab, f.rid) : undefined), listed);
     if (deps.length) lines.push(`依赖：\n${deps.map((x) => `  #${x.to} 用了 #${x.from} 响应的 ${x.field}`).join("\n")}`);
   }
   const folded = [repeated ? `之前出现过的 ${repeated}` : "", noise ? `埋点广告 ${noise}` : "", periodic ? `轮询 ${periodic}` : "", assets ? `静态资源 ${assets}` : ""].filter(Boolean);
