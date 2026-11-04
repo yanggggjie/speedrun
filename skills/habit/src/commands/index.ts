@@ -3,7 +3,7 @@
  * 输出约定见 protocol.ts：第一行 ok / fail / ask，后面是「标题：内容」的几段。
  *
  * 只保留必须由 habit 做的事：控制浏览器（learn / run）、持有不能落盘的原始请求、运维。两种窗口：
- * learn 窗口（habit learn，learn.ts）带持久的句柄，一直保留，learn 都在里面做；run 窗口（habit run，run.ts）每次新开，跑完就关。
+ * learn 窗口（habit learn，learn.ts）有句柄，开着时 learn 都在里面做，关掉后只剩日志；run 窗口（habit run，run.ts）每次新开，跑完就关。
  * 读日志不是命令：日志是窗口目录里的文件（learn-windows/<句柄>/、run-windows/<名字>/），action 和 endpoints.json 在 sites/<站点>/，用 rg / node / Python 读，见 SKILL.md。
  */
 import * as path from "node:path";

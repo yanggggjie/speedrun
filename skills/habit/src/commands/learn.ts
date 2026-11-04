@@ -50,9 +50,10 @@ export async function learnCommand(args: string[], ctx: Ctx, out: Output): Promi
 
 function listLearn(ctx: Ctx, out: Output): void {
   const all = ctx.learn.list();
-  if (!all.length) return out.line(`ok 还没有 learn 窗口\n下一步：${LEARN_USAGE}`);
-  out.line(`ok ${all.length} 个 learn 窗口（新的在前，最多列 10 个）`);
-  for (const w of all.slice(0, 10)) out.line(`  ${w.id} ${w.open ? "开着" : "已关"} ${w.url} 操作 ${w.ops} 次，空闲 ${idleMin(w)} 分钟「${w.description}」`);
+  const logs = `关掉的窗口只能看日志：${path.join(ctx.log.root, "learn-windows")}/<句柄>/`;
+  if (!all.length) return out.line(`ok 没有开着的 learn 窗口（${logs}）\n下一步：${LEARN_USAGE}`);
+  out.line(`ok ${all.length} 个开着的 learn 窗口（新的在前，最多列 10 个；${logs}）`);
+  for (const w of all.slice(0, 10)) out.line(`  ${w.id} ${w.url} 操作 ${w.ops} 次，空闲 ${idleMin(w)} 分钟「${w.description}」`);
 }
 
 /** --url 的值：http(s) 链接原样用；`tab123` 或 `123` 是用户的标签页号（habit tabs 列出的），只取它的地址，不碰那个标签页。 */
@@ -115,11 +116,13 @@ const SPECS: Record<string, ArgSpec> = {
 
 async function closeLearn(id: string, ctx: Ctx, out: Output): Promise<void> {
   const w = ctx.learn.get(id);
-  if (!w) return out.usage(`没有 learn 窗口 ${id}：habit learn list 列出有哪些`);
-  if (!w.open) return out.line(`ok learn 窗口 ${id} 的 Chrome 窗口已经关了\n窗口目录：${ctx.log.winDir(id)}`);
+  if (!w) {
+    if (ctx.log.kindOf(id) === "learn") return out.line(`ok learn 窗口 ${id} 已经关了\n窗口目录：${ctx.log.winDir(id)}（只能看日志）`);
+    return out.usage(`没有 learn 窗口 ${id}：habit learn list 列出开着的`);
+  }
   await ctx.learn.close(w);
   const delivered = ctx.log.runsSince(w.createdAt).some((m) => m.status === "success");
-  out.line([`ok 已关掉 learn 窗口 ${id}`, `窗口目录：${ctx.log.winDir(id)}（句柄和目录保留，再对它操作会从 ${w.url} 重新打开）`, ...(delivered ? [] : ["下一步：这个窗口学到的还没用 habit run 交付过：用户要的结果要来自 habit run（把要的请求写成 action，写成 compose，habit run <名字>）"])].join("\n"));
+  out.line([`ok 已关掉 learn 窗口 ${id}`, `窗口目录：${ctx.log.winDir(id)}（日志留着；这个句柄不能再操作，要接着学就 habit learn new 开新窗口）`, ...(delivered ? [] : ["下一步：这个窗口学到的还没用 habit run 交付过：用户要的结果要来自 habit run（把要的请求写成 action，写成 compose，habit run <名字>）"])].join("\n"));
 }
 
 /**
@@ -173,8 +176,8 @@ async function windowCommandInner(id: string, sub: string, argv: string[], ctx: 
   }
   const lookOnly = LOOK_TOOLS.has(sub) || (computer !== undefined && LOOK_ONLY.has(computer.action));
   const counted = !lookOnly;
-  const found = counted ? ctx.learn.forOp(id) : ctx.learn.get(id) ?? { error: `没有 learn 窗口 ${id}：habit learn list 列出有哪些` };
-  if ("error" in found) return out.fail(found.error);
+  const found = ctx.learn.forOp(id, counted);
+  if ("error" in found) return found.usage ? out.usage(found.error) : out.fail(found.error);
   const w: LearnWindow = found;
   if (counted && !description) return out.usage(`learn ${id} ${sub}${computer ? ` ${computer.action}` : ""} ${DESCRIPTION_HINT}`);
   let target: { name: string; params: Record<string, string>; site?: string; endpoints: string[] } | undefined;
@@ -191,8 +194,7 @@ async function windowCommandInner(id: string, sub: string, argv: string[], ctx: 
 
   await ctx.ensureExtension();
   const head: string[] = [];
-  const { sess, opened } = await ctx.learn.page(w);
-  if (opened) head.push(`重新打开：${opened.url} "${opened.title}"（Chrome 窗口之前关了，页面状态没了，回到了上次的 URL）`);
+  const { sess } = await ctx.learn.page(w);
   w.lastActive = Date.now();
   const shotFile = async (kind: string, args: { region?: number[]; scale?: number } = {}): Promise<{ file: string; w: number; h: number; vw: number; vh: number }> => {
     const shot = (await ctx.host.op(sess, "screenshot", args)) as { data: string; mime: string; w: number; h: number; vw: number; vh: number };

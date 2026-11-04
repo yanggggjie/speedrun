@@ -63,7 +63,7 @@ npm run verify:pack
    - **写请求**：点赞这类轻量写操作真的发出（站点上看得到结果）；带 `@write` 的 action 在 learn 窗口里 `try_action` 直接发，输出的「已发出的非 GET 请求」和实际一致；观察里的请求行没有 `write` 前缀。
    - **工具对齐和「下一步」**：`computer` 的 13 个 action 都能用，坐标和 `--ref` 两种写法都行（`zoom` 的图只有那块、`hover` 出悬停菜单、`left_click_drag` 拖得动、`type` 时页面收到按键事件、`key "Enter"` 能提交表单、`key "cmd+a"` 能全选）；`form_input` 填文本框、选下拉、勾复选框，填完核对；`navigate back` 能后退；这一步引发了没有 action 覆盖的 endpoint 时有「下一步」提醒，已有 action 覆盖的没有；`habit learn close` 前没跑过成功的 `habit run` 有提醒。
    - **一个窗口学多个 action**：在同一个窗口里写两个 action（draft），写一个调用这两个 action 的 compose（`~/.habit/compose/<名>.js`），`habit run <名>` 新开 run 窗口、跑完窗口消失、`run-windows/<名字>/` 有日志和 meta、两个 draft 变成 verified、`endpoints.json` 没有多出 run 窗口的请求；多行 `@endpoint` 漏了前置请求时不变成 verified 并说明。
-   - **持久**：`habit learn close <句柄>` 后、`habit daemon restart` 后（旧组被关掉）、用户手动关掉组后，对同一个句柄 `computer screenshot` / `computer left_click`：新建组，从上次的 URL 重新打开，日志接着写进同一个目录，游标接着上次；新句柄不重名。learn 窗口空闲 30 分钟自动关。
+   - **关掉的句柄**：`habit learn close <句柄>` 后、`habit daemon restart` 后（旧组被关掉）、用户手动关掉组后，对同一个句柄 `computer screenshot` / `computer left_click`：报「已经关了」、退出码 3，提示用 `learn new` 开新窗口；日志目录还在；新句柄不重名。learn 窗口空闲 30 分钟自动关。
    - **run 窗口**：`run` 期间出现一个 `habit▶<名字>` 组，跑完组消失；同一个站点连跑两次 `run`，第二次不沿用第一次的页面；两个 `run` 同时跑，各开各的组，互不排队。
    - **description 与 compose**：操作的 `--description` 进了时间线，并出现在 endpoint 的 `endpoints.json` 的 `descriptions` 里；写一个 `@status draft` 的 compose 文件 → `habit run <名>` 停在 ask → `habit resume` 继续 → 成功，compose 和它调用的 draft 都变成 verified，compose 文件除了 `@status` 一个字节没变；`habit run <名> --help` 列出的参数和文件头一致。
    - **@write 和 compose**：带 `@write` 的 draft 在 `habit status` 里标出；学出来的 action 里调用 `action()` 被拒；compose 里调用 `navigate` 这类页面操作被拒。
@@ -82,8 +82,8 @@ npm run verify:pack
    | `kill -9 <daemon>` 后马上 `habit tabs` | 拉起新 daemon，命令成功 |
    | 没有 daemon 时，同时跑 5 个 `habit status` | 都成功；最后只有一个 daemon 进程（`pgrep -f daemon.ts`） |
    | `kill <relay>` | 扩展 1 秒内重连，daemon 的 pid 不变 |
-   | 在 `chrome://extensions` 刷新 habit | 同上；learn 句柄还在，下次操作不用从上次的 URL 重开 |
-   | 退出 Chrome，2 分钟内重新打开 | daemon 的 pid 不变；learn 句柄还在 |
+   | 在 `chrome://extensions` 刷新 habit | 同上；之前开着的 learn 窗口算关掉（再操作提示开新窗口），新开的照常 |
+   | 退出 Chrome，2 分钟内重新打开 | daemon 的 pid 不变 |
    | 退出 Chrome 超过 10 分钟 | daemon 退出，`session/sock` 被删掉 |
    | `node skills/habit/setup.js`（build 变了） | 旧 daemon 退出；扩展重连后是新 build，`doctor` 全部通过 |
    | 手动 `rm session/sock` | 2 秒内旧 daemon 退出；下一条命令拉起新的 |

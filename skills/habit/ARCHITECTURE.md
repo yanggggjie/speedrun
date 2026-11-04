@@ -31,7 +31,7 @@ habit 的目标、设计原则和运行时实现：每一部分是谁实现的�
 
 为什么这样分：learn 需要页面状态接得上（点到某个状态，接着在这个状态上跑 action），run 需要每次一样（不因上次留下的页面而不同）；试错、响应原文、截图都留在窗口目录里，不占 agent 的上下文；两种窗口的每个操作和请求都在各自的时间线里，run 出问题时对照着看。
 
-- **learn 窗口**（`learn/windows.ts`）：`habit learn new --url … --description …` 是唯一入口，返回句柄（同一秒重名加 `-2`）和 learn 指引（`learn/guide.ts`，存在 `~/.habit/learn-guide.md`，内容变了才在输出里给全文）。句柄持久：`learn-windows/<句柄>/meta.json` 存起点、描述、当前 URL、标题、观察游标、操作次数，daemon 重启后读回。所有工具、观察、`try_action` 都作用在它当前的页面上。关窗口：`habit learn close <句柄>`、空闲 30 分钟、daemon 重启；关了再操作就重开、回到上次的 URL（页面状态丢失，输出写明），日志接着写。重开后这个窗口的原始请求是空的（关窗口时已清掉），`request` 抄头要等页面重新发过请求。操作上限 200 次（只有成功的页面操作计数，不清零）：到了多半是在原地打转，报错让 agent 先停下看卡在哪，确实还要学就开新窗口。同一个句柄一次只跑一条命令（`LearnWindows.claim`），后到的直接 `fail`。
+- **learn 窗口**（`learn/windows.ts`）：`habit learn new --url … --description …` 是唯一入口，返回句柄（同一秒重名加 `-2`）和 learn 指引（`learn/guide.ts`，存在 `~/.habit/learn-guide.md`，内容变了才在输出里给全文）。句柄只在窗口开着时能用：`learn-windows/<句柄>/meta.json` 存起点、描述、当前 URL、标题、观察游标、操作次数，只给看日志用。所有工具、观察、`try_action` 都作用在它当前的页面上。窗口关掉的情况：`habit learn close <句柄>`、空闲 30 分钟、daemon 重启、扩展重连（daemon 忘掉所有组）、用户关了组；关掉后句柄只能看日志，再操作是用法错误（退出码 3），提示用 `learn new` 开新窗口、在新窗口里复现，不会悄悄回到上次的 URL 接着用。操作上限 200 次（只有成功的页面操作计数，不清零）：到了多半是在原地打转，报错让 agent 先停下看卡在哪，确实还要学就开新窗口。同一个句柄一次只跑一条命令（`LearnWindows.claim`），后到的直接 `fail`。
 - **run 窗口**：每次 `habit run` 新开一个，整个 run（含 compose 调用的 action）共用，跑完立刻关；失败时先截图（`screenshots/failure.*`）再关。不同的 run 可以同时跑，没有排队锁。
 - **观察按游标**（`learn/observe.ts`，`learn/explore.ts`）：返回游标之后这个窗口的变化并推进游标（请求只列这个窗口里第一次出现的 endpoint，全部都在 `timeline.jsonl` 里）：页面状态、导航（跳到别的站点时写明站点）、请求（去掉噪声、静态资源、轮询；`describeRequest` 一行：编号、`方法 路径`、状态、内容类型、有没有响应体、请求文件名、以前的 description）、请求之间的依赖（`dependencies`：后一个请求里长度 ≥ 6 的值等于前一个响应里的值）。改变页面的操作执行完等页面安静、记录送达（`RunHost.quiet`，见 §7），自动附带一次观察；`computer wait` 等完也附带一次（晚到的请求用它看）。"这一步之后发生了什么"以两次观察之间为准，不靠 `cause` 猜。这一段里有同站请求被 401/403 拒，或者页面在登录页（`utils/url.ts` 的 `isLoginUrl`），观察里先给一条「像是登录失效」的下一步：先看页面，点一下能登录的自己点，要账号密码、扫码的请用户登录；run 失败时同样判断（`looksLoggedOut`）。
 - **写请求不拦，也不判断**：learn 窗口里页面发什么就真的发什么，`try_action` 和 `run` 带 `@write` 的 action 也直接发。一个请求有没有副作用、多严重，由 agent 按 SKILL 的标准判断（原则 6）；`@write` 是 agent 写的提示。每次 `run`（run 窗口，或 learn 窗口里的 `try_action`）统计这次实际发出的非 GET 请求（`request()` 发的和页面自己发的，只看方法、不是 GET / HEAD / OPTIONS 就算，`browser/host.ts` 的 `watchSent` / `takeSent`），输出里列成「已发出的非 GET 请求」，也写进 run 窗口 `meta.json` 的 `sent`；agent 拿它核对有没有意料之外的、告诉用户真发了什么。
@@ -188,7 +188,7 @@ daemon 内部分四层，上层只依赖下层：
 | 升级后旧 daemon 还在跑 | `habit daemon restart`（只让它退出，下一条命令拉起新的） |
 | 命令一直等着不返回 | daemon 在忙（或被暂停）；不要删 `session/sock`，删了旧 daemon 会在 2 秒内退出、内存里的状态就没了。真卡死了用 `habit daemon restart` |
 | `run` 的请求被 401/403 拒 | 失败的「下一步」写了抄了什么、没抄什么：登录失效就请用户登录；页面这次没发带某个头的请求，action 要先 `navigate` 会发它的页面，或照 learn 窗口观察「请求头」给的位置写 `auth`；每次都变的头被拒，改用 `waitRequest` 或 DOM |
-| learn 窗口的操作说"重新打开" | habit 组之前关了（`learn close`、空闲 30 分钟、daemon 重启、用户关了组），页面状态没了；回到了上次的 URL，需要的话重新点到那个状态 |
+| learn 窗口的操作说"已经关了" | 窗口之前关了（`learn close`、空闲 30 分钟、daemon 重启、扩展重连、用户关了组）：这个句柄只能看日志，用 `learn new --url <要的页面>` 开新窗口复现 |
 | `learn <句柄> find` / `read_page` / `computer …` 报"页面里没有 habit 的脚本" | 页面是 `chrome://` 之类的，或是在扩展加载之前打开的：刷新这个页面 |
 | 日志里没有某个站点的事件 | 只录 habit 组里的标签页：组外的浏览不会有记录，要用 `learn new --url` 在 learn 窗口里重新打开（或把那个标签页拖进 habit 的组）；看对应窗口目录里的 `timeline.jsonl`，按 `site` 字段筛 |
 | 磁盘上 `~/.habit/learn-windows` 太大 | 按额度自动淘汰（`habit status` 看占用）；要手动清就删关掉的旧窗口目录，别删 `sites/*/actions/` |

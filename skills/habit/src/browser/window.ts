@@ -13,7 +13,7 @@ export type GroupLabel = { title: string; color: string };
  * 组里的标签页按站点（origin）池化，只在这个组内复用。归属看组：扩展只认 habit 的组；组属于哪个 key 只记在这里（内存），
  * 页面自己开出来的标签页（扩展替它开在同一个组里）按扩展报来的组号归到 key。
  * 后台标签页靠调试器渲染（扩展附着时开 focus emulation）；一个组 GROUP_IDLE_MS 没有操作就解除附着（不吃 CPU，没有附着时「正在调试此浏览器」的横幅也会消失），下次操作扩展自动重新附着。
- * daemon 重启（或扩展链路重连）一切归零：第一次用时关掉所有 habit 组（learn 窗口之后按需从上次的 URL 重开）。组被用户关了，下次用到时重建。
+ * daemon 重启（或扩展链路重连）一切归零：第一次用时关掉所有 habit 组；开着的 learn 窗口随之算关掉（句柄只剩日志）。run 窗口的组被用户关了，下次用到时重建。
  */
 export class AgentWindows {
   private readonly link: Pick<ExtensionLink, "request">;

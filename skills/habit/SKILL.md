@@ -19,7 +19,7 @@ allowed-tools: Bash(~/.habit/bin/habit *)
 
 - **action**：学出来、带参数、能复用的业务动作，如 `zhihu-search`、`zhihu-vote`。直接发请求，或操作页面（DOM 兜底）；文件头 `@endpoint` 写它发的 endpoint（**endpoint**，如 `GET /api/v4/search_v3`；可以多行，按发送顺序）。在 learn 窗口里学，写成 `~/.habit/sites/<站点>/actions/<名字>.js`。
 - **compose**：用 action 串成的流程（循环、筛选、`habit.ask`），只能调用 action 和别的 compose，不能碰页面。你用 Write 写成 `~/.habit/compose/<名字>.js`，再 `habit run <名字>` 跑。**compose 要一直留着**：每个 compose 都是用户做过的一件事，下次换参数直接复用；名字起得能看懂（和 action 一样，小写字母、数字、`-`，如 `zhihu-vote-hardcore`），不写一次性的、不删。要改就直接改这个文件。名字和 action 共用，不能重名。
-- **learn 窗口**：学 action 的地方。持久的**句柄** `<站点>-<年月日>-<时分秒>`，你决定什么时候 `close`；关了或 daemon 重启了，再操作就从上次的 URL 重开（页面状态会丢）。一个窗口可以学多个 action。日志在 `~/.habit/learn-windows/<句柄>/`。
+- **learn 窗口**：学 action 的地方。**句柄** `<站点>-<年月日>-<时分秒>`，你决定什么时候 `close`；窗口关掉（`close`、空闲 30 分钟、daemon 重启、扩展重连、标签组被关）之后句柄只能看日志，不能再操作，要接着学就 `learn new` 开新窗口，在新窗口里复现。一个窗口可以学多个 action。日志在 `~/.habit/learn-windows/<句柄>/`。
 - **run 窗口**：每次 `habit run` 新开一个、从空白开始，跑完就关。日志在 `~/.habit/run-windows/<名字>/`，只给排查用。
 
 ## 2. 原则

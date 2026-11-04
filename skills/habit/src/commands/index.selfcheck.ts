@@ -137,10 +137,6 @@ assert.ok(!clicked.stdout.includes("草稿"), "观察里没有草稿");
 assert.ok(!clicked.stdout.includes("XSRF-REAL-0123456789"), "输出里没有 auth 头的真值");
 // computer 只是触发：这一步引发了没有 action 覆盖的 endpoint 时提醒写成 action（否则 agent 容易把看到的直接交给用户）
 assert.match(clicked.stdout, /下一步：POST \/api\/answers\/:id\/voters 还没有 action 覆盖 → 要用的写成 action/);
-// close 时这个窗口学到的还没用 habit run 交付过：提醒一次
-const closed = await run("learn", "close", id);
-assert.match(closed.stdout, /^ok 已关掉/); assert.match(closed.stdout, /还没用 habit run 交付过/);
-
 // 晚到的请求（操作之后才到）：下一次观察出现，而且只出现一次
 ingest.handleBatch([net(Date.now() + 5000, { id: 3, rid: "p:3", url: "https://www.x.com/api/lazy", body: "{}", size: 2 })]);
 const late = await run("learn", id, "computer", "wait", "0.1");
@@ -170,11 +166,8 @@ const liked = await run("learn", id, "try_action", "like", "--description", "点
 assert.equal(liked.code, 0, liked.stdout); assert.match(liked.stdout, /已发出的非 GET 请求：\n  POST \/api\/like ×1/);
 assert.equal(actionSummary(path.join(actions, "vote.js")).status, "draft", "learn 窗口里 try_action 不变成 verified");
 
-// 句柄持久：新的登记（daemon 重启）从 meta.json 读回，游标接着上次，habit 组当作已关
-const reborn = new LearnWindows({ log, host, win }).get(id)!;
-assert.equal(reborn.description, "给第一条回答点赞同");
-assert.equal(reborn.cursor, learn.get(id)!.cursor);
-assert.equal(reborn.open, false);
+// daemon 重启后：新的登记里没有旧句柄（关掉的窗口只能看日志）
+assert.equal(new LearnWindows({ log, host, win }).get(id), undefined);
 
 // run：真跑成功的 draft 都变成 verified；输出写 run 窗口目录
 fs.writeFileSync(path.join(actions, "two.js"), "/**\n * @status draft\n * @endpoint GET /api/token\n * @endpoint POST /api/save\n */\n");
@@ -219,9 +212,17 @@ index.flush();
 for (const f of fs.readdirSync(root, { recursive: true, withFileTypes: true })) if (f.isFile()) assert.ok(!fs.readFileSync(path.join(f.parentPath, f.name)).includes("XSRF-REAL-0123456789"), `${f.name} 里不该有真值`);
 assert.deepEqual(JSON.parse(fs.readFileSync(path.join(log.dir, "x.com", "endpoints.json"), "utf8")).endpoints.find((e: { key: string }) => e.key === "POST /api/answers/:id/voters").headers["x-xsrftoken"], { kind: "few", source: "cookie:_xsrf" }, "类别和来源记进 endpoints.json，没有值");
 
-// 跑过成功的 run 之后再 close：不再提醒
-await run("learn", id, "computer", "left_click", "1", "1", "--description", "重新打开窗口");
-const closedAgain = await run("learn", id, "close");
-assert.ok(!closedAgain.stdout.includes("还没用 habit run 交付过"), closedAgain.stdout);
+// 跑过成功的 run 之后再 close：不提醒
+const closed = await run("learn", "close", id);
+assert.match(closed.stdout, /^ok 已关掉/); assert.ok(!closed.stdout.includes("还没用 habit run 交付过"), closed.stdout);
+// 关掉的句柄只能看日志：再操作是用法错误，告诉 agent 开新窗口复现（不会悄悄回到上次的 URL 接着用）
+const reuse = await run("learn", id, "computer", "left_click", "1", "1", "--description", "再点一下");
+assert.equal(reuse.code, 3, reuse.stdout); assert.match(reuse.stdout, /已经关了.*只能看它的日志.*habit learn new --url https:\/\/www\.x\.com\/home/);
+assert.equal((await run("learn", id, "read_page")).code, 3, "只看不动的工具也不行");
+assert.match((await run("learn", "close", id)).stdout, /^ok learn 窗口 .* 已经关了/);
+assert.ok(!(await run("learn", "list")).stdout.includes(id), "learn list 只列开着的");
+// 新开一个窗口、没 run 过就 close：提醒还没用 habit run 交付过
+const id2 = /句柄：(\S+?)（/.exec((await run("learn", "new", "--url", page, "--description", "再学一次")).stdout)![1]!;
+assert.match((await run("learn", "close", id2)).stdout, /还没用 habit run 交付过/);
 
 console.log("commands.selfcheck ok");

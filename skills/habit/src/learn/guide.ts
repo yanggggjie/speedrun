@@ -24,7 +24,7 @@ export function makeLearnGuide(info: LearnInfo): string {
 在 learn 窗口里学会这件事要的全部 action（可以是多个），再用 habit run 交付。
 
 ## 窗口
-- 句柄是持久的：关了窗口、daemon 重启了，再对它操作就从上次的 URL 重开（页面状态会丢），日志接着写进同一个目录。
+- 窗口关掉（learn close、空闲 30 分钟、daemon 重启、扩展重连、标签组被关）之后，句柄只能看日志，不能再操作；要接着学，learn new 开一个新窗口，在新窗口里复现到要的页面状态。
 - 最多 ${LEARN_MAX_OPS} 次页面操作；在用户窗口里 habit 自己的折叠标签组里干活，不会切换用户的标签页、不抢前台；页面自己要新开的标签页由 habit 开在同一个组里；${Math.round(LEARN_IDLE_MS / 60_000)} 分钟没有操作会关掉这个组。
 - 遇到登录页：点一下就能登录的（「快速登录」「检测到当前已登录账号」「使用此账号继续」这类）你自己点：先 find / read_page 确认只要点一下，点完再看一次确认登进去了；要输入账号密码、扫二维码、收验证码的停下来请用户在 Chrome 里登录。登录态整个 Chrome 共用，learn 窗口里登进去，run 窗口也就登进去了。
 
