@@ -29,7 +29,7 @@
 node <安装目录>/setup.js
 ```
 
-脚本依次完成：把 skill 目录原样镜像到 `~/.speedrun`（含 `src`、`scripts`、文档），在 `~/.speedrun/src` 安装依赖，注册 native messaging host，生成 `~/.speedrun/bin/spr` 与 `speedrun.cmd`，创建 `~/.speedrun/session`，最后运行 `doctor`。
+脚本依次完成：把 skill 目录原样镜像到 `~/.speedrun`（含 `src`、文档），在 `~/.speedrun/src` 安装依赖，注册 native messaging host，生成 `~/.speedrun/bin/spr` 与 `speedrun.cmd`，创建 `~/.speedrun/session`，最后运行 `doctor`。
 
 ## 4. 加载或刷新 Chrome 扩展（需要用户操作）
 
@@ -77,7 +77,7 @@ node <安装目录>/setup.js
 
 以下是给 agent 的背景，不要讲给用户：
 
-- speedrun 完全以源码分发，没有编译产物。遇到问题先到 `~/.speedrun` 里找答案：`ARCHITECTURE.md` 说明各部分怎么工作（第 9 节是运行时的故障表），`AGENTS.md` 是开发约定，`src/` 是全部源码，开发脚本在 `scripts/dev`。安装、升级、迁移中遇到任何问题，都可以直接读源码定位并修复，不必等用户指点。
+- speedrun 完全以源码分发，没有编译产物。遇到问题先到 `~/.speedrun` 里找答案：`ARCHITECTURE.md` 说明各部分怎么工作（第 9 节是运行时的故障表），`AGENTS.md` 是开发约定，`src/` 是全部源码。安装、升级、迁移中遇到任何问题，都可以直接读源码定位并修复，不必等用户指点。
 - 安装类的故障：
 
   | 现象 | 处理 |

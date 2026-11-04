@@ -2,7 +2,7 @@
 
 agent 使用 speedrun 的流程见 `skills/spr/SKILL.md`。本文只规定仓库边界、开发验证、分发发布和运行时实现。
 
-speedrun 完全以原始源码分发：`skills/spr/` 整个目录（源码、`scripts/dev`、文档）安装后原样镜像到 `~/.speedrun`，本文在 `~/.speedrun/AGENTS.md`。文中以仓库为基准的路径，在本机去掉 `skills/spr/` 前缀即可，如 `skills/spr/src` → `~/.speedrun/src`、`skills/spr/scripts/dev` → `~/.speedrun/scripts/dev`。目标、角色分工、运行时架构和故障排查都在 `ARCHITECTURE.md`。遇到问题可以直接读源码并修改；下次升级会覆盖 `~/.speedrun/src` 与 `~/.speedrun/scripts`。
+speedrun 完全以原始源码分发：`skills/spr/` 整个目录（源码、文档）安装后原样镜像到 `~/.speedrun`，本文在 `~/.speedrun/AGENTS.md`。文中以仓库为基准的路径，在本机去掉 `skills/spr/` 前缀即可，如 `skills/spr/src` → `~/.speedrun/src`。目标、角色分工、运行时架构和故障排查都在 `ARCHITECTURE.md`。遇到问题可以直接读源码并修改；下次升级会覆盖 `~/.speedrun/src`。
 
 ## 1. 职责边界
 
@@ -94,7 +94,7 @@ npm run verify:pack
 
 ### 2.4 图标
 
-图标源文件是 `skills/spr/scripts/dev/icons/icon.svg`（48、128px）和 `icon-small.svg`（16、32px，线条更粗），改动后运行 `node skills/spr/scripts/dev/make-icons.mjs` 重新生成 PNG（需要本机 Chrome），再 `node skills/spr/setup.js` 重装（扩展会自动重新加载）。
+图标在仓库根目录的 `brand/`，不进 payload。参数都在 `brand/icon.py`，设计依据和参数说明见 `brand/icon.md`。改完参数运行 `node brand/make-icons.mjs`（需要本机 python3 和 Chrome），它先生成 `brand/icon.svg`，再出 `skills/spr/src/chrome-extension/icons/` 下 16、32、48、128 四个 PNG；之后 `node skills/spr/setup.js` 重装（扩展会自动重新加载）。
 
 ### 2.5 命名与约定
 
@@ -115,13 +115,12 @@ npm run verify:pack
 ```text
 skills/spr/
 ├── src/                     运行时（daemon、commands、learn、run、browser、record、cli、chrome-extension 含页面脚本）+ 自检 + package.json
-├── scripts/dev/             图标生成
 ├── setup.js  SKILL.md  install.md  LICENSE
 ├── AGENTS.md                ← 仓库根目录的 AGENTS.md 是指向它的软链接
 └── ARCHITECTURE.md          目标、角色、架构、排障
 ```
 
-`setup.js` 把整个目录镜像到 `~/.speedrun`（只排除 `node_modules`、`.DS_Store`），然后在 `~/.speedrun/src` 里 `npm install`。规则：`skills/spr/` 里的都分发，仓库根目录的都只在仓库里：`tools/`（`verify-pack`、`export-payload`，依赖 git 和仓库根）、根 `package.json`（只放命令入口，没有版本号）、`README.md`、`CHANGELOG.md`、`PRIVACY.md`。文档只在 `skills/spr/` 里维护一份，不要在别处复制。`verify:pack` 先用 `git ls-files` 导出文件再安装，保证在线安装的内容完整。
+`setup.js` 把整个目录镜像到 `~/.speedrun`（只排除 `node_modules`、`.DS_Store`），然后在 `~/.speedrun/src` 里 `npm install`。规则：`skills/spr/` 里的都分发，仓库根目录的都只在仓库里：`tools/`（`verify-pack`、`export-payload`，依赖 git 和仓库根）、`brand/`（图标源文件和生成脚本）、根 `package.json`（只放命令入口，没有版本号）、`README.md`、`CHANGELOG.md`、`PRIVACY.md`。文档只在 `skills/spr/` 里维护一份，不要在别处复制。`verify:pack` 先用 `git ls-files` 导出文件再安装，保证在线安装的内容完整。
 
 不要将 `node_modules` 提交到 git 或放入 payload。用户或 agent 运行 `setup.js` 时，才在 `~/.speedrun/src` 本地执行 `npm install`。
 
