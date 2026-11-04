@@ -1,389 +1,259 @@
-# 计划：lore 不再开窗口，在用户窗口里用标签组，页面的新开标签页由 lore 接管
+# 计划：第一阶段 daemon 的启动和退出收成 8 条规则（方案 B）；第二阶段简化 CLI
 
-> 目标：**任何情况下都不抢用户的前台，也不多开窗口**。现在每个 learn 句柄、每次 run 各开一个 Chrome 窗口；改成在用户窗口里，每个句柄或 run 一个折叠的标签组。
-> 上一份计划（a11y 树 + CDP 输入）已完成并合进 main（`442568e`），原文在 git 历史里。
-> 参考：OCIC（`~/Code/x/open-claude-in-chrome/extension/background.js`）和本机的 Claude in Chrome 扩展（1.0.104）。实验和调研结果在 §7、§8、§9。
+> 第一阶段是 §0–§6，第二阶段是 §7。两个阶段分开提交，第二阶段在第一阶段验证完之后再做。
+
+> 目标：**daemon 独立于 Chrome 常驻，进程之间只靠一个 socket，谁也不误删别人的 socket，任何一个进程死了都能自己恢复。**
+> 上一份计划（标签组）已完成并合进 main（`1f91240`），原文在 git 历史里。
+> 背景：2026-11-04 对 CLI 层和启动流程的 review；参考了 OCIC（`/Users/me/Code/x/open-claude-in-chrome/host/endpoint.js`、`native-host.js`）。
+> 不选「native host 直接当 daemon」：Chrome 退出、扩展刷新都会让 daemon 死掉，内存里的状态没法收尾。
 
 ## 0. 结论先行
 
-1. **不开窗口**：一个 lore 窗口（learn 句柄 / run 名字）= 用户窗口里的一个标签组。组建在用户最近用的普通窗口里，干活时也保持折叠。命令行里的「窗口」「句柄」、`~/.lore/learn-windows/` 目录都不变，只换底下的实现。只有一个普通窗口都没有时（mac 上 Chrome 开着但没有窗口），才开一个 `focused:false` 的窗口（和 Claude in Chrome 一样）。
-2. **抢前台的三个来源，逐个堵住**：
-   - **Chrome 自己**：页面在用户手势下新开标签页（点 `target=_blank`、cmd/中键点击、`window.open`），Chrome 会选中新标签页、显示它的窗口，用户在别的应用里也会把 Chrome 拉到前台（§9.2）。→ **在页面里拦下，交给 lore 开**（§3.3）。
-   - **别的扩展**：Tab Activate 这类扩展会把新标签页切到前台，只跳过 `chrome://newtab/`（§7.2）。→ lore 开标签页时**先开成 `chrome://newtab/`**，进组后再导航。
-   - **lore 自己**：现在操作前要 `activate`。→ **删掉**，渲染靠调试器（第 4 条）。
-3. **归属看组**（学 OCIC）：标签页的 `groupId` 是 lore 的组，它就是 lore 的标签页。扩展只记「哪些组是 lore 的」；组属于哪个句柄或 run（key）只记在 daemon 内存里。用户把标签页拖进组 = 交给 lore，拖出去 = 收回。
-4. **渲染靠调试器 + focus emulation**（§7.1 实测）：标签页一建好就附着，折叠组里的后台页面照常渲染，懒加载、IntersectionObserver、截图、CDP 输入都正常。
-5. **闲置就收起**（学 Claude in Chrome）：一个组 20 秒没有操作就解除附着（页面被 Chrome 冻结，不吃 CPU）；下次操作前再附着（解冻 26 ms）。所有组都闲置时，调试横幅也会消失。
-6. **调试横幅挡不住**：「…已开始调试此浏览器」是浏览器级别的提示，附着期间所有窗口都显示（§9.4 用户确认）。只能靠第 5 条缩短它出现的时间。
-7. **daemon 重启不找回**：连上扩展后关掉全部 lore 组；learn 句柄下次操作时从上次的 URL 重开，和现在一样。
-8. **先不管**：带窗口参数的 `window.open` 开出的弹出窗口。拦截时放过它，保留 OAuth 登录这类弹窗的正常行为。
+保留独立的 daemon，按下面 8 条收紧：
 
-## 1. 三种做法的对比
+1. **只有一个 socket**：daemon 只监听 `~/.habit/session/sock`。relay 和 CLI 都是客户端，连上后第一行说明角色：`{"role":"relay"}` / `{"role":"cli"}`。去掉 `ext.sock`。
+2. **只有一个函数负责拉起 daemon**：CLI 和 relay 共用同一个 `ensureDaemon()`。它先 connect；连不上就 spawn 一个 detached 的 daemon，再轮询 connect 直到连上（最多 10 秒）。
+3. **daemon 能不能当上，看能不能 listen**：listen 成功就是唯一的 daemon。遇到 EADDRINUSE 就 connect 一下：连得上说明对方活着，自己退出；被拒绝说明是残留文件，删掉后再 listen 一次。
+4. **只有 daemon 自己能删 socket 文件**，并且只在 connect 被拒绝时删。CLI、relay、`setup.js` 都不删。超时只说明对方忙，不说明它死了。
+5. **socket 文件被换掉了，daemon 就自己退出**：daemon 记住自己 listen 后 socket 文件的 inode，每 2 秒 `stat` 一次。文件没了或者 inode 变了，就 flush 后退出。这条兜住所有「两个 daemon 并存」的情况，不需要锁文件。
+6. **daemon 只在三种情况下退出**：① 扩展没连着，并且 10 分钟没有任何命令；② 收到 SIGTERM；③ 第 5 条。三种都走同一个 `shutdown`：先 flush，再删 socket 文件，并且只在 inode 还是自己的时候才删。
+7. **重启就是杀掉，不等新的起来**：`setup.js` 和 `habit daemon restart` 只做两件事：发 SIGTERM，然后等到 socket connect 不上为止。新 daemon 由下一个来连接的 relay 或 CLI 按第 2 条拉起。
+8. **扩展重连用固定间隔**：1 秒一次，加 alarm 兜底。
 
-| 方面 | OCIC | Claude in Chrome | lore（本计划） |
-|---|---|---|---|
-| 组放在哪 | 自己开一个 `focused:false` 的窗口 | 用户最近用的窗口，没有普通窗口时才开 `focused:false` 的窗口 | 同 Claude in Chrome |
-| 组的数量 | 全局一个 "MCP" 组 | 每个会话一个组 | 每个句柄或 run 一个组 |
-| lore 开的新标签页 | `tabs.create({active:false})` | 先开 `chrome://newtab`、`active:false`，再导航 | 同 Claude in Chrome |
-| 页面开的新标签页 | 不处理（在自己的窗口里） | 不拦，事后按 opener 收进组 → **会抢前台**（§8.2 实测） | **在页面里拦下，由 lore 开** |
-| 归属判断 | 实时查 `tab.groupId` | 组和元数据 | 实时查 `tab.groupId` 是否在 `loreGroups` 里 |
-| 渲染 | 调试器 + focus emulation | 调试器 + focus emulation | 调试器 + focus emulation |
-| 闲置 | 不处理 | 20 秒后折叠、解除附着 | 20 秒后解除附着（组一直折叠） |
-| 抢焦点 | 只有显式的 `set_tab_focus` | 只有用户点按钮时；页面新开标签页时会 | 永远不会 |
+## 1. 现在的问题（这次都要解决）
 
-## 2. lore 现在是怎么做的
+| 问题 | 位置 | 由哪条解决 |
+|---|---|---|
+| CLI ping 超时（daemon 只是忙）就删 socket 文件。删掉后新 daemon 抢不到 `ext.sock` 会自己退出，旧 daemon 又没人能连上，而且永远不会闲置退出，habit 整个不可用 | `src/cli/session.ts` 的 `ensureDaemon` | 2、4、5 |
+| relay 和 CLI 各写了一套拉起 daemon 的逻辑，等待时间也不一样（15 秒和 8 秒） | `src/native-messaging-host/relay.ts`、`src/cli/session.ts` | 2 |
+| 两个 socket 要分别抢占，失败时还要处理半成功的情况 | `src/daemon.ts` 的 `runDaemon` | 1、3 |
+| 扩展重连的指数退避不起作用：`connectNative` 同步返回后就把 `retryCount` 清零了，所以永远是 1 秒 | `src/chrome-extension/background.js` 的 `connect` | 8（改成明确的固定 1 秒） |
+| `restartDaemon` 要等新 daemon 连上扩展，扩展没连着时又是另一套行为 | `src/cli/session.ts` | 7 |
 
-- **`browser/window.ts` 里的 `AgentWindows`**：
-  - 每个 key 一个 Chrome 窗口，第一个标签页是 anchor 页。
-  - 窗口内按 origin 池化标签页：暖页面用 `robots.txt`，空闲的回收。
-  - daemon 重启后第一次用到时，把所有带 anchor 页的窗口当孤儿关掉。
-- **`browser/host.ts`**：因为「浏览器不渲染后台标签页」，有 8 处在操作前先 `win.activate(tab)`，把标签页切到所在窗口的前台。
-- **扩展 `background.js`**：
-  - 录不录、能不能操作，由 `agentTabs` 集合（存在 `storage.session`）加 `openerTabId` 继承决定。
-  - ops 有 `openWindow` / `openTab` / `activateTab` / `closeTab` / `closeWindow` / `tabs`；`tabs` 会标出 anchor 页。
-- **`anchor.html` / `anchor.js`**：作用一是标记 agent 窗口，二是在 ABI ≤ 12 的扩展上触发自动重载（`daemon.ts` 的 `anchorReloadTried`）。
-- **按窗口号认领**：`learn/observe.ts` 按 `windowId` 过滤 learn 窗口的标签页；`daemon.ts` 的 `win.adopt(tab, windowId)` 按窗口号认领页面开出来的标签页。
-- **`learn/windows.ts`**：daemon 重启后 learn 窗口当作已关，下次操作从上次的 URL 重开，页面状态丢失。
-- **页面脚本**：`page/*.js` 在 `document_start`、所有 frame、MAIN world 注入，只在 lore 标签页里上报。
-- **cdp.js**：第一次输入或执行 JS 时附着，之后一直附着，直到标签页关闭或用户点掉横幅。
+## 2. 各种情况下会发生什么（改完以后）
+
+| 情况 | 结果 |
+|---|---|
+| Chrome 退出 | relay 退出；daemon 只 `detach` 掉扩展链路，状态都在。10 分钟后 Chrome 还没回来才退出 |
+| 扩展刷新、service worker 被停掉 | relay 退出；扩展 1 秒后重连，Chrome 拉起新的 relay，连回同一个 daemon，状态都在 |
+| relay 和 CLI 同时拉起 daemon | 第 3 条保证只有一个 listen 成功，另一个退出；极端竞争下由第 5 条兜底 |
+| daemon 崩溃（`kill -9`） | socket 文件留下来。下一次连接时 connect 被拒绝，于是拉起新 daemon；新 daemon 按第 3 条删掉残留文件。内存状态丢失（任何方案都避免不了），落盘的数据不受影响 |
+| daemon 卡住几秒 | CLI 一直等（命令本身的 10 分钟超时不变），不删 socket 文件、不拉起新的 |
+| 升级（`setup.js`） | SIGTERM → flush 后退出 → 扩展重连时 relay 拉起新代码 → 握手时发现扩展旧了就 reload |
+| launcher 里的 node 不在了 | relay 起不来，扩展每秒重试一次；`doctor` 指出原因（§3.6） |
 
 ## 3. 设计
 
-### 3.1 组放在哪、长什么样
+### 3.1 新模块 `src/session/server.ts`：只管 socket 的所有权
 
-- **放在哪个窗口**：`chrome.windows.getLastFocused({windowTypes:["normal"]})`，排除隐身窗口。一个普通窗口都没有时，`chrome.windows.create({url:"chrome://newtab/", focused:false})`。
-- **标题和颜色**：learn 组叫 `lore·<站点>`（蓝色），run 组叫 `lore▶<action 名>`（灰色）。始终折叠，只占标签栏上一个小标签。
-- **后续标签页**：同一个 key 后面开的标签页都放进同一个组，也就是组所在的窗口，不管用户这时在哪个窗口。
-- **用户关掉了组**（或组所在的整个窗口）：和现在「窗口被用户关了」一样，下次用到时重建；learn 组从上次的 URL 重开。
+daemon 用它；它不依赖 daemon 的其它部分，可以单独做自检。
 
-### 3.2 归属（扩展）
+- `listenOwned(sock, onConn): Promise<Owned | null>`：实现第 3 条。listen 成功后 `chmod 0600`、记下 inode。返回 null 表示已经有活的 daemon。
+- `Owned.watch(onLost)`：实现第 5 条。每 2 秒 `stat` 一次，文件不在或者 inode 不对就调 `onLost`。Windows 的 named pipe 不是文件，跳过这一步：pipe 跟着进程消失，本来就没有残留和并存的问题。
+- `Owned.release()`：实现第 6 条的收尾，inode 还是自己的才删文件。
+- 判断「活着」只用 connect，500ms 超时。connect 在内核层就能完成，对方事件循环卡住也连得上，所以不会误判。
 
-- **判断方法**：
-  - `storage.session` 里存 `loreGroups: groupId[]`，替代 `agentTabs`（防止 service worker 重启后丢失）。扩展不知道 key。
-  - `isAgentTab(tabId)` 就是看 `chrome.tabs.get(tabId).groupId` 在不在 `loreGroups` 里。每次实时查，学 OCIC 的 `isInGroup`。
-- **上报带 groupId**：
-  - 页面消息、地址变化上报时带上标签页当前的 `groupId`。
-  - daemon 用内存里的 `groupId → key` 查出该写进哪个窗口的日志（§3.5）。
-  - 删掉 daemon 里按窗口号认领的 `AgentWindows.adopt`。
-- **清理**：
-  - `tabGroups.onRemoved` 时从 `loreGroups` 里删掉这个组。
-  - `tabs.onRemoved` 时学 OCIC，把这个标签页按 tab 存的状态（调试器附着等）都清干净。
-- **拖进拖出**：用户拖进 lore 组的标签页算 lore 的（会录、可以操作），拖出去就不算了。这一点写进 SKILL.md。
-- **用户在组里按 Cmd+T**：开出的 `chrome://newtab` 不录；之后用户在里面打开网址，它就算 lore 的（在组里）。和拖进组同一个规则。
+### 3.2 `src/session/client.ts`：CLI 和 relay 共用
 
-### 3.3 拦截页面的新开标签页
+- `connectDaemon(role): Promise<net.Socket>`：实现第 2 条。connect 成功就写一行角色说明，返回这个 socket。connect 失败（ENOENT、ECONNREFUSED）时 spawn 一次 daemon（detached、`stdio: "ignore"`、`unref`），之后每 100ms 重试，最多 10 秒。**不删任何文件。**
+- `rpc(method, params, ms)`：CLI 的一次 JSON-RPC。现在 `cli/rpc.ts` 的逻辑搬过来，前面多写一行角色说明。
+- `ping(ms)`：只是查信息（`pid`、`build`、`abi`、扩展连没连着），不参与「活没活着」的判断。
+- `stopDaemon(waitMs = 10_000)`：实现第 7 条。先 `ping` 拿到 pid（超时放宽到 5 秒），发 SIGTERM，然后每 100ms connect 一次，直到连不上。返回 `none`、`stopped` 或 `timeout`。
+- `cli/session.ts` 和 `cli/rpc.ts` 删掉，`cli/habit.ts`、`doctor.ts`、`setup.js` 改用这个模块。
 
-只在 lore 标签页里生效（页面脚本已经是 `document_start`、所有 frame、MAIN world；还要加上 `match_about_blank`，让 `about:blank`、`srcdoc` 的 iframe 也有拦截）。
+### 3.3 daemon（`src/daemon.ts`）
 
-| 页面的做法 | 拦法 |
-|---|---|
-| 点链接：`target` 不是 `_self`/`_parent`/`_top`，或带 cmd/ctrl/shift，或中键 | window 上捕获阶段的 `click`、`auxclick`：找到 `a[href]` / `area[href]`，`preventDefault()` |
-| 脚本 `a.click()` 一个没放进页面的链接（常见的「程序化新开」写法，事件不会冒泡到 window） | 改 `HTMLAnchorElement.prototype.click`：链接不在文档里且要新开，就拦下 |
-| `window.open(url)` | 不调原函数，返回一个假的窗口对象（`closed`、`close()`、`focus()`） |
-| `window.open()` 后再 `w.location.href = url`（为躲弹窗拦截的写法） | 假对象的 `location` 接住地址（`href`、`assign`、`replace`） |
-| `window.open(url, name, features)`（弹出窗口） | 放过（§0.8） |
-| 表单 `target=_blank` 提交（包括脚本调 `form.submit()`） | `submit` 事件和 `HTMLFormElement.prototype.submit`：把 `target` 改成 `_self`，在当前标签页提交 |
-| 不拦的 | `download` 链接、`mailto:`、`tel:`、`javascript:` 这类非 http(s) 地址 |
+- 启动：`listenOwned(SESSION_SOCK, onConnection)`；返回 null 就 `exit(0)`。然后 `owned.watch(() => shutdown(0))`。日志淘汰、关闭空闲 learn 窗口这些定时任务，等第一次 inode 检查通过后才开始（§6）。
+- `onConnection`：先按 Buffer 收第一行（不要 `setEncoding`，relay 后面跟的是二进制帧）。2 秒内没收到合法的角色说明就断开。
+  - `role: cli` → 剩下的字节交给现在的 JSON-RPC 处理（这时才按 UTF-8 解码）。
+  - `role: relay` → 剩下的字节交给现在的 `onRelay`（4 字节长度帧）。
+- 新的合法 `hello` 照旧替换旧的扩展链路（现在的行为）。多个 Chrome profile 都装了扩展的情况先不处理（§3.7）。
+- `shutdown`：flush → `owned.release()` → `exit`。
+- 去掉：`SESSION_EXT_SOCK`、`extServer`、两次 `listenUnique`。
 
-- 拦下的地址经 bridge 交给扩展，扩展按 §3.4 的 `openTab` 开进同一个组（先 `chrome://newtab/`、`active:false`），附着调试器，并上报「页面打开了新标签页 <地址>」，记进时间线，learn 的观察里能看到。
-- **兜底**：拦截漏掉、Chrome 自己开出来的新标签页（`onCreated` 里 `openerTabId` 是 lore 的标签页）：
-  - 收进 opener 的组；
-  - 如果它在用户窗口里被选中了，把选中状态还给用户之前选中的标签页（扩展用 `tabs.onActivated` 记着用户窗口里「上一个选中的非 lore 标签页」）；
-  - 写一条「拦截漏掉」的日志，发现了就补拦截。这种情况用户会看到闪一下。
+### 3.4 relay（`src/native-messaging-host/relay.ts`）
 
-### 3.4 扩展 ops
+只剩这几步：`connectDaemon("relay")` 得到 socket，然后 stdin 接到 socket、socket 接到 stdout，任意一端断开就退出。10 秒内连不上就 `exit(1)`。自己不再写拉起逻辑。
 
-ABI 从 13 升到 14，manifest 加 `"tabGroups"` 权限，内容脚本加 `match_about_blank`。
+### 3.5 扩展（`src/chrome-extension/background.js`）
 
-| 旧 | 新 |
-|---|---|
-| `openWindow { anchor }` | 删掉 |
-| `openTab { windowId, url, active }` | `openTab { groupId?, title, color, url }`：<br>1. 给了 `groupId` 且组还在：在组所在的窗口里建；否则在用户最近用的普通窗口里建，并新建组（记进 `loreGroups`）；<br>2. `tabs.create({url:"chrome://newtab/", active:false})`，放进组，组保持折叠；<br>3. 设 `autoDiscardable:false`；<br>4. 先导航到 `about:blank`，再附着调试器（调试器附着不上 `chrome://` 页面），最后导航到 `url`。<br>返回 `{ tabId, groupId }` |
-| `activateTab` | 删掉 |
-| `closeWindow { windowId }` | `closeGroup { groupId }`：`tabs.remove` 组里的标签页（实测关掉的组不会被保存），然后从 `loreGroups` 删掉 |
-| `tabs`（会标出 anchor 页） | `tabs`：每个标签页带 `groupId`，lore 的再带 `lore: true`；不再有 anchor 页 |
-| 无 | `idleGroup { groupId }`：解除组里所有标签页的调试器附着 |
-| 无 | `closeAllGroups`：关掉全部 lore 组（daemon 连上扩展后调一次，清掉上一个 daemon 留下的） |
+- `onDisconnect` 后固定 1 秒重连，去掉 `retryCount` 和指数退避。
+- daemon 和扩展之间的消息不变，ABI 不用升。扩展代码变了，`build` 不同，握手时 daemon 会让它自己重新加载，不需要用户操作。
 
-- **anchor 页整个删掉**（`anchor.html`、`anchor.js`、`daemon.ts` 里的 `anchorReloadTried`）。ABI 13 的扩展已经能靠 `reload` op 自己重新加载，AGENTS.md 也写了「不写兼容代码」。
-- **附着要早于 `chrome.scripting`**：lore 的 `call` op 走 `chrome.scripting.executeScript`，在冻结的标签页里会一直挂着（§7.1）。cdp.js 提供 `ensureAttached(tabId)`，`call`、`input`、`evaluate`、`screenshot` 开头都调用它（闲置解除附着后，下次操作自动重新附着）。
+### 3.6 `doctor`（`src/cli/doctor.ts`）
 
-### 3.5 daemon：`AgentWindows` → `AgentGroups`
+- 新增 `launcher-node` 检查：读 `nm-host.sh` 里写死的 node 路径，确认文件存在、可执行。失败时的修复命令是「运行 setup.js」。
+- `daemon` 一项改成用 connect 判断在不在；`ping` 只用来补充显示 pid、扩展连没连着。
+- 统计日志前先确认 `~/.habit` 存在，不再调用会 `mkdir` 的 `WindowLog.open()`（review 里发现的「doctor 不是只读」）。
 
-- **保留**：按 key 管理、按 origin 池化、暖页面、空闲回收、`dispose(key)`、`release`。
-- **两张内存表**替代 `windows`（key → 窗口号）和 `adopted`：
-  - `key → groupId`：开标签页时传给扩展，让同一个句柄的标签页进同一个组；
-  - `groupId → key`：扩展上报页面消息时按 groupId 查 key，`winOf(tab)` 用它。
-- **删除**：`windows`、`adopted`、`activeTab`、`activate()`、anchor 页、`ensureWindow` 和 `opening`。
-- **建组时机**：第一次 `openTab` 不传 `groupId`，扩展新建组并返回 `groupId`，daemon 记进两张表。之后同一个 key 都传这个 `groupId`；组已经没了（用户关掉了组或窗口），扩展就新建一个，daemon 用返回的新 `groupId` 更新表。
-- **闲置**：每个 key 记最后一次操作的时间，20 秒没有操作就调 `idleGroup`。run 组跑完就关，不走闲置。
-- **daemon 重启不找回**：两张表在内存里，重启后为空。连上扩展后调一次 `closeAllGroups`（替代现在的 `cleaned` 关孤儿窗口）。learn 句柄下次操作时从上次的 URL 重开。
-- **`host.ts`**：删掉 8 处 `activate`，`failureShot` 里的也删掉。
-- **跟着改的地方**：
-  - `learn/observe.ts` 改成按 key 过滤标签页。
-  - `learn/windows.ts` 的 `page()` 判断「开着」改成「组还在」。
-  - `record/ingest.ts` 的 `winOf` 改成按 groupId 查；多一种时间线事件「页面打开了新标签页」。
+### 3.7 不在本计划里
 
-### 3.6 不变的
-
-- 命令行：`lore learn new|list|close|<句柄> …`、`lore run`。
-- 句柄格式和日志目录。
-- 录制、action SDK、CDP 输入。
-- `lore learn new --url <tab 号>`：仍然只是打开那个标签页的 URL。
+- CLI 被 Ctrl-C 或超时后，daemon 里的命令不会被取消（review 里的第 2 条，另议）。
+- 用 launchd 做 socket activation（以后在 macOS 上可以考虑）。
+- 多个 Chrome profile 都装了扩展时会互相踢掉对方的链路：先不处理，只用一个 profile。
+- node 路径写死成 nvm 带版本号的路径：本计划只让 `doctor` 能指出来，不改写法。
 
 ## 4. 实施步骤
 
-### 第 1 步：补测（已完成，结果见 §9）
+0. 先提交 `feat/rename-habit` 上改名的改动（目前还没提交；里面还有两处已经修好的小问题：`Output.fail` 不再丢掉出错前已经输出的内容，`habit learn list` 带多余参数时报错说清楚），再从它开一个新分支 `feat/daemon-lifecycle`。
+1. 新增 `src/session/server.ts` 和自检 `server.selfcheck.ts`（见 §5.1）。
+2. 新增 `src/session/client.ts`；删掉 `cli/session.ts`、`cli/rpc.ts`；改 `cli/habit.ts`、`setup.js`。
+3. 改 `daemon.ts`：只有一个 socket，按第一行分流，第二个扩展的处理，`shutdown` 只删自己的文件。
+4. 改 `relay.ts`。
+5. 改 `background.js` 的重连。
+6. 改 `doctor.ts`。
+7. 删掉 `SESSION_EXT_SOCK` 常量，以及所有还提到 `ext.sock` 的地方。
+8. 改文档：`ARCHITECTURE.md` §3（进程表、生命周期、这 8 条）、§4（连接）、§9（排障）；`AGENTS.md` §2.3 加上 §5.2 的故障清单；`CHANGELOG.md`。
+9. 跑 `npm run check`、`npm test`，再用 `node skills/habit/setup.js` 重装，在真实 Chrome 里按 §5.2 逐条验证。
 
-- 页面在用户手势下新开标签页，Chrome 会选中它、显示窗口、把 Chrome 拉到前台 → §3.3 的拦截。
-- 拦下后由 lore 开标签页，不抢前台；在用户窗口和单独窗口里都实测过（§9.5）。
-- 调试横幅出现在所有窗口。
-- 关掉的组不会被保存，`closeGroup` 不必先 `ungroup`。
+## 5. 测试
 
-### 第 2 步：扩展
+### 5.1 自检（不依赖 Chrome）
 
-- `background.js`：
-  - `loreGroups`，用组判断归属；
-  - 实现 §3.4 的新 ops；
-  - 接收页面脚本拦下的地址并开标签页；
-  - `onCreated` 兜底、`onActivated` 记住用户上一个选中的标签页；
-  - 处理 `tabGroups.onRemoved`，补全 `tabs.onRemoved` 的清理；
-  - 页面消息带上 groupId。
-- 页面脚本：新增 `page/newtab.js`（§3.3 的拦截），加进 `PAGE_FILES` 和 manifest。
-- `cdp.js`：`ensureAttached`、按标签页解除附着（给 `idleGroup` 用）。
-- `manifest.json`：加 `tabGroups` 权限、`match_about_blank`；ABI 改成 14。
-- 删掉 `anchor.html` 和 `anchor.js`。
+`src/session/server.selfcheck.ts`，用临时目录里的 socket 路径，只测守住正确性的几点：
 
-### 第 3 步：daemon
+- 残留文件（自己 listen 过的 socket 文件，进程退出后留下来）：`listenOwned` 删掉它，并且 listen 成功。
+- 已经有活的 owner：第二个 `listenOwned` 返回 null，第一个的 socket 文件还在、inode 没变。
+- 删掉文件，或者换成另一个 socket：`watch` 在 3 秒内调用 `onLost`。
+- `release()`：inode 是自己的才删；文件已经被换掉时，不碰新的那个。
+- `connectDaemon` 在对方卡住（模拟成 listen 了但从不回复）时不删文件。
 
-- `browser/window.ts` 重写成 `AgentGroups`，文件改名为 `browser/groups.ts`。
-- `browser/extension.ts`：ABI 改成 14。
-- `browser/host.ts`：删掉 `activate`。
-- `daemon.ts`：连上扩展后调一次 `closeAllGroups`；页面消息按 groupId 交给 `AgentGroups` 查 key；删掉 `adopt` 和 anchor 重载。
-- 跟着改的地方：`learn/observe.ts`、`learn/windows.ts`、`record/ingest.ts`。
+### 5.2 真实 Chrome 里的故障清单（加进 AGENTS.md §2.3）
 
-### 第 4 步：自检和真实 Chrome 测试
+每一条都要能自己恢复，不需要手动操作：
 
-**selfcheck**：
-- `window.selfcheck.ts` 改成测组：建组、同一个 key 进同一个组、池化、回收、按 groupId 查 key、组被关了能重建并更新映射、闲置 20 秒调 `idleGroup`、重连时关掉全部旧组。
-- `extension.selfcheck.ts` 改 ABI。
-- 拦截的判断逻辑（哪些链接、哪些 `window.open` 要拦）抽成纯函数，加一个自检：拦错了会静默改变网站行为，拦漏了会抢前台。
+| 操作 | 期望 |
+|---|---|
+| `kill -STOP <daemon>`，5 秒后再 `kill -CONT` | 这段时间里发的 `habit status` 会一直等，恢复后正常返回；`session/sock` 的 inode 没变；没有出现第二个 daemon |
+| `kill -9 <daemon>` 后马上 `habit tabs` | 拉起新 daemon，命令成功 |
+| 没有 daemon 时，同时跑 5 个 `habit status` | 都成功；最后只有一个 daemon 进程（`pgrep -f daemon.ts`） |
+| `kill <relay>` | 扩展 1 秒内重连，daemon 的 pid 不变 |
+| 在 `chrome://extensions` 刷新 habit | 同上；learn 句柄还在，下次操作不用从上次的 URL 重开 |
+| 退出 Chrome，2 分钟内重新打开 | daemon 的 pid 不变；learn 句柄还在 |
+| 退出 Chrome 超过 10 分钟 | daemon 退出，`session/sock` 被删掉 |
+| `node skills/habit/setup.js`（build 变了） | 旧 daemon 退出；扩展重连后是新 build，`doctor` 全部通过 |
+| 手动 `rm session/sock` | 2 秒内旧 daemon 退出；下一条命令拉起新的 |
 
-**真实 Chrome**：每一项都要同时检查：**前台应用、用户窗口里选中的标签页、焦点窗口在每一步前后都没变；没有出现新窗口**（每 100 ms 记录一次，§9.5 的办法；测试期间用户切到别的应用、不碰 Chrome）。
+## 6. 风险
 
-1. `lore learn new` 之后，用户窗口里出现一个折叠的 `lore·ithome.com` 组；
-2. learn 的全部工具都能用：find / read_page / computer / form_input / navigate / try_action；
-3. IT之家「搜索 → 第 N 篇 → 第 K 条评论」的 compose，以及 `ithome-comments`（懒加载）；
-4. 拦截：在 lore 标签页里点 `target=_blank`、cmd+点击、中键点击、`window.open(url)`、`window.open()` 后设地址、程序化 `a.click()`、`target=_blank` 表单——都不抢前台，新标签页进同一个组并被录，时间线里有「页面打开了新标签页」；带窗口参数的 `window.open` 照常弹出；
-5. 用户自己的标签页里点 `target=_blank` 行为不变（拦截只在 lore 标签页里）；
-6. 拖进拖出：把一个用户标签页拖进组后会被录，拖出去后不录；
-7. 闲置 20 秒后解除附着、调试横幅消失；再操作时正常；
-8. `lore run` 期间出现 run 组，结束后组消失；
-9. daemon 重启后旧的 lore 组全部被关掉；对同一个 learn 句柄再操作，新建组并从上次的 URL 重开，日志接着写进同一个目录；
-10. 用户手动关掉 learn 组后，再操作时会重建；
-11. 同时跑两个 run 和一个 learn，互不干扰；
-12. 性能：对比 run 的交付时间（之前约 4 s，省掉开窗口应该会更快）。
+- **按第一行分流时的二进制数据**：relay 的角色说明后面紧跟着长度帧，同一个数据块里可能两样都有。分流时要把剩下的字节原样交下去，并且角色说明之前不能做 UTF-8 解码。自检里要覆盖这种「两样在同一个数据块里」的情况。
+- **inode 每 2 秒检查一次**：在极端竞争下，最多会有 2 秒两个 daemon 并存。被换掉的那个刚启动，没有扩展链路，新连接也到不了它，所以不会写时间线（两个进程各自递增 `seq` 才会撞号）；但它的日志淘汰会把另一个 daemon 正开着的 learn 窗口当成已关，可能删掉那些窗口里的响应体和截图。所以 daemon 启动后，要等第一次 inode 检查通过（大约 2 秒）才开始日志淘汰和其它定时任务（§3.3）。
 
-### 第 5 步：文档
+## 7. 第二阶段：简化 CLI
 
-- SKILL.md：标签组、拖进拖出是什么意思、lore 不会抢焦点、页面的新开标签页由 lore 接管、调试横幅什么时候出现。
-- ARCHITECTURE.md：窗口那一节。
-- AGENTS.md：§2.3 的验证清单改成上面第 4 步的检查。
-- CHANGELOG.md。
-- 本文件末尾补上实施和测试结果。
+> 背景：2026-11-04 对命令层（`src/commands`）的 review，以及调研报告 `/Users/me/Downloads/面向 Agent 的 CLI 设计.md`。
+> 调研的结论：本地、有 shell、只有一个人在用的 agent，用 CLI 加 skill 是对的，不用推倒重写；真实的失败大多很机械（引号写坏、卡住、输出被截断）。所以这里只补几条有约束力的规矩，并把命令收少。
+> 按 AGENTS.md §2.5「不写兼容代码」：旧命令、旧参数直接删，不留专门的报错；本机 `~/.habit` 里的旧数据一起处理掉。
 
-## 5. 拦截的代价
+### 7.1 改完以后的命令
 
-| 代价 | 影响 | 应对 |
+```
+habit status | tabs | doctor
+habit learn new --url <链接|tab号> --description "…"
+habit learn list
+habit learn close <句柄>
+habit learn <句柄> <工具> … [--description "…"]
+habit run <名> --description "…" [--参数 值 ...]
+habit run <名> --help
+habit resume <编号> --answer '<json>' [--description "…"]
+```
+
+退出码：
+
+| 码 | 含义 | agent 下一步 |
 |---|---|---|
-| 新标签页没有 `window.opener`，原页面拿到的是假窗口对象 | 依赖两边通信的页面会变：新页面通过 `window.opener` 回传结果、原页面往新窗口里 `document.write`（导出、打印预览这类） | 少见。遇到了单独处理；lore 学的是请求，影响有限 |
-| 新标签页的请求头和真实打开时不一样：没有 `Referer`，`Sec-Fetch-Site` 是 `none` | 少数站点检查 Referer（防盗链、风控）时，新标签页的首个请求可能被拒或走不同分支 | 以后可以让扩展用原页面地址作 referrer 打开（CDP `Page.navigate` 带 `referrer`） |
-| `sessionStorage` 不会从原页面带过去 | 靠 sessionStorage 传状态的新开页面行为会变 | 少见；遇到了再处理 |
-| `target=_blank` 表单改成在当前标签页提交 | 原页面被替换，不再保留 | 可以接受；时间线里看得出 |
-| 改写了 `window.open`、`HTMLAnchorElement.prototype.click`、`HTMLFormElement.prototype.submit` | 页面可能检测到这些原生函数被改过（少数反爬会查） | 改写后的函数 `toString()` 仍返回原生的样子；只在 lore 标签页里改 |
-| 拦漏了 | Chrome 选中新标签页、把 Chrome 拉到前台，用户会看到闪一下 | §3.3 的兜底：收进组、选中状态还给用户、写日志，再补拦截 |
-| 带窗口参数的弹出窗口不拦 | 可能抢焦点 | 用户决定先不管 |
+| 0 | 成功 | — |
+| 1 | 操作失败 | 看原因，排查或重试 |
+| 2 | 等用户（need-* / ask） | 问用户，或按 ask 回答后 `habit resume` |
+| 3 | 命令写错了（不认识的命令或参数、缺参数、值不合法） | 改命令再跑，不要原样重试 |
 
-## 6. 其他风险
+### 7.2 compose 改成 agent 自己写的文件
 
-| 风险 | 应对 |
-|---|---|
-| 调试横幅出现在所有窗口 | 浏览器级别的提示，挡不住；闲置 20 秒就解除附着 |
-| 用户点开组、点了 lore 的标签页 | 不处理（「谁在操作」已经去掉了）；lore 照常操作 |
-| 用户把 lore 的标签页拖出组 | 它就不再归 lore：操作时报「不是 lore 的标签页」，learn 下次操作时重建组 |
-| 用户关掉了组所在的窗口 | 下次用到时在用户最近用的窗口里重建 |
-| 省内存模式丢弃后台标签页 | 设 `autoDiscardable:false`；万一还是被丢弃，`callTab` 遇到「No tab with id」会重新拿一个标签页再试 |
-| 附着了调试器的标签页按约 120 帧/秒渲染，吃 CPU | 闲置 20 秒解除附着 |
-| 没选中的标签页在窗口 resize 后不重新布局（OCIC 记录的现象） | lore 不提供 resize，只影响截图尺寸；截图按 CDP `Page.getLayoutMetrics` 取真实视口 |
+- **compose 就是 `~/.habit/compose/<名>.js` 这个文件**，由 agent 用 Write 写好，再 `habit run <名>` 跑。不再有 `--compose-code`，也不再有「跑通就按代码哈希自动保存」。
+- **compose 要一直保留**：每个 compose 都是用户做过的一件有意义的事，下次直接换参数复用。SKILL.md 里写明：名字要起得能看懂（和 action 一样的命名规则），写好就留着，不删、不做一次性的 compose。
+- **文件格式和 action 一致**：文件头 `@description`、`@status draft`、`@param`、可选的 `@timeout`；代码写成 `export default async () => { … }`，里面用 `action("名字", 参数)` 和 `habit.params.名字`、`habit.ask`。`action()` 沿用 action 里 SDK 函数不用 import 的做法（实现时先确认 action 的 SDK 函数是怎么注入的，compose 走同一种方式）。
+- **怎么认出是 compose**：放在 `~/.habit/compose/` 下的就是 compose，放在 `sites/<站点>/actions/` 下的就是 action，不再靠文件头的 `@compose`。
+- **跑成功后 habit 只改一处**：把 `@status draft` 改成 `verified`（和 action 一样，用现有的 `promoteAction`）。不再重写文件头，不再记 `@ok` 次数和 description 历史；每次 run 的 `--description` 照旧进 run 窗口的日志。
+- **从 `habit.ask` 停下的地方接着跑，用的是停下那一刻的代码**：恢复记录里照旧存代码原文，agent 中途改了文件也不影响这次重放。
+- **时间上限只看文件头的 `@timeout`**，没写就是默认值。`--timeout` 参数删掉。
 
-## 6.1 以后可选
+删掉的代码：`--compose-code`、`--compose`、`--action`、`--timeout` 的处理；`saveComposed`、`composeTarget`、`composeHash`、`resolveCompose`（哈希前缀匹配）、`pruneUnnamed`、`stripComposeHead`；常量 `UNNAMED_COMPOSE_KEEP`、`UNNAMED_COMPOSE_MAX_AGE_MS`；`run.ts` 里「X 是 action 不是 compose」这类报错。`composeUses` 等跑之前的检查如果还用得上就留着。
 
-- **组名前缀显示状态**（学 Claude in Chrome）：⌛ 工作中、🔔 需要用户处理（比如登录）、✅ 完成。
-- **`lore learn new --tab <号>`**：把用户已经打开的标签页移进 lore 组接着学；`learn close` 时只 `ungroup`，不关。
-- **「给用户看」**：需要用户登录或确认时，把 lore 的标签页选中。只在 lore 明确需要用户时做，类似 OCIC 的 `set_tab_focus`。
+本机数据：删掉 `~/.habit/compose/` 下现有的 8 个哈希命名的 compose（`068c0d775e25.js` 等）。
 
-## 7. 实验结果（2026-11-04，真实 Chrome，macOS）
+### 7.3 `run` 和 `resume`
 
-实验代码只在 `exp/tab-groups` 分支上临时加过（扩展里的 `exp*` 操作、daemon 的 `ext` 透传），已经还原，分支已删。测试页是本地页面，带 rAF 计数、100 ms 定时器、IntersectionObserver（触发时发 `/lazy` 请求）。标签页都开在用户当前窗口里一个折叠的 `lore·exp` 组中，从不选中。
+- `habit run <名>`：action 和 compose 名字本来就不能重复，所以一条命令就够，按名字先找 action，再找 compose。
+- `habit resume <编号> --answer '<json>'`：单独成为一条顶层命令，就不用占用 `run` 后面的名字。`--answer` 可以重复；带 `--description` 时，说明这次为什么这样回答（如「用户选了第二个账号」），记进恢复记录和 run 窗口的日志，不再悄悄忽略。
+- `run` 不接受 `--answer`，`resume` 不接受 action 参数，各自声明自己接受哪些参数，其它的一律报用法错误（退出码 3）。
 
-### 7.1 后台标签页的渲染
+### 7.4 同一个 learn 句柄只能串行
 
-| 条件 | visibilityState / hasFocus | rAF / 秒 | 100 ms 定时器 / 秒 | IntersectionObserver | 冻结 |
-|---|---|---|---|---|---|
-| 不附着调试器，**折叠组** | hidden / false | 0 | 1 | 不触发 | **约 3 秒后被 Chrome 冻结**（`frozen: true`），`chrome.scripting.executeScript` 一直挂着不返回 |
-| 不附着调试器，展开的组 | hidden / false | 0 | 1 | 不触发（`scrollTo` 能滚，但不渲染） | 8 秒内没冻结 |
-| 附着调试器、关掉 focus emulation，折叠组 | — | — | — | — | CDP 鼠标事件 20 秒没响应 |
-| **附着调试器 + focus emulation**（lore 现在的附着方式），折叠或展开 | visible / true | 约 120 | 10 | 正常触发 | 不冻结 |
-| 再加 `Page.setWebLifecycleState active` | 同上 | 同上 | 同上 | 正常 | 不冻结 |
-| 再加 `Page.startScreencast` | 同上 | 同上 | 同上 | 正常 | 不冻结 |
+- daemon 里按句柄记住正在执行的命令；同一个句柄上已经有一条在跑，后到的直接返回 `fail`：「learn 窗口 <句柄> 上一条命令还没结束，等它返回后再发」。不排队：几个 Bash 调用同时发出时谁先到不确定，排队会让操作顺序变成随机的。
+- 不同句柄之间、learn 窗口和 run 窗口之间照旧并发。多个 agent 同时用 habit 先不考虑（两个后台标签页同时截图、观察游标是否各算各的，都没验证过）。
 
-其他：
-- **冻结后再附着**：附着 26 ms 就解冻，rAF 立刻恢复到约 120/秒。
-- **附着后闲置**：10、30、90 秒时都没有冻结，rAF 一直约 120/秒。
-- **截图**：CDP `Page.captureScreenshot` 在后台标签页里约 50 ms，画面完整。
-- **IT之家真实页面**（`1/021/825.htm`，折叠组、后台）：滚动两次后点右侧「评论」，`getnewscomment?…&isInit=true` 发出，评论区完整渲染（后台截图里能看到热门评论）；全程用户选中的标签页没变。
+### 7.5 `--description` 的规则
 
-**结论**：
-- 只要附着调试器、开 focus emulation（`cdp.js` 的 `attach` 已经这样做），就足够了，lifecycle 和 screencast 都不需要。
-- 标签页建好就附着；之后所有操作（包括 `chrome.scripting`）都在附着状态下进行，不会撞上冻结。
-- `host.ts` 里的 8 处 `activate` 可以直接删掉。
+凡是会改变东西的命令都要带：`learn new`、learn 里会改变页面的操作、`try_action`、`run`。只读的不用：`tabs`、`status`、`learn list`、`read_page`、`find`、`get_page_text`、`screenshot`、`zoom`、`wait`。`resume` 可选（见 7.3）。
 
-### 7.2 Tab Activate：新标签页被强行切到前台
+### 7.6 参数解析和报错
 
-- **现象**：`chrome.tabs.create({active:false})` 建出来的标签页，马上就变成了选中的标签页（页面里 `visibilityState` 一开始就是 `visible`）。
-- **原因**：用户装了扩展 **Tab Activate**（`jlmadbnp…`，「New tabs open immediately instead of in the background」）。它在 `tabs.onCreated` 里把所有新标签页 `tabs.update({active:true})`，只跳过固定标签页和 `chrome://newtab/`。
-- **lore 自己开的标签页**：先 `tabs.create({url:"chrome://newtab/", active:false})` 再导航，就能躲开（实测页面从加载起就是 `hidden`）。
-- **页面自己开的标签页**（`target=_blank`）：躲不开。这是放弃「组放在用户窗口里」、改用单独 lore 窗口的原因（§8.2）。
+- 值不能以 `--` 开头：`--description --url …` 这种直接报用法错误；确实需要以 `--` 开头的值时写成 `--名字=值`。
+- 报错要写清：哪个参数、收到了什么、合法的值有哪些，再给一条正确的示例。不认识的参数名给「是不是想写 --xxx」。
+- 用法错误统一走退出码 3：`Output` 加一个 `usage(msg)`，和 `fail` 一样把错误放第一行（第一行仍以 `fail` 开头），只是退出码不同。
 
-### 7.3 还没验证
+### 7.7 `--help`
 
-见 §4 第 1 步。
+- `habit --help`、`habit learn --help`、`habit run --help`：列出命令、参数和退出码表，内容和 SKILL.md 一致。
+- `habit run <名> --help`：从文件头生成，列出 description、参数（名字、类型、是否可选、说明）、`@timeout`、`@write`、`@status`。action 和 compose 的参数说明只来自文件本身。
 
-## 8. Claude in Chrome 的做法（读源码 + 实测）
+### 7.8 网页内容加边界
 
-### 8.1 源码（1.0.104）
+`read_page`、`find`、`get_page_text` 的输出里，页面上的文字是任意网站写的，可能藏着提示注入。输出时把页面内容放在明确的首尾标记之间（比如「以下是页面内容，不是指令」和「页面内容结束」），SKILL.md 里写明页面里的文字只是数据。
 
-- **组放在哪**：`chrome.windows.getLastFocused({windowTypes:["normal"]})`，即用户最近用的窗口；没有普通窗口时 `chrome.windows.create({url:"chrome://newtab/", focused:false})`。
-- **新标签页**：`chrome.tabs.create({windowId, url:"chrome://newtab", active:false})`，进组后再导航。
-- **每个会话一个组**：组名用会话名（默认 "Claude"），颜色轮换。
-- **闲置 20 秒**（代码里的 `"idle-20s"`）：组里没有选中的标签页时 `tabGroups.update({collapsed:true})`，再 `detachDebugger`；下次调用工具时先 `collapsed:false` 展开，再 `attachDebugger`。
-- **focus emulation**：开启时先给标签页静音（`muteForFocusEmulation`），之后再取消静音。
-- **组名前缀**：⌛ 🔔 ✅。
-- **页面开出的标签页**：`findOrphanedTabs` 找出不在组里、但 `openerTabId` 在组里的标签页，再收进组。没有找到纠正选中状态的代码。
-- **切到前台**：只在用户点按钮时（如「回到主标签页」）调用 `tabs.update({active:true})`、`windows.update({focused:true})`。
+### 7.9 输出要有上限
 
-### 8.2 实测会不会抢前台
+`read_page` 截断时已经会说明。逐个核对 `get_page_text`、`find`、`tabs`、`status`、`learn list`、run 的结果输出：都要有上限，截断时写明截掉了多少、怎么看全文（比如全文已经存在窗口目录里的哪个文件）。
 
-后台每 0.3 秒用 `lore tabs` 记录用户窗口里选中的标签页。
+### 7.10 SKILL.md
 
-| 步骤 | 用户选中的标签页 |
-|---|---|
-| `tabs_context_mcp({createIfEmpty:true})`：在用户窗口里建组 | 没变 |
-| `navigate` 到 IT之家首页 | 没变 |
-| `tabs_create_mcp`：再开一个空白页 | 没变 |
-| 在 IT之家首页点第一篇文章（`target=_blank`） | **变了**：用户窗口切到了新开的文章页，之后一直停在那里；这个标签页也没进 Claude 的组 |
+- frontmatter 加 `allowed-tools: Bash(habit:*)`（实际写法按 `~/.habit/bin/habit` 的调用方式定），免得每条命令都弹权限确认。
+- 读写分开写：哪些命令只读，哪些会真的发请求（`run`、`resume`、learn 里改变页面的操作），方便用户只放行只读命令。
+- 按新命令重写用法表、compose 那几段（7.2），删掉「compose 由 habit 自动存」「哈希写前几位」「不要把改过的代码再交给 --compose-code」这些说明。
+- 示例改成：先 Write 写 compose 文件，再 `habit run <名>`。
 
-**结论**：只要组放在用户的窗口里，页面自己开的新标签页就会抢用户的前台。用户的要求是「不接受任何形式的抢前台」，所以 lore 用单独的窗口。
+### 7.11 不做的
 
-## 9. 补测结果（2026-11-04，真实 Chrome，macOS）
+- 全局 `--json`、所有命令统一 JSON 输出：habit 只给 agent 用，现在「第一行 ok/fail/ask，后面是文字」更省 token；多维护一份格式约定就多一处可能和代码对不上（调研里 MauiDevFlow 的教训）。
+- `schema`/`describe` 命令：有 7.7 的 `--help` 就够了。
+- `--dry-run`：已经有 `@write` 和 `habit.ask` 两道关。
+- CLI 被 Ctrl-C 或超时后取消 daemon 里的命令：仍然另议（§3.7）。
 
-方法：临时分支上给扩展加实验用的操作（已还原、分支已删）；用 `lsappinfo` 看前台应用，用 `CGWindowListCopyWindowInfo` 看窗口的前后顺序，用 `chrome.windows.getLastFocused` 看 Chrome 里的焦点窗口。用户的窗口和选中的标签页每一步前后都记录。
+### 7.12 实施步骤
 
-### 9.1 lore 窗口本身
+1. 从 `feat/daemon-lifecycle` 合并后的结果开新分支 `feat/cli-simplify`。
+2. `commands/args.ts`：值不能以 `--` 开头；报错带示例和「是不是想写」。
+3. `commands/context.ts` 和 `protocol.ts`：退出码 3 和 `Output.usage`。
+4. `commands/run.ts`：只剩 `run <名>`；新增 `commands/resume.ts`；`commands/index.ts` 加 `resume` 和各级 `--help`。
+5. `run/actions.ts`、`run/runner.ts`、`run/asks.ts`：compose 按 7.2 改；删掉 7.2 列出的代码和常量。
+6. learn 句柄串行（7.4）。
+7. 网页内容边界（7.8）、输出上限（7.9）。
+8. 删掉 `~/.habit/compose/` 下的 8 个哈希 compose。
+9. 文档：SKILL.md（7.10）、`ARCHITECTURE.md` 里讲 run、compose、退出码的部分、`AGENTS.md` §2.3 里还写着 `--compose-code`、`--compose`、哈希前几位的验证项、learn 指引、`CHANGELOG.md`。
+10. 跑 `npm run check`、`npm test`，`node skills/habit/setup.js` 重装，在真实 Chrome 里按 7.13 验证。
 
-- `chrome.windows.create({url:"about:blank", focused:false})`：新窗口排在所有窗口的最底下（z12），前台应用、用户窗口、选中的标签页都没变。
-- 初始标签页不能用 `chrome://newtab/`：调试器附着不上 `chrome://` 页面。用 `about:blank`。
-- 在 lore 窗口里：rAF 约 121/秒，`visibilityState` 是 visible，IntersectionObserver 正常触发，截图正常。
-- 普通点击（CDP 鼠标事件）不会抬起窗口。
+### 7.13 测试
 
-### 9.2 什么会抬起 lore 窗口
+自检（只留坏了会静默出错的）：
 
-每种方式都在一个新开的 lore 窗口里试，开始时 lore 窗口在最底下：
+- `parseArgs`：值以 `--` 开头时报错；`--名字=值` 能用。
+- 退出码：用法错误是 3，操作失败是 1。
+- compose：在 `compose/` 下写一个 `@status draft` 的文件，`run` 成功后变成 `verified`，文件其它内容一个字节都不变；`@timeout` 生效。
+- `resume`：停在 `habit.ask` 后改掉 compose 文件，`resume` 仍按停下时的代码重放。
+- 同一个句柄两条命令同时到：第二条立刻返回 `fail`，第一条正常完成；不同句柄互不影响。
 
-| 新标签页怎么来的 | lore 窗口被抬到最前、Chrome 被拉到前台 |
-|---|---|
-| lore 自己 `tabs.create({active:false})`（Tab Activate 会把它切成 lore 窗口里的选中标签页） | **否** |
-| 页面 `window.open(url)`，没有用户手势 | 被弹窗拦截挡掉，没有开出标签页 |
-| 页面 `window.open(url)`，有用户手势 | **是** |
-| CDP 点击 `target=_blank` 链接 | **是**（用户当时在 Claude 应用里，Chrome 被拉到了前台） |
-| CDP cmd+点击（本该是后台标签页） | **是** |
-| 窗口最小化后，页面有手势地新开标签页 | **是**：窗口被还原，并放到最前 |
+真实 Chrome：
 
-结论：页面在用户手势下新开标签页时，Chrome 会显示那个窗口。这和 Tab Activate 无关，单独的窗口挡不住。
-
-### 9.3 页面脚本拦截
-
-在 lore 标签页里注入一段脚本（相当于 §3.2 的拦截），然后：
-
-| 操作 | 结果 |
-|---|---|
-| 点 `target=_blank` | 拦下，没开标签页，窗口没动 |
-| cmd+点击 | 拦下，窗口没动 |
-| 有手势的 `window.open(url)` | 拦下，窗口没动 |
-| 有手势的 `window.open()` 后 `w.location.href = url` | 拦下（假对象接住了地址），窗口没动 |
-| lore 用 `tabs.create` 把拦下的 4 个地址开进同一个组 | 4 个标签页都开出来了，窗口没动，前台应用没变 |
-
-### 9.4 需要用户看的两项
-
-- **调试横幅**：只有 lore 窗口里的一个标签页附着了调试器时，用户自己的窗口顶部也显示「…已开始调试此浏览器」。确认是浏览器级别的提示。
-- **已保存的标签组**：关掉的两个组，lore-A（先 `ungroup` 再关）和 lore-B（直接关），都没有出现在已保存的标签组里。
-
-### 9.5 复测：两种方案都加上页面拦截，在 IT之家首页上跑
-
-做法：页面脚本用 `Page.addScriptToEvaluateOnNewDocument` 在页面加载前注入，相当于 §3.2 的拦截。依次做这几步：
-1. 点文章链接（`target=_blank`）；
-2. 有手势的 `window.open`；
-3. lore 把拦下的地址开成同组的新标签页；
-4. 在新开的文章页里滚动、点「评论」。
-
-每 100 ms 记录一次前台应用、用户窗口里选中的标签页、焦点窗口。
-
-| 方案 | 结果 |
-|---|---|
-| 单独的 lore 窗口 | 前台应用全程是 Claude，用户选中的标签页没变；两次新开都被拦下，lore 开出 2 个标签页，评论请求正常发出 |
-| 用户窗口里的折叠组（lore 开标签页时先开成 `chrome://newtab/`） | 同样拦下 2 次、lore 开出 2 个标签页、评论正常；记录里出现过 Chrome 变成前台、用户窗口选中的标签页换成了用户自己的 Google 搜索页。lore 不会碰那个标签页，那是用户当时自己在操作 Chrome；用户也确认没有被抢前台 |
-
-结论：加上页面拦截后，两种方案在这些操作里都不会抢前台。cmd+点击这一项因为测试脚本取的点不在链接上，没有测到，实现后补测。
-
-## 10. 实施结果（2026-11-04，分支 `feat/tab-groups`）
-
-### 10.1 改了什么
-
-- **扩展**（ABI 14，加 `tabGroups` 权限，内容脚本加 `match_about_blank`）：
-  - `background.js`：用 `loreGroups` 判断归属；新增 `openTab`（先开 newtab → 进组 → 到 about:blank 附着调试器 → 打开目标地址）、`closeGroup`、`closeAllGroups`（也按标题认出浏览器重启后恢复的组）、`idleGroup`；页面消息带 `group`；页面要新开标签页时 `openForPage`；`onCreated` 兜底；`onActivated` 记住用户上一个选中的标签页，lore 刚开的标签页 3 秒内被选中就还回去；`call`、`goto`、`history` 之前先附着（防冻结）；拖进、拖出组时通知页面脚本开始或停止上报。删掉 `openWindow`、`activateTab`、`closeWindow` 和 anchor 页。
-  - `cdp.js`：导出 `attach`，新增 `detach`。
-  - `page/newtab.js`（新）：§3.3 的拦截。判断逻辑是纯函数，`browser/newtab.selfcheck.mjs` 自检。
-  - `page/common.js`、`bridge.js`：录不录的答案可以在加载后改变（拖进、拖出组）。
-- **daemon**：
-  - `browser/window.ts`：类名还是 `AgentWindows`（命令行里的「窗口」概念没变，没有改名成 `groups.ts`）。内部改成按组：`key ↔ groupId` 两张内存表、`adopt` 按组号、`busy()` 记录进行中的操作、`idle()` 每 5 秒检查一次，闲置 20 秒（`GROUP_IDLE_MS`）调 `idleGroup`；第一次用时 `closeAllGroups`。
-  - `browser/host.ts`：删掉 8 处 `activate`；`log()`、`callTab()`、`waitEnd()` 期间标记进行中；learn 的 `computer wait` 也一样。
-  - `daemon.ts`：组标题 `lore·站点`（learn，蓝）、`lore▶名字`（run，灰）；页面消息按 `group` 认领；删掉 anchor 重载。
-  - `learn/observe.ts`：页面列表按组过滤；新增一行「新标签页：页面打开了…」。
-  - `lore tabs`、`learn new --url <tab 号>`：用 `lore` 标记排除 lore 的标签页。
-- **文档**：SKILL.md、ARCHITECTURE.md、AGENTS.md（§2.3 加了「不抢前台」的检查方法）、install.md、CHANGELOG.md。
-
-### 10.2 测试
-
-- `npm run check`、`npm test`（18 个自检）通过。新增和重写的：`window.selfcheck.ts`（同 key 进同组、按组号归属、组被关后映射更新、闲置判断、只关一次旧组）、`newtab.selfcheck.mjs`（哪些链接、`window.open`、表单要拦）。
-- 真实 Chrome（`setup.js` 重装后扩展自动重新加载到 ABI 14）。后台每 0.2 秒记录前台应用和用户选中的标签页，用户在 Claude 应用里：
-
-| 步骤 | 结果 |
-|---|---|
-| `lore learn new --url https://www.ithome.com/` | 用户窗口里出现 lore 组，没有新窗口 |
-| `computer left_click --ref`（`target=_blank` 文章链接） | 被拦下，lore 开进同一个组；观察里有「新标签页：页面打开了 #7018 …/1/021/346.htm」 |
-| `computer left_click --ref … --modifiers cmd` | 同上 |
-| `navigate` 文章 → `scroll` ×2 → 点「评论」 | `GET /api/webcomment/getnewscomment` 发出（后台组里懒加载正常） |
-| `lore run --compose`（搜索 → 第 n 篇 → 第 k 条评论） | 跑通（q=小米 n=5 k=3）。另外两次失败落在 1/021/817 和 1/021/800：817 是 action 文件里早就记着的「连试 3 次超时」那篇，800 在 learn 组里 `try_action` 同样不发评论请求；同一 action 在 346、602 上 `try_action` 都通过，所以这两篇是文章本身的问题，和这次改动无关 |
-| 闲置超过 20 秒 | 用户确认「正在调试此浏览器」的横幅消失 |
-| 闲置后再操作（`find`） | 0.12 秒返回，自动重新附着 |
-| `lore learn close` | 组关掉 |
-
-- 记录里前台应用两次变成 Chrome（04:37:34、04:38:29），用户确认是自己切的；第一次发生在 lore 开始操作之前。用户不在 Chrome 里的那段（04:37:48–04:38:29）覆盖了点 `target=_blank`、cmd+点击、懒加载评论、run 的开始：前台应用一直是 Claude，用户选中的标签页一直没变。
-
-### 10.3 还没在真实 Chrome 里测的
-
-- 中键点击、`window.open(url)`、`window.open()` 后设地址、`target=_blank` 表单、程序化 `a.click()` 走真实的 `newtab.js`（§9.3 用等价的注入脚本测过前三种）。
-- 拖进、拖出组。
-- `lore daemon restart` 后旧组被关掉、句柄从上次的 URL 重开。
-- 用户手动关掉组后重建；两个 run 和一个 learn 同时跑。
-- 漏拦兜底（`onCreated` 收进组、把选中还给用户）。
+- 写一个 compose 文件 → `habit run <名>` → 停在 ask → `habit resume` → 成功，draft 变成 verified。
+- 在 Claude Code 里一次并行发两条 `habit learn <同一个句柄> computer …`：一条成功，一条报「上一条命令还没结束」。
+- `habit run <名> --help` 列出的参数和文件头一致。

@@ -1,1 +1,1 @@
-skills/lore/AGENTS.md
+skills/habit/AGENTS.md
