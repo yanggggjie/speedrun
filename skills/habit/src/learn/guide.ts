@@ -47,6 +47,7 @@ export function makeLearnGuide(info: LearnInfo): string {
 - 请求只列这个窗口里第一次出现的 endpoint；之前出现过的只计数，全部都在 timeline.jsonl 里。
 - 每个请求一行：编号、\`方法 路径\`（就是 @endpoint 的写法）、状态、内容类型、有没有响应体、请求文件、以前的 description。带非浏览器头的请求下面有一行 \`请求头\`：每个头的值在这个窗口的请求里怎么变（页面级不变 / 按 endpoint 不变 / 每次都变 / 样本太少），和它在页面里的位置（← cookie _xsrf）。这是信号：请求头 habit 会自动抄，你只在 try_action 被拒时照它改。
 - 请求晚到（懒加载、防抖、新标签页加载）：\`${cmd} computer wait 2\`，等完附带一次观察，只给上次之后的新东西，不漏不重。
+- find、read_page、get_page_text、点击和输入都只在标签页的主文档里：iframe 里的内容看不到、点不到（iframe 里的请求照样录）。要操作 iframe 里的东西，用 \`${cmd} navigate <iframe 的地址>\` 直接打开它。
 
 ## 写请求：你判断有没有副作用、多严重
 页面发什么就真的发什么（learn 窗口不拦），habit 也不替你判断哪个请求是写：看 endpoint 名、请求体和业务含义。做会引发写请求的操作之前先判断：

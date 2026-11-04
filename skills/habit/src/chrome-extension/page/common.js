@@ -47,6 +47,8 @@
   const isField = (el) => /^(input|textarea|select)$/i.test(el.tagName) || el.isContentEditable;
   // 密码框、隐藏框、信用卡一次性验证码这类字段的值不取
   const sensitiveField = (el) => el.type === "password" || el.type === "hidden" || SENSITIVE_AUTOCOMPLETE.test(el.autocomplete || "");
+  // 敏感输入框（密码、隐藏框、卡号、安全码、一次性验证码）：值不取、不显示、不记日志。a11y.js、host 的输入都用这一个判断
+  T.sensitiveField = (el) => !!el && sensitiveField(el);
   // 输入框的"文字"只取标签类信息，不取已经输入的值
   const label = (el) => {
     const t = el.getAttribute("aria-label") || el.getAttribute("placeholder") || (el.labels && el.labels[0] && el.labels[0].innerText) || el.title || el.name || "";

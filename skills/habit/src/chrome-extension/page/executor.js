@@ -10,9 +10,20 @@
   let inflight = 0;
   const done = () => { inflight--; };
   const prevFetch = window.fetch;
-  window.fetch = function () { inflight++; const p = prevFetch.apply(this, arguments); p.then(done, done); return p; };
+  // 同步抛错（参数不对、状态不对）时也要减回去，否则这个页面永远不算安静
+  window.fetch = function () {
+    inflight++;
+    let p;
+    try { p = prevFetch.apply(this, arguments); } catch (e) { done(); throw e; }
+    p.then(done, done);
+    return p;
+  };
   const prevSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = function () { inflight++; this.addEventListener("loadend", done, { once: true }); return prevSend.apply(this, arguments); };
+  XMLHttpRequest.prototype.send = function () {
+    inflight++;
+    this.addEventListener("loadend", done, { once: true });
+    try { return prevSend.apply(this, arguments); } catch (e) { this.removeEventListener("loadend", done); done(); throw e; }
+  };
 
   // 等页面稳定：没有在途的 fetch / XHR，并且 DOM 静默一小段时间；
   const settle = (timeoutMs, quietMs = 400) => new Promise((resolve) => {

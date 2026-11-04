@@ -437,7 +437,14 @@ export class RunHost {
             await send({ action, keys: a.keys, repeat: a.repeat });
             break;
           }
-          case "type": await send({ action, text: String(a.text ?? "") }); res.chars = String(a.text ?? "").length; break;
+          case "type": {
+            // 焦点在敏感输入框（密码、卡号、验证码）里：照样打字，但日志里不记内容，只记字数
+            const f = (await this.callTab(tab, "focusedSensitive", []).catch(() => ({ sensitive: false }))) as { sensitive: boolean };
+            if (f.sensitive) res.password = true;
+            await send({ action, text: String(a.text ?? "") });
+            res.chars = String(a.text ?? "").length;
+            break;
+          }
           case "form_input": Object.assign(res, await this.formInput(tab, a, to(a), send)); break;
           default: throw new Error(`未知的输入 ${action}`);
         }
@@ -469,7 +476,7 @@ export class RunHost {
       }
       if (a.settle === true) res.settle = await this.quiet(s);
       return res;
-    }, (r: any) => ({ loc: r.loc, ...(action === "type" || action === "form_input" ? (r.password ? {} : { text: String(a.text ?? a.value ?? "").slice(0, 200) }) : {}), url: r.url }));
+    }, (r: any) => ({ loc: r.loc, ...(action === "type" || action === "form_input" ? (r.password ? { chars: String(a.text ?? a.value ?? "").length, sensitive: true } : { text: String(a.text ?? a.value ?? "").slice(0, 200) }) : {}), url: r.url }));
   }
 
   /** form_input：文本框点一下、全选、删掉、插入；复选框状态不对就点一下；下拉框在页面里直接设值（原生下拉的选项 CDP 点不到）。最后核对值。 */

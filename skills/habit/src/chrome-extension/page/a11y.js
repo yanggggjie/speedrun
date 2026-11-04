@@ -174,6 +174,13 @@
     return { target: T.desc(el), loc: T.locOf(el), scrollY: Math.round(window.scrollY) };
   };
 
+  /** 当前焦点是不是敏感输入框（computer type 打的字要不要记进日志）：穿进 shadow DOM 找真正有焦点的元素。 */
+  T.exec.focusedSensitive = () => {
+    let el = document.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    return { sensitive: T.sensitiveField(el) };
+  };
+
   /** 让目标获得焦点（key 带 loc 时用）。 */
   T.exec.focus = async (t) => {
     const el = await elementOf(t);
@@ -214,12 +221,12 @@
   };
   /** 复选框现在勾没勾（form_input 点完核对）。 */
   T.exec.checked = async (t) => { const el = await elementOf(t); const box = el && (el.matches("input") ? el : el.querySelector("input")); return { checked: !!box?.checked }; };
-  /** 输入框现在的值（form_input 填完核对；密码框不回值）。 */
+  /** 输入框现在的值（form_input 填完核对；敏感输入框（密码、卡号、验证码……）不回值，回 password: true）。 */
   T.exec.valueOf = async (t) => {
     const outer = await elementOf(t);
     const el = outer && (/^(input|textarea)$/i.test(outer.tagName) || outer.isContentEditable ? outer : (outer.shadowRoot || outer).querySelector("input, textarea, [contenteditable]")) || outer;
     if (!el) return { value: null };
-    if (el.type === "password") return { value: null, password: true };
+    if (T.sensitiveField(el)) return { value: null, password: true };
     return { value: el.isContentEditable ? clean(el.textContent) : String(el.value ?? "") };
   };
 
@@ -247,7 +254,7 @@
         if (tag === "a" && el.href) line += ` href="${el.href.slice(0, 200)}"`;
         if (tag === "img" && el.src) line += ` src="${el.src.slice(0, 100)}"`;
         if (tag === "input") line += ` type="${el.type || "text"}"`;
-        if (/^(input|textarea)$/.test(tag) && el.value && el.type !== "password" && el.type !== "hidden") line += ` value="${String(el.value).slice(0, 100)}"`;
+        if (/^(input|textarea)$/.test(tag) && el.value && !T.sensitiveField(el)) line += ` value="${String(el.value).slice(0, 100)}"`;
         if (el instanceof HTMLInputElement && /^(checkbox|radio)$/i.test(el.type)) line += ` checked=${el.checked}`;
         for (const a of ["aria-expanded", "aria-checked", "aria-selected", "aria-pressed"]) { const v = el.getAttribute(a); if (v) line += ` ${a.slice(5)}=${v}`; }
         if (el.disabled) line += " disabled";

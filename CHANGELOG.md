@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 敏感输入框（密码、卡号、安全码、一次性验证码）统一判断：`read_page` 不显示它们的值；`form_input` 和 `computer type` 往里面输入时，时间线只记字数、不记内容（以前 `type` 打的字会原样进时间线）。页面里同步抛错的请求不再让页面一直「还在变化」。
 - 页面脚本只进 habit 的标签页：不再作为内容脚本装进所有网页，改成 habit 附着调试器时经 CDP 注册（`Page.addScriptToEvaluateOnNewDocument`、`Runtime.addBinding`，跨站 iframe 用 `Target.setAutoAttach`），用户自己的网页里没有 habit 的任何代码。去掉 `bridge.js`。扩展 ABI 15，升级后扩展会自己重新加载。扩展的 service worker 重启后第一次操作不再被误报成「开着 DevTools」。用户的标签页关了不再通知 daemon。
 - learn 的观察里有同站请求被 401/403 拒、或者页面在登录页时，先提醒「像是登录失效」：先看页面，点一下能登录的自己点，要账号密码、扫码的请用户登录。learn 窗口操作满 200 次的报错改成先停下看卡在哪，确实还要学就开新窗口。
 - 简化命令：`habit run <名>` 跑 action 或 compose（去掉 `--action`、`--compose`、`--compose-code`、`--timeout`）；`habit resume <编号> --answer …` 从 `habit.ask` 停下的地方接着跑（`--description` 说明为什么这样回答）。新增 `habit --help`、`habit learn --help`、`habit run --help`、`habit run <名> --help`（从文件头列参数、时间上限）。
