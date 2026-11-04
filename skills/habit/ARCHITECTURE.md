@@ -125,8 +125,8 @@ daemon 内部分四层，上层只依赖下层：
 - **因果与阶段**（`record/ingest.ts`）：`cause`、`phase` 是启发式，离线读日志用；learn 时以观察（§2.1）为准。
 - **保留**（`record/retention.ts`）：run 窗口目录只留最近的若干个；learn 窗口分两类额度（时间线和请求文件；响应体、页面和截图），超了先删最旧的关着的窗口里的大文件，再删整个窗口。开着的 learn 窗口、每个 endpoint 最近几次成功请求（样本）不动。
 - **endpoints.json**（`record/endpoints.ts`）：只由 learn 窗口的请求增量更新，run 窗口的不进。不排序、不下结论，只给信号。endpoint 名由 `digest.ts` 的 `endpointOf` 算：长数字、哈希、uuid 换成 `:id`，GraphQL 取操作名，同一路径上请求体里的操作名拼在后面（`/graphql#FavoriteTweet`）。
-- **过滤**（`filter.ts`）：adblock 规则加第一方埋点启发式标 `noise`；只存同站的响应体。
-- **脱敏**（`sanitize.ts`）：请求头名、查询参数名、JSON key 里像秘密的，和 JWT，换成稳定的别名 `⟨secret_…⟩`（盐 + 真值的 HMAC，盐在 `~/.habit/alias-salt`）；响应体和页面正文原样写盘。**别名 → 真值的对照表只在 daemon 内存里。**
+- **过滤**（`filter.ts`）：adblock 规则加第一方埋点启发式标 `noise`；只存同站的响应体。adblock 规则缓存在 `~/.habit/adblock-engine.bin`，7 天内用缓存，过期才联网下载；下载失败就用过期的缓存，都没有时只用启发式。
+- **脱敏**（`sanitize.ts`）：请求头名、查询参数名、JSON key（请求体和 JSON 响应体都算）里像秘密的，和 JWT，换成稳定的别名 `⟨secret_…⟩`（盐 + 真值的 HMAC，盐在 `~/.habit/alias-salt`）；HTML（页面快照、HTML 响应体）里密码框、隐藏框、卡号 / 安全码 / 一次性验证码框、名字像秘密的输入框的 `value`，和名字像秘密的 `<meta>`（`csrf-token` 这类）的 `content`，也换成别名。正文里的自由文本、内联脚本不扫描，原样写盘。同一个值的别名总是同一个，所以观察里的「依赖」照样能把请求里的值和前面响应里的对上。**别名 → 真值的对照表只在 daemon 内存里。**
 - 读日志不是命令：agent 直接读文件。隔离不是安全边界——agent 能读所有窗口目录。
 
 ### 数据格式
@@ -166,7 +166,7 @@ daemon 内部分四层，上层只依赖下层：
 
 ## 8. 存储与安装
 
-- 用户数据：`~/.habit/learn-windows`、`~/.habit/run-windows`（日志）、`~/.habit/sites`（`endpoints.json`、`actions/`、`.seq`）、`~/.habit/compose`、`~/.habit/helpers`、`~/.habit/alias-salt`；habit 维护的 `~/.habit/lib`；运行时状态 `~/.habit/session`；运行时代码 `~/.habit/src`。
+- 用户数据：`~/.habit/learn-windows`、`~/.habit/run-windows`（日志）、`~/.habit/sites`（`endpoints.json`、`actions/`、`.seq`）、`~/.habit/compose`、`~/.habit/helpers`、`~/.habit/alias-salt`；habit 维护的 `~/.habit/lib`、`~/.habit/adblock-engine.bin`（adblock 规则的缓存）；运行时状态 `~/.habit/session`；运行时代码 `~/.habit/src`。
 - `setup.js` 把 skill 目录镜像到 `~/.habit`（只排除 `node_modules`、`.DS_Store`；本机数据目录不碰）、装依赖、注册 native host、生成命令、`build` 不同时让旧 daemon 退出（扩展重连时拉起新代码）、运行 `doctor`。
 - 版本：`~/.habit/src/.version` 的 `build`；只有 `setup.js` 发现 `build` 不同、或用户 `habit daemon restart` 时才换代码。`habit doctor` 只读。
 

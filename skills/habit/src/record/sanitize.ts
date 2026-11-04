@@ -66,6 +66,28 @@ export class Sanitizer {
     return out;
   }
 
+  /**
+   * HTML（页面快照、HTML 响应体）：只处理两种最常见的落秘密的地方，其余原样。
+   * - `<input>`：密码框、隐藏框、autocomplete 是卡号 / 安全码 / 一次性验证码 / 密码的、name 像秘密的：value 换成别名；
+   * - `<meta>`：name / property 像秘密的（csrf-token 这类）：content 换成别名。
+   * 页面里内联脚本、正文里的秘密不扫描（和 JSON 的自由文本一样）。
+   */
+  html(text: string): string {
+    return text.replace(/<(input|meta)\b[^>]*>/gi, (tag, kind: string) => {
+      const attr = (name: string): string | undefined => new RegExp(`\\s${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag)?.slice(2).find((x) => x !== undefined);
+      const isInput = kind.toLowerCase() === "input";
+      const sensitive = isInput
+        ? /^(password|hidden)$/i.test(attr("type") ?? "") || /cc-|one-time|password/i.test(attr("autocomplete") ?? "") || SECRET_NAME.test(attr("name") ?? "")
+        : SECRET_NAME.test(attr("name") ?? attr("property") ?? "");
+      if (!sensitive) return tag;
+      const which = isInput ? "value" : "content";
+      return tag.replace(new RegExp(`(\\s${which}\\s*=\\s*)("([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"), (_m, pre: string, _q, a?: string, b?: string, c?: string) => {
+        const raw = a ?? b ?? c ?? "";
+        return raw ? `${pre}"${this.redact(raw)}"` : `${pre}""`;
+      });
+    });
+  }
+
   /** JSON 逐层走，key 像秘密或值是 JWT 的换成别名；parseForm 为真时顶层的表单编码文本先拆成对象。正文里的自由文本不扫描。 */
   body(input: unknown, parseForm = false): unknown {
     const walk = (value: unknown, key = "", depth = 0): unknown => {

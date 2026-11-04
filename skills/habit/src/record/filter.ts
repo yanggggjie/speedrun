@@ -1,9 +1,34 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { HABIT_HOME } from "../utils/constants.ts";
 import { FiltersEngine, Request as FilterRequest } from "@ghostery/adblocker";
 import { isSameSite, parseUrl } from "../utils/url.ts";
 
-/** adblock 规则要联网下载，加载好之前（或离线）只用启发式识别噪声。 */
-export function loadAdblockEngine(): Promise<FiltersEngine> {
-  return FiltersEngine.fromPrebuiltAdsAndTracking(fetch);
+export const ADBLOCK_CACHE = path.join(HABIT_HOME, "adblock-engine.bin");
+const ADBLOCK_MAX_AGE_MS = 7 * 24 * 3600_000;
+
+const fromCache = (file: string): FiltersEngine | undefined => {
+  try { return FiltersEngine.deserialize(new Uint8Array(fs.readFileSync(file))); } catch { return undefined; } // 没有缓存，或库升级后格式不认
+};
+
+/**
+ * adblock 规则：缓存在 ~/.habit/adblock-engine.bin，7 天内直接用缓存，过期才联网下载（daemon 空闲 10 分钟就退出，不能每次启动都下载）。
+ * 下载失败（离线）就用过期的缓存；都没有时只用启发式识别噪声。
+ */
+export async function loadAdblockEngine(file = ADBLOCK_CACHE): Promise<FiltersEngine> {
+  let fresh = false;
+  try { fresh = Date.now() - fs.statSync(file).mtimeMs < ADBLOCK_MAX_AGE_MS; } catch { /* 没有缓存 */ }
+  const cached = fresh ? fromCache(file) : undefined;
+  if (cached) return cached;
+  try {
+    const engine = await FiltersEngine.fromPrebuiltAdsAndTracking(fetch);
+    try { fs.writeFileSync(file, engine.serialize()); } catch { /* 写不了缓存不影响使用 */ }
+    return engine;
+  } catch (error) {
+    const stale = fromCache(file);
+    if (stale) return stale;
+    throw error;
+  }
 }
 
 function adblockMatches(url: string, via: string, sourceUrl: string, engine: FiltersEngine | undefined): boolean {

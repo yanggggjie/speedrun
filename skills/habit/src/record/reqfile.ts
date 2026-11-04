@@ -37,11 +37,12 @@ export function bodyExt(ct: string | undefined | null, text: string): string {
   return "txt";
 }
 
-/** 把响应体变成可 grep 的文本：JSON 就缩进展开（脱敏之后），其它原样。 */
+/** 把响应体变成可 grep 的文本：JSON 就缩进展开（脱敏之后），HTML 脱敏输入框和 meta 里的秘密，其它原样。 */
 export function responseText(sanitizer: Sanitizer, raw: string, ct: string | undefined | null): string {
   if (/json/i.test(ct ?? "") || /^\s*[[{]/.test(raw)) {
     try { return JSON.stringify(sanitizer.body(JSON.parse(raw)), null, 1); } catch { /* 不是合法 JSON：按文本处理 */ }
   }
+  if (/html/i.test(ct ?? "") || /^\s*<(!doctype|html)/i.test(raw)) return sanitizer.html(raw);
   return raw;
 }
 

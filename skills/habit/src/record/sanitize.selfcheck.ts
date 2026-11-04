@@ -48,3 +48,13 @@ assert.throws(() => new Sanitizer("test-key").resolve(aliased), /已失效/, "�
   assert.equal(h["content-type"], "application/json");
 }
 console.log("sanitize.selfcheck ok");
+
+// HTML：密码框、隐藏框、卡号框、像秘密的 meta 换成别名；普通输入框、普通 meta 原样（页面快照不能把秘密写盘，也不能把正常内容弄乱）
+{
+  const sz = new Sanitizer("k");
+  const html = `<meta name="csrf-token" content="CSRF-REAL"><meta name="description" content="hello"><input type="hidden" name="authenticity_token" value='HID-REAL'><input id=u value="alice"><input autocomplete="cc-number" value="4111111111111111"><input type=password value=PW-REAL>`;
+  const out = sz.html(html);
+  for (const real of ["CSRF-REAL", "HID-REAL", "4111111111111111", "PW-REAL"]) assert.ok(!out.includes(real), `${real} 应该被换掉：${out}`);
+  assert.ok(out.includes('content="hello"') && out.includes('value="alice"'), out);
+  assert.equal(sz.resolve(/content="([^"]+)"/.exec(out)![1]!), "CSRF-REAL", "别名能换回真值（只在内存里）");
+}

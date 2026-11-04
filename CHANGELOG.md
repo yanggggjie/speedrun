@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 页面快照和 HTML 响应体也脱敏：密码框、隐藏框、卡号 / 验证码框、名字像秘密的输入框的值，和 `csrf-token` 这类 `<meta>` 的内容，写盘前换成别名（JSON 响应体本来就脱敏）。adblock 规则缓存 7 天，daemon 启动不再每次联网下载。
 - learn 窗口关掉之后（`learn close`、空闲 30 分钟、daemon 重启、扩展重连、标签组被关）句柄只能看日志：再操作会报「已经关了」（退出码 3），要接着学就 `learn new` 开新窗口复现，不再悄悄回到上次的 URL。`habit learn list` 只列开着的。
 - 敏感输入框（密码、卡号、安全码、一次性验证码）统一判断：`read_page` 不显示它们的值；`form_input` 和 `computer type` 往里面输入时，时间线只记字数、不记内容（以前 `type` 打的字会原样进时间线）。页面里同步抛错的请求不再让页面一直「还在变化」。
 - 页面脚本只进 habit 的标签页：不再作为内容脚本装进所有网页，改成 habit 附着调试器时经 CDP 注册（`Page.addScriptToEvaluateOnNewDocument`、`Runtime.addBinding`，跨站 iframe 用 `Target.setAutoAttach`），用户自己的网页里没有 habit 的任何代码。去掉 `bridge.js`。扩展 ABI 15，升级后扩展会自己重新加载。扩展的 service worker 重启后第一次操作不再被误报成「开着 DevTools」。用户的标签页关了不再通知 daemon。

@@ -319,10 +319,11 @@ export class Ingestor {
     this.log.append({ seq, t: msg.t, win, site, src: "agent", tab: msg.tab, type: "snap", kind: str(s.why) ?? "snap", target: `"${String(s.title ?? "").slice(0, 40)}" ${s.interactiveVisible ?? 0}/${s.interactiveTotal ?? 0}`, size: text.length, ...(page ? { page } : {}), file: rel });
   }
 
-  /** 主文档渲染后的 HTML，原样存（内容相同的只存一份）。 */
+  /** 主文档渲染后的 HTML（输入框和 meta 里的秘密换成别名，sanitizer.html），内容相同的只存一份。 */
   private doc(msg: PageMsg, page: string | undefined): void {
-    const html = str(msg.html);
-    if (!html) return;
+    const rawHtml = str(msg.html);
+    if (!rawHtml) return;
+    const html = this.sanitizer.html(rawHtml);
     const url = str(msg.url) ?? "";
     const site = this.siteFor(siteOfUrl(url) || siteOfUrl(str(msg.page)), msg.tab);
     const seq = this.log.reserve();
