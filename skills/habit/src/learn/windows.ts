@@ -60,7 +60,7 @@ export class LearnWindows {
     if (this.log.kindOf(id) !== "learn") return undefined;
     const m = this.log.readMeta(id) as Partial<LearnWindow> | undefined;
     const url = String(m?.url || "<要的页面>");
-    return `learn 窗口 ${id} 已经关了（learn close、空闲 ${LEARN_IDLE_MS / 60_000} 分钟、daemon 重启，或标签组被关掉），只能看它的日志：${this.log.winDir(id)}。要接着学，用 habit learn new --url ${url} --description "…" 开一个新窗口，在新窗口里复现到要的页面状态`;
+    return `learn 窗口 ${id} 已经关了（learn close、空闲 ${LEARN_IDLE_MS / 60_000} 分钟、daemon 重启、扩展重连，或标签组被关掉），只能看它的日志：${this.log.winDir(id)}。要接着学，用 habit learn new --url ${url} --description "…" 开一个新窗口，在新窗口里复现到要的页面状态`;
   }
 
   save(w: LearnWindow): void {
