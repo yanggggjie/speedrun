@@ -1,5 +1,5 @@
 # 运行时 / 本地数据
-.habit/
+.speedrun/
 *.har
 node_modules/
 dist/

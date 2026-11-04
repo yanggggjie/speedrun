@@ -1,12 +1,12 @@
 {
-  "name": "habit-skill-repo",
+  "name": "speedrun-skill-repo",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Dev harness for the habit skill; the shippable package lives in skills/habit/src.",
+  "description": "Dev harness for the speedrun skill; the shippable package lives in skills/spr/src.",
   "scripts": {
-    "check": "npm --prefix skills/habit/src run check",
-    "test": "npm --prefix skills/habit/src run test",
+    "check": "npm --prefix skills/spr/src run check",
+    "test": "npm --prefix skills/spr/src run test",
     "verify:pack": "node tools/verify-pack.mjs"
   },
   "engines": {
