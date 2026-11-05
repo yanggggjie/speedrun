@@ -1,13 +1,5 @@
-<!-- speedrun 图标：整个图标面就是一个 S。由 brand/icon.py 生成，不要手改；设计说明见 brand/icon.md。 -->
+<!-- speedrun 图标：一个折成闪电的 S。由 brand/icon.py 生成，不要手改；设计说明见 brand/icon.md。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="red" gradientUnits="userSpaceOnUse" x1="10" y1="0" x2="90" y2="90"><stop offset="0" stop-color="#FF3B30"/><stop offset="1" stop-color="#D7001A"/></linearGradient>
-    <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="128" y1="60" x2="40" y2="128"><stop offset="0" stop-color="#0B0B0E"/><stop offset="1" stop-color="#26262C"/></linearGradient>
-    <clipPath id="tile"><rect width="128" height="128" rx="30"/></clipPath>
-  </defs>
-  <g clip-path="url(#tile)">
-    <rect width="128" height="128" fill="url(#ink)"/>
-    <path d="M-40 104 C-23.33 104 -6.67 104 14.33 104.67 C35.33 105.33 60.67 106.67 78.33 101.33 C96 96 106 84 102.33 76.67 C98.67 69.33 81.33 66.67 64 64 C46.67 61.33 29.33 58.67 25.67 51.33 C22 44 32 32 49.67 26.67 C67.33 21.33 92.67 22.67 113.67 23.33 C134.67 24 151.33 24 168 24 L200 -60 L-60 -60 Z" fill="url(#red)"/>
-    <path d="M-40 104 C-23.33 104 -6.67 104 14.33 104.67 C35.33 105.33 60.67 106.67 78.33 101.33 C96 96 106 84 102.33 76.67 C98.67 69.33 81.33 66.67 64 64 C46.67 61.33 29.33 58.67 25.67 51.33 C22 44 32 32 49.67 26.67 C67.33 21.33 92.67 22.67 113.67 23.33 C134.67 24 151.33 24 168 24" fill="none" stroke="#FFFFFF" stroke-width="25" stroke-linecap="round"/>
-  </g>
+  <rect width="128" height="128" rx="30" fill="#FFD60A"/>
+  <polygon points="112,12 44,12 18,70 76,70 16,116 84,116 110,58 52,58" fill="#17171C"/>
 </svg>
