@@ -32,6 +32,8 @@ const logger = createLogger("daemon");
 const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 
 let shuttingDown = false;
+/** 等后台关 run 窗口；build() 里接上 runner。 */
+let drainRuns: () => Promise<void> = async () => {};
 let owned: Owned | null = null;
 let extSocket: net.Socket | null = null;
 let lastActivity = Date.now();
@@ -67,6 +69,7 @@ function build() {
   const ingest = new Ingestor(log, { engine: () => adblock, aliasKey: aliasSalt(), raw, winOf: (tab) => win.winOf(tab), index });
   const host = new RunHost({ link, win, ingest, raw });
   const runner = new ActionRunner(host, {}, runWindowsOf(log, win));
+  drainRuns = () => runner.drain();
   const learn = new LearnWindows({ log, host, win });
   const ctx: Ctx = {
     ensureExtension,
@@ -166,6 +169,8 @@ async function shutdown(code: number): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("daemon exit", { code });
+  // 结果返回后 run 窗口在后台关：等它们关完，最多 2 秒，别留下 speedrun 的组
+  await Promise.race([drainRuns().catch(() => {}), new Promise((r) => setTimeout(r, 2000))]);
   try { ingest.flush(); index.flush(); log.close(); } catch (error) { warnCatch("flush on exit")(error); }
   extSocket?.destroy();
   owned?.release(); // 只删 inode 还是自己的 socket 文件

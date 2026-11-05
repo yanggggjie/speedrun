@@ -4,7 +4,8 @@
 // 页面脚本只经这里进 speedrun 的标签页（用户的网页里没有 speedrun 的任何代码）：附着后注册
 //   Page.addScriptToEvaluateOnNewDocument：之后每个新文档都在页面自己的脚本之前执行页面脚本（同站 iframe 也带上）；
 //   Runtime.addBinding：页面脚本调用 window.__sprSend(字符串) 上报，这里收到 Runtime.bindingCalled；
-//   Target.setAutoAttach（flatten）：跨站 iframe 作为子会话附着上来，同样注册后再放行。
+//   Target.setAutoAttach（flatten）：跨站 iframe 作为子会话附着上来，同样注册后再放行；Worker 也这样附着，用 Network 录它的请求。
+// 页面脚本包不住的通道由这里的 Network 事件补上：WebSocket、事件流（SSE）、Worker 里的请求（channels 一节）。
 // 当前已经打开的文档补注入一次（脚本自己防重复）。解除附着后注册跟着没了，下一个文档就没有脚本（当前文档里的还在，拖出组时先 stopPage）。
 import { keySequence, modBits, typeSteps } from "./keys.js";
 
@@ -24,14 +25,81 @@ export function onPageMessage(cb) { onMessage = cb; }
 const childNo = new Map();
 const mac = /Mac/i.test(navigator.userAgent);
 
+// ---- 页面脚本包不住的通道：WebSocket、事件流、Worker 里的请求 ----
+/** 一条消息最多送多少字：心跳和普通消息都远小于它，daemon 再按连接限总量。 */
+const FRAME_MAX = 64 * 1024;
+/** Worker 响应体最多读多少。 */
+const WORKER_BODY_MAX = 1024 * 1024;
+const TEXTY = /json|text|xml|javascript|x-www-form|graphql/i;
+/** 每个标签页的地址（主 frame 导航时更新）：daemon 靠它判断站点。 */
+const pageUrl = new Map();
+/** requestId → 地址：事件流的消息事件不带地址；每个标签页留最近的。 */
+const urlOfRequest = new Map();
+/** Worker 里进行中的请求：sessionId:requestId → 请求信息。 */
+const workerRequests = new Map();
+const workerSessions = new Set();
+const cap = (m) => { if (m.size > 2000) m.delete(m.keys().next().value); };
+const report = (tabId, msg) => onMessage(tabId, 0, JSON.stringify({ top: true, page: pageUrl.get(tabId), msg: { t: Date.now(), ...msg } }));
+
+function socketEvent(tabId, method, p) {
+  if (method === "Network.webSocketCreated") {
+    urlOfRequest.set(p.requestId, p.url); cap(urlOfRequest);
+    report(tabId, { k: "socket", channel: "ws", ev: "open", id: p.requestId, url: p.url });
+  } else if (method === "Network.webSocketClosed") {
+    report(tabId, { k: "socket", channel: "ws", ev: "close", id: p.requestId, url: urlOfRequest.get(p.requestId) });
+  } else if (method === "Network.webSocketFrameSent" || method === "Network.webSocketFrameReceived") {
+    const r = p.response ?? {}, text = r.opcode === 1, data = String(r.payloadData ?? "");
+    report(tabId, { k: "socket", channel: "ws", ev: "frame", id: p.requestId, url: urlOfRequest.get(p.requestId), dir: method.endsWith("Sent") ? "sent" : "received", size: text ? data.length : Math.floor(data.length * 0.75), ...(text ? { data: data.slice(0, FRAME_MAX) } : {}) });
+  } else if (method === "Network.eventSourceMessageReceived") {
+    const data = String(p.data ?? "");
+    report(tabId, { k: "socket", channel: "sse", ev: "frame", id: p.requestId, url: urlOfRequest.get(p.requestId), dir: "received", size: data.length, data: data.slice(0, FRAME_MAX) });
+  }
+}
+
+/** Worker 会话里的请求：和页面里的 fetch 一样报成 net，走同一条收录路径。 */
+async function workerEvent(source, method, p) {
+  const key = `${source.sessionId}:${p.requestId}`;
+  if (method === "Network.requestWillBeSent") {
+    const reqHeaders = {};
+    for (const [k, v] of Object.entries(p.request.headers ?? {})) reqHeaders[k.toLowerCase()] = /^(cookie|set-cookie)$/i.test(k) ? "[redacted]" : String(v).slice(0, 4000);
+    workerRequests.set(key, { t0: Date.now(), url: p.request.url, method: p.request.method, reqHeaders, reqBody: p.request.postData }); cap(workerRequests);
+  } else if (method === "Network.responseReceived") {
+    const r = workerRequests.get(key);
+    if (r) { r.status = p.response.status; r.ct = p.response.mimeType; }
+  } else if (method === "Network.loadingFinished" || method === "Network.loadingFailed") {
+    const r = workerRequests.get(key);
+    if (!r) return;
+    workerRequests.delete(key);
+    let body;
+    if (method === "Network.loadingFinished" && TEXTY.test(r.ct ?? "") && p.encodedDataLength <= WORKER_BODY_MAX) {
+      body = await chrome.debugger.sendCommand(source, "Network.getResponseBody", { requestId: p.requestId }).then((b) => (b.base64Encoded ? undefined : b.body), () => undefined);
+    }
+    report(source.tabId, { k: "net", via: "worker", url: r.url, method: r.method, status: r.status, ct: r.ct, ms: Date.now() - r.t0, reqHeaders: r.reqHeaders, ...(r.reqBody ? { reqBody: r.reqBody } : {}), ...(body !== undefined ? { body } : {}), ...(p.encodedDataLength ? { size: p.encodedDataLength } : {}), ...(method === "Network.loadingFailed" ? { err: p.errorText ?? "failed" } : {}) });
+  }
+}
+
 // 新代码跑在旧 manifest 上（还没有 debugger 权限）：从磁盘重新加载，拿到新的 manifest
 if (!chrome.debugger) setTimeout(() => chrome.runtime.reload(), 500);
 chrome.debugger?.onDetach.addListener((source) => { attached.delete(source.tabId); childNo.delete(source.tabId); });
-chrome.tabs.onRemoved.addListener((tabId) => { attached.delete(tabId); childNo.delete(tabId); });
+chrome.tabs.onRemoved.addListener((tabId) => { attached.delete(tabId); childNo.delete(tabId); pageUrl.delete(tabId); });
 chrome.debugger?.onEvent.addListener((source, method, params) => {
   if (method === "Runtime.bindingCalled" && params.name === BINDING) {
     const no = source.sessionId ? childNo.get(source.tabId)?.get(source.sessionId) ?? 0 : 0;
     onMessage(source.tabId, no, params.payload);
+    return;
+  }
+  // 页面脚本（page/dialogs.js）没接住的系统弹窗：马上关掉，否则它抢前台并卡住这个标签页。离开确认选离开（是 agent 要走），confirm、prompt 选取消
+  if (method === "Page.javascriptDialogOpening") {
+    void chrome.debugger.sendCommand(source, "Page.handleJavaScriptDialog", { accept: params.type === "beforeunload" || params.type === "alert" }).catch(() => {});
+    report(source.tabId, { k: "dialog", kind: params.type, message: String(params.message ?? "").slice(0, 200) });
+    return;
+  }
+  if (method === "Page.frameNavigated" && !source.sessionId && !params.frame?.parentId) { pageUrl.set(source.tabId, params.frame.url); return; }
+  if (method === "Page.navigatedWithinDocument" && !source.sessionId) { pageUrl.set(source.tabId, params.url); return; }
+  if (method.startsWith("Network.")) {
+    if (source.sessionId && workerSessions.has(source.sessionId)) { void workerEvent(source, method, params).catch(() => {}); return; }
+    if (method === "Network.requestWillBeSent") { urlOfRequest.set(params.requestId, params.request.url); cap(urlOfRequest); return; }
+    socketEvent(source.tabId, method, params);
     return;
   }
   // 子会话（跨站 iframe）附着上来时是暂停的：iframe 注册页面脚本后放行，其它类型直接放行。只处理标签页会话下的子会话
@@ -40,7 +108,9 @@ chrome.debugger?.onEvent.addListener((source, method, params) => {
     let m = childNo.get(source.tabId);
     if (!m) childNo.set(source.tabId, (m = new Map()));
     m.set(params.sessionId, m.size + 1);
-    const prepare = params.targetInfo?.type === "iframe" ? register(child) : Promise.resolve();
+    const type = params.targetInfo?.type;
+    if (type === "worker") workerSessions.add(params.sessionId);
+    const prepare = type === "iframe" ? register(child) : type === "worker" ? chrome.debugger.sendCommand(child, "Network.enable") : Promise.resolve();
     void prepare.catch(() => {}).then(() => chrome.debugger.sendCommand(child, "Runtime.runIfWaitingForDebugger").catch(() => {}));
   }
 });
@@ -52,6 +122,7 @@ async function register(target) {
   await chrome.debugger.sendCommand(target, "Runtime.enable");
   await chrome.debugger.sendCommand(target, "Runtime.addBinding", { name: BINDING });
   await chrome.debugger.sendCommand(target, "Page.addScriptToEvaluateOnNewDocument", { source: pageScript });
+  await chrome.debugger.sendCommand(target, "Network.enable");
   await chrome.debugger.sendCommand(target, "Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
 }
 
@@ -73,6 +144,7 @@ export async function attach(tabId) {
       await chrome.debugger.attach({ tabId }, "1.3");
     }
     attached.add(tabId);
+    void chrome.tabs.get(tabId).then((t) => { if (!pageUrl.has(tabId)) pageUrl.set(tabId, t.url); }, () => {});
     try {
       await register({ tabId });
       // 当前已经打开的文档补注入（新文档由注册接管）；脚本自己防重复

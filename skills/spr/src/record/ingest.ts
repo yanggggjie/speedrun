@@ -6,7 +6,7 @@ import type { EndpointIndex } from "./endpoints.ts";
 import { noiseReason, shouldStoreBody } from "./filter.ts";
 import type { RawStore } from "./raw.ts";
 import { docOf } from "./headers.ts";
-import { bodyExt, hashText, pageSlug, requestBodyValue, requestStem, responseText } from "./reqfile.ts";
+import { bodyExt, hashText, pageSlug, requestBodyValue, requestStem, responseText, slug } from "./reqfile.ts";
 import { Sanitizer } from "./sanitize.ts";
 import type { WindowLog } from "./windowlog.ts";
 import { USER_WIN, type ParsedUrl, type Phase, type RequestFile, type Row, type Src } from "./types.ts";
@@ -25,6 +25,15 @@ const FLUSH_MS = 100;
 /** 站点判断不出来的行（chrome:// 页面的命令记录等）的 site。 */
 export const OTHER_SITE = "_other";
 const MAX_TAB_STATE = 2_000;
+/** 一条连接的摘要行最快这么久写一次：心跳不把时间线写满。观察前 flushSockets 补齐。 */
+const SOCKET_ROW_MS = 2_000;
+/** 一条连接最多落盘这么多字节的消息内容，超了只计数。 */
+const SOCKET_FILE_MAX = 5 * 1024 * 1024;
+
+/** 一条 WebSocket 或事件流。 */
+type SocketState = { win: string; tab: number; site: string; url: string; channel: string; file: string; sent: number; received: number; bytes: number; stored: number; dirty: boolean; lastRow: number; frame?: number };
+/** 收到的一条消息（原文，只在内存里交给 waitMessage）。 */
+export type SeenMessage = { win: string; url: string; channel: string; data: string };
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
@@ -65,6 +74,11 @@ export class Ingestor {
   /** 收录了一个页面发出的请求：waitRequest 在这里拿原始响应（不经过日志文件、不脱敏，和 request() 返回的一样）。 */
   private readonly seenListeners = new Set<(r: SeenRequest) => void>();
   onRequest(fn: (r: SeenRequest) => void): () => void { this.seenListeners.add(fn); return () => this.seenListeners.delete(fn); }
+  private readonly messageListeners = new Set<(m: SeenMessage) => void>();
+  onMessage(fn: (m: SeenMessage) => void): () => void { this.messageListeners.add(fn); return () => this.messageListeners.delete(fn); }
+  private readonly sockets = new Map<string, SocketState>();
+  private readonly dialogListeners = new Set<(win: string, note: string) => void>();
+  onDialog(fn: (win: string, note: string) => void): () => void { this.dialogListeners.add(fn); return () => this.dialogListeners.delete(fn); }
   private queue: PageMsg[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -172,6 +186,12 @@ export class Ingestor {
     if (pageSite) { this.tabSite.set(msg.tab, pageSite); trimMap(this.tabSite); }
     switch (msg.k) {
       case "net": return this.net(msg, page);
+      case "socket": return this.socket(msg);
+      case "dialog": {
+        const kind = str(msg.kind) ?? "dialog", note = `${kind}${str(msg.message) ? `：${str(msg.message)}` : ""}`;
+        for (const fn of this.dialogListeners) { try { fn(win, note); } catch { /* 订阅者的错不影响收录 */ } }
+        return void this.emit(pageSite, msg, { type: "tab", src: "page", via: "dialog", target: note, ...(page ? { page } : {}) });
+      }
       case "nav": {
         const url = this.bare(str(msg.url) ?? "");
         const site = siteOfUrl(str(msg.url)) || pageSite;
@@ -190,6 +210,46 @@ export class Ingestor {
   }
 
   private bare(url: string): string { return parseUrl(url).bareUrl; }
+
+  /** WebSocket、事件流：连接只记摘要行；内容脱敏后写进 sockets/<编号>-<host>.jsonl，一条连接有总量上限。原文只在内存里交给 waitMessage。 */
+  private socket(msg: PageMsg): void {
+    const id = `${msg.tab}:${str(msg.id) ?? ""}`, rawUrl = str(msg.url) ?? "", ev = str(msg.ev);
+    const win = this.winOf(msg.tab);
+    let s = this.sockets.get(id);
+    if (!s) {
+      const seq = this.log.reserve();
+      const safe = this.sanitizer.url(rawUrl);
+      s = { win, tab: msg.tab, site: this.siteFor(siteOfUrl(str(msg.page)), msg.tab), url: safe.bareUrl, channel: str(msg.channel) ?? "ws", file: `sockets/${String(seq).padStart(6, "0")}-${slug(safe.bareUrl, 40)}.jsonl`, sent: 0, received: 0, bytes: 0, stored: 0, dirty: true, lastRow: 0, ...(msg.frame ? { frame: msg.frame } : {}) };
+      this.sockets.set(id, s);
+      trimMap(this.sockets);
+    }
+    if (ev === "frame") {
+      const dir = str(msg.dir) === "sent" ? "sent" : "received", size = num(msg.size) ?? 0, data = str(msg.data);
+      s[dir]++;
+      s.bytes += size;
+      s.dirty = true;
+      if (s.stored < SOCKET_FILE_MAX) {
+        const line = `${JSON.stringify({ t: msg.t, dir, size, ...(data !== undefined ? { data: responseText(this.sanitizer, data, /^\s*[[{]/.test(data) ? "application/json" : "text/plain") } : { binary: true }) })}\n`;
+        s.stored += line.length;
+        this.log.appendFile(s.win, s.file, line);
+      }
+      if (dir === "received" && data !== undefined) for (const fn of this.messageListeners) { try { fn({ win, url: rawUrl, channel: s.channel, data }); } catch { /* 订阅者的错不影响收录 */ } }
+    }
+    if (ev === "close" || msg.t - s.lastRow >= SOCKET_ROW_MS) this.socketRow(s, msg.t);
+    if (ev === "close") this.sockets.delete(id);
+  }
+
+  private socketRow(s: SocketState, t: number): void {
+    if (!s.dirty) return;
+    s.dirty = false;
+    s.lastRow = t;
+    this.log.append({ seq: this.log.reserve(), t, win: s.win, site: s.site, src: "agent", tab: s.tab, ...(s.frame ? { frame: s.frame } : {}), type: "socket", channel: s.channel, url: s.url, sent: s.sent, received: s.received, bytes: s.bytes, file: s.file } as Row);
+  }
+
+  /** 观察前把攒着的连接摘要写出来。 */
+  flushSockets(): void {
+    this.log.batch(() => { for (const s of this.sockets.values()) this.socketRow(s, Date.now()); });
+  }
 
   private siteFor(site: string | undefined, tab: number): string { return site || this.tabSite.get(tab) || OTHER_SITE; }
 

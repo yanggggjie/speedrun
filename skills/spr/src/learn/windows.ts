@@ -14,7 +14,10 @@ export const LEARN_IDLE_MS = 30 * 60_000;
  * 不能再操作，要接着学就 learn new 开一个新窗口，在新窗口里复现。日志和 meta.json 留在 learn-windows/<句柄>/。
  * url、title 是最近一次看到的页面；cursor 是观察的游标（这个编号之前的都观察过了）；open 是 speedrun 组已经开出来了。
  */
-export type LearnWindow = { id: string; site: string; description: string; url: string; title: string; cursor: number; ops: number; open: boolean; createdAt: number; lastActive: number };
+export type LearnWindow = { id: string; site: string; description: string; url: string; title: string; cursor: number; ops: number; open: boolean; createdAt: number; lastActive: number ; page?: PageSignals; apiUrl?: string; trace?: { until: number; paths: string[] } };
+
+/** 页面函数快照给观察的信号：页面主体是不是 canvas、页面接口的线索；fresh 是这次观察还没说过。 */
+export type PageSignals = { canvas: boolean; api: string[]; dir: string; fresh: boolean };
 
 /** 句柄的样子：站点目录名加 8 位日期加 6 位时间（可能带 -2 这样的重名后缀）。 */
 export const HANDLE = /^[A-Za-z0-9._-]+-\d{8}-\d{6}(?:-\d+)?$/;

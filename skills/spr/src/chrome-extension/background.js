@@ -29,7 +29,7 @@ const HOST = "com.speedrun.connect";
 /** 和 daemon 断开后固定隔这么久重连（relay 自己会等 daemon 起来；alarm 兜底 service worker 被停掉的情况）。 */
 const RETRY_MS = 1000;
 const KEEPALIVE_MINUTES = 0.5;
-const PAGE_FILES = ["page/common.js", "page/a11y.js", "page/recorder.js", "page/executor.js", "page/newtab.js"];
+const PAGE_FILES = ["page/common.js", "page/a11y.js", "page/recorder.js", "page/executor.js", "page/newtab.js", "page/dialogs.js"];
 // 页面脚本：连成一段，附着 speedrun 的标签页时经 CDP 注册（cdp.js）
 const pageScriptReady = Promise.all(PAGE_FILES.map((f) => fetch(chrome.runtime.getURL(f)).then((r) => r.text()))).then((parts) => setPageScript(parts.join("\n;\n")));
 const GROUP_TITLE = "speedrun"; // 所有 speedrun 组的标题（daemon 的 browser/window.ts 同名常量）

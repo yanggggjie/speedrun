@@ -18,7 +18,7 @@ export type Outcome = (
   | { status: "success"; result: unknown }
   | { status: "failure"; error: string; failedAction?: string; page?: FailurePage; hint?: string }
   | { status: "ask"; question: string; data: unknown; journal: JournalEntry[]; code?: string }
-) & { runWindow?: string; drafts?: string[]; sent?: string[] };
+) & { runWindow?: string; drafts?: string[]; sent?: string[]; dialogs?: string[] };
 
 const ASK_DATA_LIMIT = 100 * 1024;
 
@@ -38,8 +38,8 @@ const MAX_LOG_LINES = 50;
  * run 窗口的开和关：每次 run 新开一个（open 返回窗口名，也是 agent 窗口的 key 和日志目录名），跑完关掉浏览器窗口（日志目录留着）。
  * failureFile：失败截图存在哪（不含扩展名）。daemon 里接到 AgentWindows 和 WindowLog；自检里用假的。
  */
-export type RunWindows = { open(label: string, meta: Record<string, unknown>): string; close(key: string): Promise<void>; failureFile(key: string): string };
-const NO_WINDOWS: RunWindows = { open: (label) => label, close: async () => {}, failureFile: (key) => path.join(SESSION_DIR, `${key}-failure`) };
+export type RunWindows = { open(label: string, meta: Record<string, unknown>): string; close(key: string): Promise<void>; failureFile(key: string): string; shotFile(key: string): string };
+const NO_WINDOWS: RunWindows = { open: (label) => label, close: async () => {}, failureFile: (key) => path.join(SESSION_DIR, `${key}-failure`), shotFile: (key) => path.join(SESSION_DIR, `${key}-${Date.now()}`) };
 
 /** daemon 里的 run 窗口：名字 <action 或 compose 名>-<时间>，日志在 run-windows/<名字>/，跑完关掉浏览器窗口。 */
 export function runWindowsOf(log: Pick<WindowLog, "freshName" | "openWindow" | "winDir">, win: Pick<AgentWindows, "dispose">): RunWindows {
@@ -51,6 +51,7 @@ export function runWindowsOf(log: Pick<WindowLog, "freshName" | "openWindow" | "
     },
     close: (key) => win.dispose(key),
     failureFile: (key) => path.join(log.winDir(key), "screenshots", "failure"),
+    shotFile: (key) => path.join(log.winDir(key), "screenshots", `action-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`),
   };
 }
 
@@ -64,6 +65,8 @@ export class ActionRunner {
   private readonly windows: RunWindows;
   /** 停在 spr.ask 的 run 的恢复记录。 */
   readonly asks = new PendingAsks();
+  /** 正在后台关的 run 窗口：结果先返回，daemon 退出前等它们关完（drain）。 */
+  private readonly closing = new Set<Promise<void>>();
   /** 单个 action 的超时（自检里调小）；默认按文件头的 @timeout 或 ACTION_TIMEOUT_MS。 */
   timeoutOverrideMs: number | undefined;
 
@@ -106,12 +109,21 @@ export class ActionRunner {
       if (out.status === "failure" && !nested) this.addRejected(out, key);
       if (out.status === "success" && summary.status === "draft") session.draftsOk.push(file);
       if (nested) { nested.tab = session.tab; nested.origin = session.origin; nested.fresh = session.fresh; nested.draftsOk.push(...session.draftsOk); }
-      else { out.runWindow = key; out.drafts = [...session.draftsOk]; out.sent = this.host.takeSent(key); }
+      else { out.runWindow = key; out.drafts = [...session.draftsOk]; out.sent = this.host.takeSent(key); out.dialogs = this.host.takeDialogs(key); }
       return out;
     } finally {
-      if (!nested) { this.host.takeSent(key); await this.host.end(session); await this.windows.close(key); }
+      if (!nested) { this.host.takeSent(key); await this.host.end(session); this.closeLater(key); }
     }
   }
+
+  /** 关 run 窗口不挡结果：关标签组要 0.1～0.5 秒，每个 run 都等就白白变慢。关失败不影响这次结果，daemon 重启时组也会被清掉。 */
+  private closeLater(key: string): void {
+    const p: Promise<void> = this.windows.close(key).catch(() => {}).finally(() => { this.closing.delete(p); });
+    this.closing.add(p);
+  }
+
+  /** 等后台关窗口都做完（daemon 退出前），否则会留下 speedrun 的组。 */
+  async drain(): Promise<void> { await Promise.all([...this.closing]); }
 
   /** 失败时，这个窗口里有请求被 401/403 拒过：把抄了什么、没抄什么、下一步放在 hint 最前面。 */
   private addRejected(out: Outcome, key: string): void {
@@ -142,6 +154,15 @@ export class ActionRunner {
     } finally {
       fs.rmSync(tmp, { force: true });
     }
+  }
+
+  /** action 里的截图：图存进窗口目录，只把路径交回去，图的内容不经过结果和上下文。 */
+  private async shoot(session: Session, args: Record<string, unknown>): Promise<{ file: string; w: number; h: number; vw: number; vh: number }> {
+    const r = (await this.host.op(session, "screenshot", args)) as { data: string; mime: string; w: number; h: number; vw: number; vh: number };
+    const file = `${this.windows.shotFile(session.key)}.${r.mime.includes("png") ? "png" : "jpg"}`;
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, Buffer.from(r.data, "base64"), { mode: 0o600 });
+    return { file, w: r.w, h: r.h, vw: r.vw, vh: r.vh };
   }
 
   /**
@@ -198,7 +219,8 @@ export class ActionRunner {
             if (askState) askState.journal[i] = { name, params: p, result: o.result };
             return o.result;
           });
-        } else run = this.host.op(session, m.op, m.args);
+        } else if (m.op === "screenshot") run = this.shoot(session, m.args);
+        else run = this.host.op(session, m.op, m.args);
         run.then((result) => reply({ result: result ?? null }), (e: unknown) => reply({ error: e instanceof Error ? e.message : String(e) }));
       });
     });

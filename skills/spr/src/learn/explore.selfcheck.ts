@@ -1,7 +1,7 @@
 // 观察里列什么：要包含 GET，但不能把静态资源、轮询、噪声列进去（折叠成计数）；
 // 依赖链要能认出来（拿凭证 → 提交）；没有响应体要写出原因，agent 才知道转 DOM。
 import assert from "node:assert/strict";
-import { dependencies, describeRequest, isPeriodic, shownRequests } from "./explore.ts";
+import { dependencies, describeRequest, isPeriodic, shownRequests, relevance } from "./explore.ts";
 import type { RequestFile, Row } from "../record/types.ts";
 
 const req = (seq: number, over: Partial<Row>): Row => ({ seq, t: seq, win: "x.com-20261101-120000", src: "agent", tab: 1, type: "request", requestType: "fetch", method: "GET", url: `https://x.com/api/${seq}`, endpoint: `GET /api/${seq}`, phase: "cmd", ...over });
@@ -49,4 +49,13 @@ assert.deepEqual(dependencies([req(31, {}), req(32, {})], (q) => aliased[q], (f)
 assert.deepEqual(dependencies([req(31, {}), req(32, {}), req(33, {})], (q) => files[q], (f) => (f.responseBodyPath ? bodies[f.responseBodyPath] : undefined), undefined, new Set([32])), [{ from: 31, to: 32, field: "data.token" }], "更早的请求能当来源");
 assert.deepEqual(dependencies([req(31, {}), req(32, {})], (q) => files[q], (f) => (f.responseBodyPath ? bodies[f.responseBodyPath] : undefined), undefined, new Set([31])), [], "不在 onlyTo 里的不报");
 
+// 相关性只排序：操作引发的、内容对得上的靠前，配置和上报靠后
+{
+  const op = req(101, { endpoint: "GET /api/search", phase: "cmd", status: 200 });
+  const cfg = req(102, { endpoint: "POST /cgi/grayconfig/queryKeys", phase: "load", status: 200 });
+  const rep = req(103, { endpoint: "POST /wl/api/v1/open/report", phase: "cmd", status: 400 });
+  assert.ok(relevance(op, undefined) > relevance(cfg, undefined), "操作引发的排在配置前面");
+  assert.ok(relevance(op, undefined) > relevance(rep, undefined), "上报和失败靠后");
+  assert.ok(relevance(req(104, { endpoint: "GET /api/list", phase: "load", status: 200 }), undefined, { input: true }) > relevance(op, undefined), "内容能对上的最靠前");
+}
 console.log("explore.selfcheck ok");

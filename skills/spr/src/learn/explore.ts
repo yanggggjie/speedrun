@@ -38,10 +38,29 @@ export function describeRequest(r: Row, file: RequestFile | undefined, opts: { o
   return { line: `#${r.seq} ${r.endpoint ?? `${r.method ?? "?"} ${r.url ?? ""}`}${opts.other ? `（${opts.other}）` : ""} → ${r.status ?? "?"} ${ct}，${body}，${r.file ?? "（没有请求文件）"}${opts.known ? `（以前：${opts.known}）` : ""}`, readable };
 }
 
+/** 路径里的这些词多半是配置和上报，不是业务接口。 */
+const LOW_VALUE = /(?:^|[/_.-])(?:report|reports|log|logs|track|tracking|metric|metrics|stats?|gray|grayconfig|config|configs|version|ping|beacon|collect|telemetry|monitor)(?:$|[/_.?-])/i;
+
+/** 内容能对上的证据：请求里出现了 agent 输入的值、响应里出现了页面上的文字。 */
+export type RelevanceHints = { input?: boolean; pageText?: boolean };
+
+/** 请求和这一步的相关程度：只用来排序，不用来丢请求；分数低的折叠成数量。 */
+export function relevance(r: Row, file: RequestFile | undefined, hints: RelevanceHints = {}): number {
+  let n = 0;
+  if (hints.input) n += 4;
+  if (hints.pageText) n += 4;
+  if (r.phase === "cmd" || r.cause !== undefined) n += 3;
+  if (r.phase === "idle") n -= 1;
+  if (file?.responseBodyPath && /json/i.test(file.responseHeaders?.["content-type"] ?? "")) n += 1;
+  if (LOW_VALUE.test(r.endpoint ?? r.url ?? "")) n -= 3;
+  if ((r.status ?? 200) >= 400) n -= 2;
+  return n;
+}
+
 export type Dependency = { from: number; to: number; field: string };
 
 /** 把响应体里长度 ≥ 6 的字符串和数字值连同路径收集起来（只取第一次出现的位置）。 */
-function valuesOf(text: string): Map<string, string> {
+export function valuesOf(text: string): Map<string, string> {
   const out = new Map<string, string>();
   let json: unknown;
   try { json = JSON.parse(text); } catch { return out; }

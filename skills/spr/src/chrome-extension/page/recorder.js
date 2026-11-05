@@ -1,6 +1,6 @@
 // 页面里（MAIN world）的录制：fetch / XHR 的请求与响应、主文档的渲染结果、导航、页面快照。
 // 只在 speedrun 的标签页里（扩展经 CDP 注入）；被拖出组后 common.js 的 T.stop 让它停止上报；只如实上报发生的事，不改变页面行为。不记输入事件：agent 窗口里的操作都是 agent 的，由 daemon 记成 cmd 行。
-// 不录 WebSocket、sendBeacon、Worker 里的请求。
+// WebSocket、事件流、Worker 里的请求由扩展的 Network 事件录（cdp.js）；sendBeacon 大多是埋点，不录。
 (() => {
   const T = window.__spr;
   if (!T || T.recorder) return;

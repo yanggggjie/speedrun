@@ -37,7 +37,7 @@ export function isSameSite(a: ParsedUrl, b: ParsedUrl): boolean {
 
 /**
  * 站点：页面的 host（非默认端口带上），小写，去掉前导 www.；不是 http(s) 网址返回空串。
- * 不用注册域名：example.com 下的 expt、console、logs 是不同的系统，mail.google.com 和 docs.google.com 也是。
+ * 不用注册域名：example.com 下的 a、b、c 可以是不同的系统，mail.google.com 和 docs.google.com 也是。
  */
 export function siteOfUrl(raw: string | undefined): string {
   try {

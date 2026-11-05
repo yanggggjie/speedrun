@@ -3,8 +3,8 @@
  * page 只在摄入时用（页面脚本触发的），写入时记为 agent。
  */
 export type Src = "agent" | "page";
-/** request 是 fetch / XHR，cmd 是 agent 的命令记录（每一步操作），doc 是主文档渲染后的 HTML，snap 是页面快照（a11y 是 read_page 的 a11y 树）。 */
-export type RowType = "request" | "nav" | "doc" | "snap" | "cmd" | "tab";
+/** request 是 fetch / XHR / Worker 里的请求，socket 是 WebSocket 或事件流的摘要（一条连接累计的消息数），cmd 是 agent 的命令记录（每一步操作），doc 是主文档渲染后的 HTML，snap 是页面快照（a11y 是 read_page 的 a11y 树）。 */
+export type RowType = "request" | "socket" | "nav" | "doc" | "snap" | "cmd" | "tab";
 /** 请求发生的阶段：load 是页面刚加载（或单页应用刚路由）的那几秒，cmd 是 agent 的命令引发的，idle 是轮询、后台自发。 */
 export type Phase = "load" | "cmd" | "idle";
 
@@ -48,6 +48,11 @@ export type Row = {
   cause?: number;
   causeDt?: number;
   phase?: Phase;
+  /** socket：ws 或 sse；sent、received 是这条连接到现在累计的消息数，bytes 是累计字节，消息内容在 file 指向的 sockets/ 文件里。 */
+  channel?: string;
+  sent?: number;
+  received?: number;
+  bytes?: number;
   /** nav / tab：load、pushState、popstate…。 */
   via?: string;
   /** 指向请求文件、页面或截图，路径相对窗口目录：`requests/001203-GET-api-v4-search_v3.json`。 */

@@ -92,6 +92,8 @@ npm run verify:pack
 
 日常 Chrome 里测试时日志含登录态内容，在 `~/.speedrun/learn-windows`、`~/.speedrun/run-windows`；测完删除测试用的窗口目录。
 
+7. 输出遵循渐进式发现：默认只给结论和线索，每层说明下一步去哪看。加一条输出前问：它会改变 agent 的下一步吗；需要时找得到吗；有上限吗，超了有没有说明还有多少、在哪里。
+
 ### 2.4 图标
 
 图标在仓库根目录的 `brand/`，不进 payload。参数都在 `brand/icon.py`，设计依据和参数说明见 `brand/icon.md`。改完参数运行 `node brand/make-icons.mjs`（需要本机 python3 和 Chrome），它先生成 `brand/icon.svg`，再出 `skills/spr/src/chrome-extension/icons/` 下 16、32、48、128 四个 PNG；之后 `node skills/spr/setup.js` 重装（扩展会自动重新加载）。

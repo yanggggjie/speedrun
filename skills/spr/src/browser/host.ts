@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionLink } from "./extension.ts";
-import type { Ingestor, SeenRequest } from "../record/ingest.ts";
+import type { Ingestor, SeenMessage, SeenRequest } from "../record/ingest.ts";
 import type { RawEntry, RawStore } from "../record/raw.ts";
 import type { AuthSnapshot } from "../record/auth.ts";
 import { endpointKey, endpointOf } from "../record/digest.ts";
@@ -44,6 +44,7 @@ function rejectHint(endpoint: string, status: number, src: RequestSource): strin
 export type FailurePage = { url: string; title: string; screenshot?: string };
 
 type Wait = { key: string; method: string; path: string; pattern: RegExp; others: string[]; hit?: SeenRequest; resolve?: (r: SeenRequest | undefined) => void };
+type MessageWait = { key: string; url: string; match?: string; hit?: SeenMessage; resolve?: (m: SeenMessage | undefined) => void };
 /** 不算进「已发出的非 GET 请求」的方法。 */
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const pathOf = (url: string): string => { try { return new URL(url).pathname; } catch { return url.split("?")[0]!; } };
@@ -68,6 +69,10 @@ export class RunHost {
   /** waitRequest 登记的等待：只收登记之后、这个 agent 窗口里发出的请求。 */
   private readonly waits = new Map<number, Wait>();
   private nextWait = 1;
+  /** 这个窗口里被拦下的系统弹窗（离开确认、alert、confirm、prompt）：run 结束时列给 agent。 */
+  private readonly dialogs = new Map<string, string[]>();
+  /** waitMessage 登记的等待：只收登记之后、这个窗口收到的 WebSocket 和事件流消息。 */
+  private readonly messageWaits = new Map<number, MessageWait>();
   /** 正在统计非 GET 请求的窗口（run 窗口的名字，或正在 run action 的 learn 窗口句柄）：endpoint → 次数。 */
   private readonly sent = new Map<string, Map<string, number>>();
   /** 每个窗口最近一次被 401/403 拒的说明。 */
@@ -75,6 +80,8 @@ export class RunHost {
   constructor(deps: HostDeps) {
     this.d = deps;
     deps.ingest.onRequest?.((r) => this.seen(r));
+    deps.ingest.onMessage?.((m) => this.heard(m));
+    deps.ingest.onDialog?.((win, note) => { const l = this.dialogs.get(win) ?? []; if (l.length < 20) l.push(note); this.dialogs.set(win, l); });
   }
 
   /**
@@ -104,6 +111,44 @@ export class RunHost {
       w.hit = r;
       w.resolve?.(r);
     }
+  }
+
+  /** 取走这个窗口被拦下的系统弹窗。 */
+  takeDialogs(key: string): string[] {
+    this.d.ingest.flush();
+    const l = this.dialogs.get(key) ?? [];
+    this.dialogs.delete(key);
+    return l;
+  }
+
+  private heard(m: SeenMessage): void {
+    for (const w of this.messageWaits.values()) {
+      if (w.hit || w.key !== m.win || !m.url.includes(w.url) || (w.match !== undefined && !m.data.includes(w.match))) continue;
+      w.hit = m;
+      w.resolve?.(m);
+    }
+  }
+
+  private async messageEnd(a: { id: number; timeout?: number }): Promise<{ url: string; channel: string; data: string }> {
+    const w = this.messageWaits.get(Number(a.id));
+    if (!w) throw new Error("waitMessage 的等待已经结束");
+    const ms = a.timeout ?? WAIT_REQUEST_MS;
+    try {
+      const m = w.hit ?? await new Promise<SeenMessage | undefined>((resolve) => { w.resolve = resolve; setTimeout(() => resolve(undefined), ms); });
+      if (!m) throw new Error(`等了 ${Math.round(ms / 1000)} 秒没等到 ${w.url} 的消息${w.match !== undefined ? `（要含「${w.match}」）` : ""}`);
+      return { url: this.d.ingest.sanitizer.url(m.url).bareUrl, channel: m.channel, data: m.data };
+    } finally { this.messageWaits.delete(Number(a.id)); }
+  }
+
+  /**
+   * 在页面里执行一个函数，不记时间线、不算命令：learn 的页面函数快照和 trace 用，它们不是 agent 的操作，不能抢走请求的因果。
+   * fn 只能用自己的参数；没有页面时返回 undefined。
+   */
+  async peek<T>(s: Session, fn: (...args: never[]) => T, args: unknown[] = []): Promise<T | undefined> {
+    if (s.tab === undefined) return undefined;
+    const done = this.d.win.busy(s.tab);
+    try { return ((await withTimeout(this.d.link.request("evaluate", { tabId: s.tab, src: fn.toString(), args }), STEP_TIMEOUT_MS, "evaluate")) as { v: T }).v; }
+    finally { done(); }
   }
 
   /** 把 session 绑到 origin 的标签页：已经是就复用，否则还回去再拿一个（池里有同站点空闲的就直接用）。 */
@@ -138,6 +183,7 @@ export class RunHost {
 
   async end(s: Session): Promise<void> {
     for (const [id, w] of this.waits) if (w.key === s.key) this.waits.delete(id); // action 中途失败没等完的
+    for (const [id, w] of this.messageWaits) if (w.key === s.key) this.messageWaits.delete(id);
     if (s.tab !== undefined) this.d.win.release(s.tab);
     s.tab = undefined;
     s.origin = undefined;
@@ -195,6 +241,9 @@ export class RunHost {
       case "waitStart": return this.waitStart(s, a);
       case "waitEnd": return this.waitEnd(s, a);
       case "waitCancel": { this.waits.delete(Number(a.id)); return {}; }
+      case "messageStart": { const id = this.nextWait++; this.messageWaits.set(id, { key: s.key, url: String(a.url), ...(a.match !== undefined ? { match: String(a.match) } : {}) }); return { id }; }
+      case "messageEnd": return this.messageEnd(a);
+      case "messageCancel": { this.messageWaits.delete(Number(a.id)); return {}; }
       case "eval": {
         const tab = this.page(s);
         return this.log(tab, "eval", String(a.src).slice(0, 60), { src: String(a.src).slice(0, 2000) }, async () => {
@@ -279,7 +328,7 @@ export class RunHost {
     let target: URL;
     try { target = new URL(a.url); } catch { throw new Error(`request 需要完整的网址：${a.url}`); }
     // 在当前页面上发：和它同 origin，或者这个页面在这次窗口里自己往这个 origin 发过请求（跨域是页面本来就在做的，CORS 放行）。
-    // 只看注册域名不够：同一个公司域名下的不同产品（app.example.com 和 app.example.com）互不放行跨域，从别的页面发会被 403。其余在请求自己的 origin 上开页面发
+    // 只看注册域名不够：同一个公司域名下的不同产品（a.example.com 和 b.example.com）互不放行跨域，从别的页面发会被 403。其余在请求自己的 origin 上开页面发
     const tab = s.tab !== undefined && s.origin && (s.origin === target.origin || this.pageCalled(s, target.origin)) ? this.page(s) : await this.bind(s, target.origin);
     let body: string | null = null;
     if (a.json !== undefined) body = JSON.stringify(a.json);
@@ -444,6 +493,7 @@ export class RunHost {
             break;
           }
           case "type": {
+            if (a.ref || a.loc !== undefined) Object.assign(res, await this.callTab(tab, "focus", [to(a)]));
             // 焦点在敏感输入框（密码、卡号、验证码）里：照样打字，但日志里不记内容，只记字数
             const f = (await this.callTab(tab, "focusedSensitive", []).catch(() => ({ sensitive: false }))) as { sensitive: boolean };
             if (f.sensitive) res.password = true;

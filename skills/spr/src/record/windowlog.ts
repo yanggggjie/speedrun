@@ -35,7 +35,7 @@ export function stamp(t: number): string {
 
 /** 响应体、页面、截图是响应体、页面和截图；meta、时间线、请求文件是时间线和请求文件。参数是窗口内的相对路径。 */
 export function tierOf(rel: string): Tier {
-  return /\.response\.|^pages\/|^screenshots\//.test(rel) ? "heavy" : "light";
+  return /\.response\.|^pages\/|^screenshots\/|^sockets\//.test(rel) ? "heavy" : "light";
 }
 
 export type WindowLogOptions = { root?: string; now?: () => number };
@@ -197,6 +197,16 @@ export class WindowLog {
     const bytes = (typeof content === "string" ? Buffer.byteLength(content) : content.length) - existed;
     const u = this.wins.get(win);
     if (u) { if (tierOf(rel) === "heavy") u.heavy += bytes; else u.light += bytes; }
+    return rel;
+  }
+
+  /** 往窗口目录里的文件追加内容（sockets/ 的消息），返回窗口内的相对路径。 */
+  appendFile(win: string, rel: string, content: string): string {
+    const abs = this.abs(win, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.appendFileSync(abs, content, { mode: 0o600 });
+    const u = this.wins.get(win);
+    if (u) { if (tierOf(rel) === "heavy") u.heavy += Buffer.byteLength(content); else u.light += Buffer.byteLength(content); }
     return rel;
   }
 

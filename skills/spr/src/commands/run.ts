@@ -97,6 +97,7 @@ export function outcomeLines(name: string, outcome: Outcome, saveFull?: (json: s
     if (outcome.page) lines.push(`页面：${outcome.page.url} "${outcome.page.title}"`, ...(outcome.page.screenshot ? [`截图：${outcome.page.screenshot}`] : []));
     if (outcome.hint) lines.push(`下一步：${outcome.hint}`);
   }
+  if (outcome.dialogs?.length) lines.push(`被拦下的系统弹窗（alert 放过，confirm、prompt 选取消，离开确认直接离开，有没保存的改动要核对）：\n${indent(outcome.dialogs.join("\n"))}`);
   if (outcome.sent?.length) lines.push(`已发出的非 GET 请求：\n${indent(outcome.sent.join("\n"))}`);
   return lines;
 }

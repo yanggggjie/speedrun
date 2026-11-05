@@ -9,11 +9,15 @@ import type { RawEntry, RawStore } from "../record/raw.ts";
 import type { RequestFile, Row } from "../record/types.ts";
 import type { WindowLog } from "../record/windowlog.ts";
 import { LOGIN_HINT, isLoginUrl, siteOfUrl } from "../utils/url.ts";
-import { dependencies, describeRequest, shownRequests } from "./explore.ts";
+import { dependencies, describeRequest, relevance, shownRequests, valuesOf } from "./explore.ts";
 import type { LearnWindow } from "./windows.ts";
 
-/** 一次观察最多列多少个请求（列最近的）。 */
-const OBSERVE_MAX = 30;
+/** 一次观察最多列多少个请求（按相关性，其余折叠成数量，都在 timeline.jsonl 里）。 */
+const OBSERVE_MAX = 6;
+/** 比内容时最多读多少个响应。 */
+const MATCH_FILES = 15;
+/** 响应里有这么多个值出现在页面文字上，才算对得上。 */
+const PAGE_HITS = 3;
 /** 找依赖的来源时，往前看这个窗口里最近多少个请求。 */
 const DEP_SOURCES = 50;
 
@@ -24,7 +28,7 @@ export type ObserveDeps = {
   tabs(): Promise<TabInfo[]>;
   index: EndpointIndex;
   raw: RawStore;
-  host: Pick<RunHost, "authSnapshot">;
+  host: Pick<RunHost, "authSnapshot" | "peek">;
 };
 
 /**
@@ -33,8 +37,9 @@ export type ObserveDeps = {
  * 请求只列这个窗口里第一次出现的 endpoint，其余只计数（全部都在 timeline.jsonl 里）。
  * 列出的请求带一行「请求头」信号：每个要关心的头值怎么变、页面存储里的来源（在内存里比真值，只输出类别和来源），同时记进 endpoints.json。
  */
-export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | undefined, step?: string): Promise<string> {
+export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | undefined, step?: string, inputs: string[] = []): Promise<string> {
   d.ingest.flush();
+  d.ingest.flushSockets();
   const from = w.cursor;
   const to = d.log.lastSeq();
   const timeline = d.log.readRows(w.id, { limit: 1_000_000 });
@@ -49,6 +54,8 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   const navs = rows.filter((r) => r.type === "nav" && r.via !== "replaceState");
   const opened = rows.filter((r) => r.type === "tab" && (r.via === "opened" || r.via === "leaked"));
   if (opened.length) lines.push(`新标签页：页面打开了 ${opened.slice(-5).map((r) => `#${r.seq} ${r.url}`).join("、")}（在同一个组里；页面里的新开都由 speedrun 接管，不会切走用户的标签页）`);
+  const dialogs = rows.filter((r) => r.type === "tab" && r.via === "dialog");
+  if (dialogs.length) lines.push(`系统弹窗：${dialogs.slice(-3).map((r) => r.target).join("、")}（已拦下，没有弹出来：alert 放过，confirm、prompt 选取消，离开确认直接离开）`);
   if (navs.length) lines.push(`导航：${navs.slice(-5).map((r) => `#${r.seq} ${r.url}${r.site && r.site !== w.site ? `（${r.site}）` : ""}`).join(" → ")}`);
   // 请求
   type Stat = { count: number; idle: number; cmdTriggered: number; descriptions?: Array<{ text: string }>; headers?: Record<string, HeaderSignal>; action?: string | null };
@@ -71,8 +78,22 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   const repeated = shown.length - picked.length;
   if (!picked.length) lines.push("请求：没有新的请求");
   else {
-    const list = picked.slice(-OBSERVE_MAX);
     const rawOf = (r: Row): RawEntry | undefined => { const f = files.get(r.seq); return f?.rid && f.tab !== undefined ? d.raw.get(w.id, f.tab, f.rid) : undefined; };
+    // 放不下时按相关性挑：内容能对上的最靠前；比较用真值，只在这里用，不输出值
+    let list = picked;
+    if (picked.length > OBSERVE_MAX) {
+      const text = sess ? await d.host.peek(sess, () => document.body?.innerText?.slice(0, 50_000) ?? "").catch(() => undefined) ?? "" : "";
+      const decoded = (u: string): string => { try { return decodeURIComponent(u); } catch { return u; } };
+      const sentIt = (r: Row): boolean => { const raw = rawOf(r); return inputs.some((v) => v.length >= 2 && (decoded(raw?.url ?? r.url ?? "").includes(v) || (raw?.body ?? "").includes(v))); };
+      const onPage = (f: RequestFile | undefined): boolean => {
+        const body = f?.responseBodyPath ? d.log.readText(w.id, f.responseBodyPath) : undefined;
+        return !!body && !!text && [...valuesOf(body).keys()].filter((v) => text.includes(v)).length >= PAGE_HITS;
+      };
+      const base = (r: Row): number => relevance(r, files.get(r.seq), { input: sentIt(r) });
+      const top = new Set([...picked].sort((a, b) => base(b) - base(a)).slice(0, MATCH_FILES).map((r) => r.seq));
+      const score = new Map(picked.map((r) => [r.seq, relevance(r, files.get(r.seq), { input: sentIt(r), pageText: top.has(r.seq) && onPage(files.get(r.seq)) })]));
+      list = [...picked].sort((a, b) => score.get(b.seq)! - score.get(a.seq)! || b.seq - a.seq).slice(0, OBSERVE_MAX).sort((a, b) => a.seq - b.seq);
+    }
     // 请求头怎么变：按站点统计这个窗口里的同站原始请求
     const kindsOf = new Map<string, Map<string, HeaderKind>>();
     const kinds = (site: string): Map<string, HeaderKind> => {
@@ -80,7 +101,7 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
       if (!k) { k = headerKinds(d.raw.inWindow(w.id).filter((e) => siteOfUrl(e.page) === site)); kindsOf.set(site, k); }
       return k;
     };
-    lines.push(`请求：${picked.length > list.length ? `（共 ${picked.length} 个，列最近 ${list.length} 个）` : ""}`);
+    lines.push(`请求：${picked.length > list.length ? `可能相关 ${list.length} 个（共 ${picked.length} 个）` : ""}`);
     let snap: AuthSnapshot | undefined, snapped = false;
     for (const r of list) {
       const f = files.get(r.seq);
@@ -107,13 +128,25 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
     const deps = dependencies([...sources, ...list], fileAt, (f) => (f.responseBodyPath ? d.log.readText(w.id, f.responseBodyPath) : undefined), (f) => (f.tab !== undefined && f.rid ? d.raw.get(w.id, f.tab, f.rid) : undefined), listed);
     if (deps.length) lines.push(`依赖：\n${deps.map((x) => `  #${x.to} 用了 #${x.from} 响应的 ${x.field}`).join("\n")}`);
   }
-  const folded = [repeated ? `之前出现过的 ${repeated}` : "", noise ? `埋点广告 ${noise}` : "", periodic ? `轮询 ${periodic}` : "", assets ? `静态资源 ${assets}` : ""].filter(Boolean);
+  const others = picked.length > OBSERVE_MAX ? picked.length - OBSERVE_MAX : 0;
+  // WebSocket、事件流：每条连接只给最新的累计数，内容在 sockets/ 文件里
+  const sockets = new Map(rows.filter((r) => r.type === "socket" && r.file).map((r) => [r.file!, r]));
+  if (sockets.size) lines.push(`通道：\n${[...sockets.values()].slice(0, 5).map((r) => `  ${r.channel === "sse" ? "事件流" : "WebSocket"} ${r.url} 发 ${r.sent ?? 0} 收 ${r.received ?? 0}，${r.file}`).join("\n")}${sockets.size > 5 ? `\n  另有 ${sockets.size - 5} 条` : ""}`);
+  // 页面函数快照的信号：只在有新信号时说一次
+  if (w.page?.fresh) {
+    w.page.fresh = false;
+    lines.push(`页面：${[w.page.canvas ? "主体是 canvas，内容不在 DOM 里" : "", w.page.api.length ? `发现页面接口 ${w.page.api.join("、")}` : ""].filter(Boolean).join("；")}（${w.page.dir}，用 rg 搜方法名）`);
+  }
+  const folded = [others ? `其余 ${others} 个` : "", repeated ? `之前出现过的 ${repeated}` : "", noise ? `埋点广告 ${noise}` : "", periodic ? `轮询 ${periodic}` : "", assets ? `静态资源 ${assets}` : ""].filter(Boolean);
   if (folded.length) lines.push(`没列出：${folded.join("，")}（都在 timeline.jsonl 里）`);
   // 像是登录失效：这一段里有同站请求被 401/403 拒，或者页面到了登录页。放在其它「下一步」前面，先解决登录
   const denied = rows.filter((r) => r.type === "request" && !r.noise && (r.status === 401 || r.status === 403) && (r.site ?? w.site) === w.site).slice(-3);
   const atLogin = current ? isLoginUrl(current.url) : navs.some((r) => isLoginUrl(String(r.url ?? "")));
   if (denied.length || atLogin) lines.push(`下一步：像是登录失效（${[...denied.map((r) => `#${r.seq} ${r.endpoint ?? r.url} ${r.status}`), ...(atLogin ? ["页面在登录页"] : [])].join("、")}）：先 computer screenshot 或 read_page 看页面是什么样；${LOGIN_HINT}`);
-  if (!picked.length && !repeated) lines.push("下一步：页面可能还在加载，computer wait 2 等一会儿再看；或者数据在页面里，用 DOM 取（get_page_text、read_page）");
+  if (!picked.length && !repeated) {
+    const api = w.page?.canvas || w.page?.api.length;
+    lines.push(api ? `下一步：没有新请求，改动可能走页面函数或 WebSocket：先用 rg 搜 ${w.page!.dir} 的方法名，要参数用 trace；都没有再用页面操作` : "下一步：页面可能还在加载，computer wait 2 等一会儿再看；或者数据在页面里，用 DOM 取（get_page_text、read_page）");
+  }
   // 这一步引发了还没有 action 覆盖的 endpoint：提醒写成 action（computer 只是触发，结果要来自 spr run）
   if (step !== undefined) {
     const uncovered = [...new Set(picked.filter((r) => r.phase === "cmd" && r.endpoint && !stats(r.site ?? w.site).get(r.endpoint)?.action).map((r) => r.endpoint!))].slice(0, 3);

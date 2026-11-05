@@ -22,13 +22,13 @@ const compose = (name: string, body: string, head = " * @status verified"): stri
 };
 syncActionLib(libDir);
 fs.writeFileSync(path.join(dir, "echo.js"), `/**\n * @summary 回显\n * @status draft\n * @param v 值\n */\nimport { spr, sleep } from "../../../lib/index.js";\nexport default async () => { await sleep(150); return { v: spr.params.v }; };\n`);
-const host = { op: async () => { throw new Error("不该碰页面"); }, end: async () => {}, watchSent: () => {}, takeSent: () => [], failureShot: async () => undefined, takeRejected: () => undefined };
+const host = { op: async () => { throw new Error("不该碰页面"); }, end: async () => {}, watchSent: () => {}, takeSent: () => [], takeDialogs: () => [], failureShot: async () => undefined, takeRejected: () => undefined };
 // 假的 run 窗口：记下开了哪些、关了哪些
 const opened: string[] = [], closed: string[] = [];
 let n = 0;
-const windows: RunWindows = { open: (label) => { const key = `${label}-${++n}`; opened.push(key); return key; }, close: async (key) => { closed.push(key); }, failureFile: (key) => path.join(root, key) };
+const windows: RunWindows = { open: (label) => { const key = `${label}-${++n}`; opened.push(key); return key; }, close: async (key) => { closed.push(key); }, shotFile: (key) => path.join(root, `${key}-shot`), failureFile: (key) => path.join(root, key) };
 const runner = new ActionRunner(host as never, { sitesDir, composeDir }, windows);
-const plain = (o: Outcome) => { const { runWindow: _w, drafts: _d, sent: _x, ...rest } = o; return rest; };
+const plain = (o: Outcome) => { const { runWindow: _w, drafts: _d, sent: _x, dialogs: _g, ...rest } = o; return rest; };
 
 // 每次 run 新开一个窗口，跑完就关；嵌套调用共用这次的窗口
 const a = await runner.runAction("echo", { v: "1" });

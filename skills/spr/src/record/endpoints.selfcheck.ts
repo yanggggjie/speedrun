@@ -11,8 +11,8 @@ import type { Phase, RequestFile, Row } from "./types.ts";
 // ---- 站点与 endpoint 名 ----
 assert.equal(siteOf("https://www.zhihu.com/question/1"), "zhihu.com", "www. 去掉");
 assert.equal(siteOf("https://zhuanlan.zhihu.com/p/1"), "zhuanlan.zhihu.com", "同一产品的子域是另一个站点");
-assert.equal(siteOf("https://app.example.com/a"), "app.example.com");
-assert.notEqual(siteOf("https://app.example.com/a"), siteOf("https://app.example.com/b"), "同一个注册域名下的不同系统不混");
+assert.equal(siteOf("https://a.example.com/a"), "a.example.com");
+assert.notEqual(siteOf("https://a.example.com/a"), siteOf("https://b.example.com/b"), "同一个注册域名下的不同系统不混");
 assert.equal(siteOf("https://mail.google.com/"), "mail.google.com");
 assert.equal(siteOf("http://localhost:3000/x"), "localhost:3000", "非默认端口带上");
 assert.equal(siteOf("chrome://extensions"), "");

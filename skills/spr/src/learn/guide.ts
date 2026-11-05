@@ -78,9 +78,9 @@ export function makeLearnGuide(info: LearnInfo): string {
    - 滚：\`${cmd} computer scroll_to --ref ref_57\`（把元素滚到视口中央）、\`${cmd} computer scroll --ref ref_3 down 3\`（一格 100 像素，滚完附截图）；等：\`${cmd} computer wait 2\`（等完附带一次观察）
    - 打开：\`${cmd} navigate <网址|back|forward> --description "…"\`
    - 截图只用来确认视觉效果：\`${cmd} computer screenshot [--scale 0.5]\`、\`${cmd} computer zoom <x0> <y0> <x1> <y1>\`；a11y 树里找不到的（画布、图片里的字），才按截图坐标操作（\`computer left_click <x> <y>\`）。
-   ref 只在当前页面里有效（页面跳转、元素被移除后失效，重新 find）；**写进 action 的是操作输出的「定位：…」**，不是 ref。输入都是真实输入（CDP），和用户自己点一样。**这里的工具只是探索、触发页面行为，让 speedrun 录到请求、学出 action；它们不交付结果，用户要的结果只能来自 spr run。**
+   ref 只在当前页面里有效（页面跳转、元素被移除后失效，重新 find）；**写进 action 文件的是操作输出的「定位：…」**，不写死 ref；action 运行时用 \`find\` 现查的结果可以。输入都是真实输入（CDP），和用户自己点一样。**这里的工具只是探索、触发页面行为，让 speedrun 录到请求、学出 action；它们不交付结果，用户要的结果只能来自 spr run。**
 2. 改变页面的操作和 try_action 都要带 \`--description\`：一句话用用户的话说这一步要做什么，它会存成 endpoint 的 description。
-3. 看到要的请求就读它的请求文件（地址、方法、请求体），自己写 \`request({ url, method, json })\`；变化的值换成 \`spr.params\`。
+3. 看到要的请求就读它的请求文件（地址、方法、请求体），自己写 \`request({ url, method, json })\`；变化的值换成 \`spr.params\`。写完先试不带 \`navigate\` 的版本，只发请求比打开页面快几倍；被 401/403 拒再加回 \`navigate\`，原因写进 \`@note\`。操作后页面变了但没有请求、或观察说页面是 canvas、发现页面接口时，读 \`~/.speedrun/topics/canvas-and-page-functions.md\`，用页面函数（窗口目录的 page-api/、\`${cmd} trace <函数路径>\`）。同一种页面操作连续失败两次就换一层，不继续试。
 4. 写 action 文件 ${actionsDir}/<名字>.js（名字小写字母数字和 -，全局唯一；站点是请求所在页面的 host 去 www.）。文件头：
 
 \`\`\`javascript

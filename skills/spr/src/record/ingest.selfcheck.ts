@@ -151,4 +151,26 @@ assert.equal(await waitingB, true, "等到的那条一到就返回");
 assert.equal(await ingest.waitDelivered(7, "docZ", 0, 10), true, "页面还没发过消息：直接算到了");
 ingest.flush();
 
+// WebSocket：连接只记摘要行，内容进 sockets/ 且脱敏；用户窗口的不录；原文只交给订阅者
+{
+  const heard: string[] = [];
+  const off = ingest.onMessage((m) => heard.push(m.data));
+  const ws = (over: Record<string, unknown>): PageMsg => ({ k: "socket", t: T + 900_000, tab: 5, page, channel: "ws", id: "w1", url: "wss://www.example.com/feed?token=abc", ...over } as PageMsg);
+  ingest.handleBatch([
+    ws({ ev: "open" }),
+    ws({ ev: "frame", dir: "received", size: 30, data: JSON.stringify({ token: SECRET, msg: "你好" }) }),
+    ws({ ev: "frame", dir: "sent", size: 4 }),
+    { k: "socket", t: T, tab: 3, page, channel: "ws", id: "u1", ev: "frame", dir: "received", url: "wss://user.example.com/", data: USER_SECRET } as PageMsg,
+  ]);
+  ingest.flushSockets();
+  const row = rows(W).filter((r) => r.type === "socket").at(-1)!;
+  assert.equal(row.received, 1, "收到的消息计数");
+  assert.equal(row.sent, 1, "发出的消息计数");
+  const saved = fs.readFileSync(log.abs(W, row.file!), "utf8");
+  assert.ok(saved.includes("你好") && !saved.includes(SECRET), "消息内容落盘，秘密换成别名");
+  assert.ok(!JSON.stringify(row).includes("abc") || row.url === "wss://www.example.com/feed", "摘要行的地址不带查询参数");
+  assert.equal(heard.length, 1, "原文只给订阅者，用户窗口的消息不给");
+  off();
+}
+
 console.log("ingest.selfcheck ok");
