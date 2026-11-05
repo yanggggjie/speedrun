@@ -8,7 +8,7 @@ export type RowType = "request" | "socket" | "nav" | "doc" | "snap" | "cmd" | "t
 /** 请求发生的阶段：load 是页面刚加载（或单页应用刚路由）的那几秒，cmd 是 agent 的命令引发的，idle 是轮询、后台自发。 */
 export type Phase = "load" | "cmd" | "idle";
 
-/** 不是 agent 窗口的标签页（用户自己的）：它的一切都不录。agent 的窗口是 learn 窗口（句柄）和 run 窗口（名字）。 */
+/** 不是 agent 窗口的标签页（用户自己的）：它的一切都不录。agent 的窗口是 debug 窗口和 run 窗口（名字）。 */
 export const USER_WIN = "user";
 
 /** 窗口目录里 timeline.jsonl 的一行。 */
@@ -29,8 +29,6 @@ export type Row = {
   /** cmd / snap 的种类：left_click、form_input、scroll、key、navigate、request……；target 是元素的简短描述，如 button[Like]。 */
   kind?: string;
   target?: string;
-  /** cmd：agent 用 --description 写的这一步要做什么（用户的话，description）。这一步引发的请求经 cause 指向这一行。 */
-  description?: string;
   /** cmd 的结果。 */
   ok?: boolean;
   error?: string;

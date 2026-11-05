@@ -1,6 +1,6 @@
 /**
  * 页面函数：页面自己的 JS 接口（在线表格的 SpreadsheetApp 这类）。它们不是网络请求，录制和 DOM 都看不到。
- * learn 窗口自动做快照落盘：窗口里 page-api/，站点累积 sites/<站点>/page-api.json（只由 learn 窗口写，agent 用 rg 读）。
+ * debug 窗口自动做快照落盘：窗口里 page-api/，站点累积 action/<站点>/page-api.json（只由 debug 窗口写，agent 用 rg 读）。
  * 只记名字、类型和结构，不记值；快照只读属性描述，不调用 getter。trace 临时包住 agent 指定的函数，记真实调用。
  * scanPage、traceStart、traceEnd 是放进页面执行的函数（host.peek），不能用外面的变量。
  */
@@ -180,15 +180,15 @@ export function clues(objects: ApiObject[]): string[] {
   return [...total].filter(([, n]) => n >= 8).sort((a, b) => b[1] - a[1]).slice(0, CLUES_MAX).map(([k]) => k);
 }
 
-const fileOf = (sitesDir: string, site: string): string => path.join(sitesDir, siteDirName(site), "page-api.json");
+const fileOf = (actionDir: string, site: string): string => path.join(actionDir, siteDirName(site), "page-api.json");
 
 function load(file: string, site: string): SiteApi {
   try { return JSON.parse(fs.readFileSync(file, "utf8")) as SiteApi; } catch { return { site, updatedAt: 0, version: "", objects: {}, calls: {}, usedBy: {} }; }
 }
 
-/** 用过这些顶层对象的 action：看 actions/ 里的文件有没有提到它的名字。 */
-function usedBy(sitesDir: string, site: string, roots: string[]): Record<string, string[]> {
-  const dir = path.join(sitesDir, siteDirName(site), "actions");
+/** 用过这些顶层对象的 action：看站点目录里的 action 文件有没有提到它的名字。 */
+function usedBy(actionDir: string, site: string, roots: string[]): Record<string, string[]> {
+  const dir = path.join(actionDir, siteDirName(site));
   const out: Record<string, string[]> = {};
   let files: string[] = [];
   try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".js")); } catch { return out; }
@@ -199,30 +199,30 @@ function usedBy(sitesDir: string, site: string, roots: string[]): Record<string,
   return out;
 }
 
-function save(file: string, api: SiteApi, sitesDir: string, now: number): void {
+function save(file: string, api: SiteApi, actionDir: string, now: number): void {
   const entries = Object.entries(api.objects);
   if (entries.length > SITE_OBJECTS_MAX) api.objects = Object.fromEntries(entries.sort((a, b) => b[1].seenAt - a[1].seenAt).slice(0, SITE_OBJECTS_MAX));
   api.updatedAt = now;
-  api.usedBy = usedBy(sitesDir, api.site, [...new Set(Object.keys(api.objects).map((p) => p.split(".")[0]!))]);
+  api.usedBy = usedBy(actionDir, api.site, [...new Set(Object.keys(api.objects).map((p) => p.split(".")[0]!))]);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(api, null, 1)}\n`, { mode: 0o600 });
 }
 
 /** 把一次快照并进站点文件，返回站点文件路径。 */
-export function mergeScan(sitesDir: string, site: string, scan: PageScan, now = Date.now()): string {
-  const file = fileOf(sitesDir, site);
+export function mergeScan(actionDir: string, site: string, scan: PageScan, now = Date.now()): string {
+  const file = fileOf(actionDir, site);
   const api = load(file, site);
   api.version = createHash("sha256").update(scan.scripts).digest("hex").slice(0, 12);
   for (const { path: at, ...rest } of scan.objects) api.objects[at] = { ...rest, seenAt: now };
-  save(file, api, sitesDir, now);
+  save(file, api, actionDir, now);
   return file;
 }
 
 /** 把 trace 的结果按函数汇总进站点文件（只有结构），返回每个函数的摘要。 */
-export function mergeCalls(sitesDir: string, site: string, calls: TraceCall[], now = Date.now()): Array<{ path: string; count: number; args: string[] }> {
+export function mergeCalls(actionDir: string, site: string, calls: TraceCall[], now = Date.now()): Array<{ path: string; count: number; args: string[] }> {
   const by = new Map<string, TraceCall[]>();
   for (const c of calls) (by.get(c.path) ?? by.set(c.path, []).get(c.path)!).push(c);
-  const file = fileOf(sitesDir, site);
+  const file = fileOf(actionDir, site);
   const api = load(file, site);
   const out = [...by].map(([at, list]) => {
     const args = (list[0]!.args as unknown[]).map((a) => shapeOf(a));
@@ -230,6 +230,6 @@ export function mergeCalls(sitesDir: string, site: string, calls: TraceCall[], n
     api.calls[at] = { count: (old?.count ?? 0) + list.length, args, ...(list[0]!.returns !== undefined ? { returns: shapeOf(list[0]!.returns) } : {}), seenAt: now };
     return { path: at, count: list.length, args };
   });
-  if (out.length) save(file, api, sitesDir, now);
+  if (out.length) save(file, api, actionDir, now);
   return out;
 }

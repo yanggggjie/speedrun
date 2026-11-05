@@ -1,27 +1,25 @@
 # 设计：写出可复用的脚本是唯一主线
 
-> 状态：方案，未实现。不留兼容（AGENTS.md §2.5），旧命令和旧文件格式一起改掉。
+> 状态：已实现，未提交。`npm run check`、`npm test`、`npm run verify:pack` 通过，已在真实 Chrome 里走通 5 类任务；§9 的新旧版本对比还没做。不留兼容（AGENTS.md §2.5），旧命令和旧文件格式一起改掉。
 
 ## 0. 结论
 
-speedrun 对 agent 来说不再是"学网站的工具"，而是一套**写脚本的开发环境**：
+speedrun 对 agent 来说不再是"学网站的工具"，而是一套写脚本的开发环境。任务永远走同一个流程：
 
-| 编程里 | speedrun 里 |
-|---|---|
-| 程序 | action（站点能力）、compose（用户的事） |
-| 编译并运行 | `spr run` |
-| undefined reference | `fail missing-action` |
-| 调试器 | `spr debug` |
-| 崩溃现场 | 失败后保留的窗口 |
+| 阶段 | 对象 | 用什么 | 做什么 | 结束条件 |
+|---|---|---|---|---|
+| **Find** | compose、action | `rg`、`ls` | 先找 compose，再找可复用的 action | 找到 compose 就去 Run，否则去 Write |
+| **Write** | compose | 写文件 | 写任务流程，调用已有 action，也写上还不存在的 action | 写完就去 Run |
+| **Debug** | action | `spr debug` | 在一个窗口里写或修 compose 缺的 action | 这些 action 写完就回 Run |
+| **Run** | compose | `spr run` | 运行 compose，把返回值告诉用户 | 成功就结束，失败就去 Debug |
 
-六个决定：
+设计原则：
 
-1. **目标写进每条命令**：`spr debug <名> …` 的 `<名>` 就是要交付的脚本，取消句柄。
-2. **只有一种运行方式**：删除 `try_action`，所有运行都是 `spr run`。
-3. **run 先检查再执行**：缺的 action 一次报全，什么都不发。
-4. **失败现场留给 debug**：`spr run x` 失败后，`spr debug x read_page` 直接看失败的页面。
-5. **修完接着跑**：compose 失败后可以 `spr resume`，已完成的 action 不重发。
-6. **通过就结束**：`spr run <名>` 成功后，同名 debug 窗口自动关闭，不用 close。
+1. **能用文件和 agent 自带工具，就不加 API**：Find 和 Write 没有专用命令。
+2. **概念复用 agent 已经懂的**：函数、文件、JSDoc、`is not defined`，以及项目已有的 `action`、`compose`、`draft`、`verified`、`blocked`。
+3. **流程没有例外**：单步任务也写 compose，`spr run` 只接受 compose。
+4. **只有 Run 的返回值能交给用户**：Debug 中看到的内容不算结果。
+5. **Debug 做到最小触发就停**：请求的参数能由 action 参数决定，响应里有要的数据，就写成 action。
 
 ## 发现
 
@@ -53,12 +51,10 @@ speedrun 对 agent 来说不再是"学网站的工具"，而是一套**写脚本
 
 ### 代码里的具体发现
 
-- **文档和代码不一致**：`guide.ts:96` 和 AGENTS.md 说 run 会检查 `@endpoint` 的发送顺序，run 相关代码里没有找到这个检查。
-- **verified 太宽松**：`finishRun` 在 run 成功后就把 draft 改成 verified，写死参数也能通过。本机 `ithome-search.js` 里有默认值"华为"。
 - **`try_action` 有假阳性**：它沿用 learn 窗口的页面状态和请求头，所以 `finishRun` 才需要一条"try_action 成功过但 run 失败"的提示。
-- **重跑 compose 可能重发写操作**：journal 目前只在 `spr.ask` 时保留。
-- **失败现场会丢失**：run 失败后窗口关闭，只留截图，要到 learn 窗口重新复现。
-- **`request` 不能覆盖全部**：`ithome-search` 是服务端渲染页面，用的是 `query`，所以自动生成只能覆盖一部分 action。
+- **compose 失败时没有截图**：`runner.ts` 只在最外层是 action 时调用 `failureShot`。`spr run` 改成只接受 compose 后，这个条件必须去掉，否则失败输出会丢掉页面和截图。
+- **恢复执行大部分已经具备**：`runAction` 在没有 `opts.code` 时读当前文件，journal 也已按调用顺序记录。失败后恢复只需要把 journal 带出来，不用新机制。
+- **指引和原则不一致**：`guide.ts` 只写了 `request`、`waitRequest`、DOM，SKILL.md 还有页面函数和 `waitMessage`。
 
 ### 讨论过的方案
 
@@ -69,141 +65,190 @@ speedrun 对 agent 来说不再是"学网站的工具"，而是一套**写脚本
 | learn 只给结构，真实数据只在 run 里出现 | 暂缓。改动大，截图仍会露出内容，排查也更难 |
 | 开局用 todo 工具写明目标 | 不作为解法。只有部分宿主有，agent 仍可能跳过，而且写不好交替的 learn 和 run |
 | 主 agent 和学习的子 agent 分离 | 暂缓。隔离干净，但依赖宿主 |
+| 新增 `spr find`、`spr declare`、`gen` | 否定。`rg` 和写文件已经够用，新 API 只会增加学习成本 |
+| 用占位文件和 `@status undefined` 声明 action | 否定。compose 里的调用本身就是声明 |
+| 合并 action 和 compose | 否定。"调用其他脚本时不能碰页面"这条规则仍在，只是变得看不见 |
+| run 失败后保留窗口 | 否定。Run 窗口用完就消失，失败原因看日志文件，页面到 Debug 窗口里复现 |
 | **把任务变成写脚本，`spr run` 通过就是完成** | **采用**。只留一个目标，学习变成调试手段，交替也变成同一个循环 |
 
 ## 1. 主循环
 
 SKILL 开头只留这一段：
 
-> 你的任务：写一个脚本完成用户的事，用 `spr run` 运行，把返回值告诉用户。脚本留着，下次换参数直接用。
+> 你的任务：用 compose 完成用户的事。
+> Find：用 `rg` 找已有的 compose 和 action。
+> Write：没有 compose 就写一个，缺的 action 也先写上调用。
+> Debug：`spr run` 报缺或失败时，在一个窗口里处理这些 action。
+> Run：用 `spr run` 运行 compose，把返回值告诉用户。
 
 ```text
-找：rg 已有脚本 ──命中──▶ spr run ──▶ 把返回值告诉用户
-      │没有
-      ▼
-写：compose（要串几步时），或直接选一个 action 名
-      ▼
-spr run <名> ──ok──▶ 把返回值告诉用户
-      │fail missing-action / 运行失败
-      ▼
-spr debug <名> …  看页面、触发请求、写 action
-      └──▶ 回到 spr run
+Find ──有 compose──────────▶ Run ──成功──▶ 告诉用户
+  │没有                      ▲ │
+  ▼                          │ │is not defined / 运行失败
+Write ───────────────────────┘ ▼
+                     Debug（处理缺的 action）──▶ 回到 Run
 ```
 
-没有"先学后交付"两个阶段，只有一个循环。不再需要 todo：缺什么由 `spr run` 报，目标由每条命令的 `<名>` 和输出末行复述。
-
-示例：
+完整示例：
 
 ```bash
-# 写好 compose：zhihu-vote-hardcore 调用 zhihu-search、zhihu-vote
+rg -i "知乎" ~/.speedrun/compose ~/.speedrun/action
+# 没有 compose，写 ~/.speedrun/compose/zhihu-vote-hardcore.js
 ~/.speedrun/bin/spr run zhihu-vote-hardcore --q agent
-# fail missing-action zhihu-search、zhihu-vote（没有执行任何操作）
-~/.speedrun/bin/spr debug zhihu-vote-hardcore navigate https://www.zhihu.com/search?q=agent
+# fail zhihu-vote-hardcore：zhihu-search、zhihu-vote is not defined（没有执行任何操作）
+~/.speedrun/bin/spr debug zhihu-vote-hardcore navigate "https://www.zhihu.com/search?q=agent"
 # 观察：#1203 GET /api/v4/search_v3 带着「agent」……
-~/.speedrun/bin/spr debug zhihu-vote-hardcore gen 1203 --name zhihu-search --param q=agent
+# 目标：spr run zhihu-vote-hardcore（还缺 zhihu-search、zhihu-vote）
+# 读请求文件，写 ~/.speedrun/action/zhihu.com/zhihu-search.js
+~/.speedrun/bin/spr debug zhihu-vote-hardcore find "赞同"
+~/.speedrun/bin/spr debug zhihu-vote-hardcore computer left_click --ref ref_31
+# 读请求文件，写 ~/.speedrun/action/zhihu.com/zhihu-vote.js
 ~/.speedrun/bin/spr run zhihu-vote-hardcore --q agent
 ```
 
-## 2. 命令面
+## 2. 命令和窗口
+
+### 2.1 命令
 
 | 命令 | 作用 |
 |---|---|
-| `spr run <名> [--参数 值]` | 运行 action 或 compose，唯一的运行方式 |
-| `spr resume <编号> [--answer '<json>']` | 接着跑：停在 `spr.ask` 的，或失败后修好的 |
-| `spr debug <名> navigate <网址\|tab 号\|back\|forward>` | 没有窗口就开一个，第一次输出 debug 指引 |
-| `spr debug <名> find \| read_page \| get_page_text \| computer … \| form_input … \| inspect \| trace` | 和现在的 learn 工具相同 |
-| `spr debug <名> gen <请求编号> [--name <action 名>] [--param 名=值 …]` | 从录到的请求生成 action 文件 |
-| `spr debug <名> close` | 放弃时关窗口；跑通后不用调 |
-| `spr debug list`、`tabs`、`status`、`doctor`、`daemon restart` | 不变 |
+| `spr run <compose> [--参数 值]` | 唯一的运行方式 |
+| `spr resume <编号> [--answer '<json>']` | 接着跑：停在 `ask` 的要带 `--answer`，失败后修好的不带 |
+| `spr debug <compose> navigate <网址\|tab 号\|back\|forward>` | 没有窗口时用网址或 tab 号打开一个，第一次输出 debug 指引 |
+| `spr debug <compose> read_page \| find \| get_page_text \| computer … \| form_input … \| inspect \| trace` | 和现在的 learn 工具相同 |
+| `spr debug <compose> close` | 主动关窗口，可以不调 |
+| `spr debug list` | 列出开着的 Debug 窗口 |
+| `spr tabs`、`status`、`doctor`、`daemon restart` | 不变 |
 
-删除：`learn new`、`learn close <句柄>`、`try_action`、句柄、`closedNote`、操作上的强制 `--description`。
+删除：`learn new`、`learn close <句柄>`、`try_action`、句柄、`closedNote`、全部 `--description`、`spr run <名> --help`。说明和参数都在文件头，Find 时直接读文件。
 
 规则：
 
-- `<名>` 可以是还不存在的脚本，这样单个 action 也能直接开始。`list` 成为保留名。
-- 一个名字同时只有一个窗口。窗口关掉后（空闲 30 分钟、daemon 重启、扩展重连），`find` 这类命令报错，提示重新 `navigate`。
-- 一个窗口可以写多个 action，所以窗口绑定到顶层 compose，而不是每个 action 一个窗口。
-- 200 次操作上限、同一窗口串行、空闲关闭都保留。
+- `spr run` 收到 action 名时报用法错误，提示写一个调用它的 compose。
+- `spr debug` 的第一个参数必须是已存在的 compose。文件不存在时报用法错误，提示先写 compose。这条规则保证 Write 在 Debug 之前。
+- `list` 是保留名，不能作为 compose 名。
+- 窗口没开时，`navigate` 以外的工具都报错，提示 `spr debug <compose> navigate <网址>`。`back`、`forward` 也需要窗口已开。
 
-## 3. run 的语义
+### 2.2 窗口
+
+| 窗口 | 生命周期 |
+|---|---|
+| **Debug** | Run 成功或失败都不关。`close`、空闲 30 分钟、daemon 重启、扩展重连、标签组被关时才关 |
+| **Run** | 一次 run 结束就关闭，成功、失败和停在 `ask` 都一样 |
+
+- 一个 compose 同时只有一个 Debug 窗口。窗口可以处理它缺的多个 action，也可以跨站点。
+- 日志目录名继续是 `<compose>-<年月日>-<时分秒>`，放在 `debug-windows/`。窗口重开时新建目录。
+- 200 次操作上限、同一窗口串行、标签组颜色都保留。到上限后 `close`，再 `navigate` 开新窗口。
+- Run 窗口关闭后，日志还在 `run-windows/<名字>/`。排查时用 `rg` 读日志，需要页面时在 Debug 窗口里复现。
+
+## 3. Run
 
 ### 3.1 执行前检查
 
-只读文件，不开窗口，递归检查 compose 调用的 compose：
+新增 `run/link.ts`，导出 `checkCompose(name, paths)`。只读文件，不开窗口，不需要扩展：
 
-- 脚本不存在：`fail missing-action a、b（没有执行任何操作）`，并给出 `下一步`。
-- 依赖是 `@status blocked`：直接失败，列出 `@note`。这样不会执行到一半才发现。
-- `action()` 的名字不是字面量：用法错误。否则检查不完整。
-- 循环调用：用法错误。
-
-这一步也解决了重跑风险：缺 action 时前面的写操作不会先发出去。
-
-### 3.2 失败保留现场
-
-最外层 run 失败时不关窗口，保留 10 分钟，每个名字保留最新一个。输出写明：
-
-```text
-fail zhihu-vote：403
-现场：窗口保留 10 分钟：spr debug zhihu-vote read_page
+```typescript
+type LinkResult = { missing: string[]; blocked: Array<{ name: string; note: string }>; errors: string[] };
 ```
 
-这是输出里看得见的事，不违反 ARCHITECTURE 原则 5。实现要点：
+- 用一个小扫描器读 compose 源码，跳过注释和字符串，找 `action(` 调用。
+- 名字是普通字符串时记入依赖。名字是变量或带 `${}` 的模板字符串时，记为用法错误。
+- 依赖是 compose 时递归检查，用调用栈发现循环。
+- 依赖文件不存在记入 `missing`。依赖是 `@status blocked` 记入 `blocked`，`actionSummary` 增加 `note` 字段。
 
-- `host.end` 现在立即清原始请求（`browser/host.ts:184`），要推迟到现场关闭。
-- 现场窗口的 kind 是 `run`，请求不进 `endpoints.json`（`record/ingest.ts:359`）。debug 接管后要改成进入，这样现场里录到的请求可用于 `gen`。
+`runCommand` 在 `ensureExtension` 之前调用它：
+
+```text
+fail zhihu-vote-hardcore：zhihu-search、zhihu-vote is not defined（没有执行任何操作）
+下一步：spr debug zhihu-vote-hardcore navigate <网址>，写好后再 spr run zhihu-vote-hardcore
+```
+
+静态检查覆盖不到别名导入这类写法，所以 `runAction` 运行时继续检查，错误文字同样改成 `<名> is not defined`。
+
+### 3.2 失败输出
+
+- `runner.ts` 去掉 `failureShot` 的 `!composed` 条件，最外层 compose 失败时也截图。
+- 登录失效提示里的 `spr learn new` 改成 `spr debug <compose> navigate <这个页面>`。
+- 删除 `finishRun` 里两条提醒 learn 窗口的文字。
+- 有 `failedAction` 时给出下一步：
+
+```text
+fail zhihu-vote-hardcore：[zhihu-vote] 403
+出错的 action：zhihu-vote
+页面：https://www.zhihu.com/… "…"
+截图：~/.speedrun/run-windows/zhihu-vote-hardcore-20261106-101500/screenshots/failure.png
+run 窗口目录：~/.speedrun/run-windows/zhihu-vote-hardcore-20261106-101500（窗口已关，日志留着）
+下一步：spr debug zhihu-vote-hardcore navigate <页面>，修好 zhihu-vote 后 spr resume AS-1a2b3c4d
+```
 
 ### 3.3 失败后继续
 
-`runner.ts` 的 journal 目前只在 ask 时保留。改成 compose 失败时也保留：
+目标是修好失败的 action 后，不必重跑已完成的 action。实现复用现有的 ask 恢复：
 
-- 输出 `恢复：spr resume <编号>`（journal 非空时才有）。
-- 恢复时读**当前文件**，因为 agent 刚修过。ask 恢复仍用停下时的代码。
-- 现有的"调用名字和参数不同就失败"继续作为保护。
-- 局限：只记录已完成的 action。失败的 action 自身发出一半的写操作，要靠「已发出的非 GET 请求」核对。
+1. `runAction` 给最外层 compose 建 `state`，失败时把 `state.journal`、`state.answers` 放进 `Outcome`。
+2. `runNamed` 在失败且 journal 非空时，调用 `asks.add`，记录 `failed: true`，不存 `code`。
+3. `resumeCommand` 对 `failed` 记录不要求 `--answer`，先跑 §3.1 的检查。
+4. `runAction` 没收到 `code`，自然读当前文件。ask 恢复继续用停下时的代码。
+5. 前面的 action 从 journal 返回，失败的 action 没有记录，所以用修好的文件重新执行。
+6. 恢复再次失败时，用新的记录替换旧的 `failed` 记录。ask 记录仍按现状保留。
 
-### 3.4 verified 要证明"第二次"
+现有的"调用名字和参数不同就失败"继续作为保护。恢复记录仍只在 daemon 内存里，30 分钟有效，最多 20 条。
 
-现在跑成功一次就变 verified，写死参数的脚本也能通过。本机 `ithome-search.js` 就有 `params.q ?? "华为"`。新规则：
+### 3.4 draft 和 verified
 
-| 脚本 | 变成 verified 的条件 |
-|---|---|
-| 没有参数 | 成功一次，结果非空 |
-| 有参数，只读 | 两组不同参数都成功，结果非空 |
-| `@write` | 用户真要做时成功一次，不为验证多发 |
+这部分不改：run 成功后，这次执行过的 draft 都变成 verified。action 不能单独运行，所以它通过 compose 的成功运行变成 verified。
 
-- 空结果是 `null`、`[]`、`{}`。
-- 两组参数结果完全相同时警告："参数可能没生效"，不升级。
-- 第一次成功后输出 `下一步：换一组参数再跑一次`，但这不挡交付：用户的结果已经拿到了。
-- 记录放 daemon 内存，重启后重跑一次即可。verified 不拦任何操作，丢了代价很小。
+## 4. Debug
 
-### 3.5 run 成功
+### 4.1 打开窗口
 
-同名 debug 窗口自动关闭。输出不再提醒 close。
+`startLearn` 合并进 `navigate`：
 
-## 4. debug 的输出
+1. 查 compose 是否存在，不存在就报用法错误。
+2. 窗口没开时，用现有的 `resolveStartUrl` 解析网址或 tab 号。
+3. 创建窗口、打开页面、等页面安静、做页面函数快照、输出观察。
+4. 第一次或内容变化时写 `debug-guide.md`，并在输出末尾给全文。
+5. 窗口已开时，走现有的 `navigate` 操作。
 
-**每条输出末行复述目标**，由 3.1 的检查算出：
+`LearnWindows` 改名 `DebugWindows`。内部继续按窗口 id 登记，再加一张 compose 名到 id 的映射。这样 `AgentWindows`、`Session`、`WindowLog`、日志淘汰都继续用 id。
+
+### 4.2 处理缺的 action
+
+agent 看观察结果，用 `rg` 读请求日志，自己写 action 文件。一个窗口里可以连续处理 compose 缺的多个 action。
+
+实现方式沿用 SKILL.md 现有的顺序，能用上面的就不用下面的。站点有官方 API 时先用官方 API，否则按下面四层选：
+
+| 顺序 | 策略 | SDK | 什么时候用 | 停止条件 |
+|---|---|---|---|---|
+| 1 | HTTP 请求 | `request`、`waitRequest` | 页面发了可用请求。签名或请求体复现不了时，用 `waitRequest` 让页面自己发 | 参数能由 action 参数决定，响应里有要的数据 |
+| 2 | 页面函数 | `evaluate` | 没有可用请求，但页面有自己的接口 | 调用函数能完成动作或取到数据 |
+| 3 | WebSocket、事件流 | `waitMessage` | 数据从长连接或事件流来 | 收到的消息里有要的数据 |
+| 4 | DOM 或真实输入 | `query`、`get_page_text`、页面操作 | 上面都不行 | 操作完成，或页面里读到目标数据 |
+
+- 达到当前层的停止条件，就写 action，不继续往下试。
+- 同一种页面操作连续失败两次，换下一层。
+- 四层都不行时，写 `@status blocked` 和 `@note`，向用户说明。
+- 想先验证一个 action 时，写一个只调用它的小 compose，用 `spr run` 运行。
+
+### 4.3 输出末行
+
+`windowCommand` 成功返回后，用 `checkCompose` 算出末行：
 
 ```text
 目标：spr run zhihu-vote-hardcore（还缺 zhihu-vote）
 ```
 
-它替代现在的三处提醒：`observe.ts` 的 uncovered、`learn.ts` 的每 15 次 nudge、`closeLearn` 的未交付提醒。
+不缺 action 时是 `目标：spr run zhihu-vote-hardcore`。这行替代三处提醒：`observe.ts` 的 uncovered、`learn.ts` 的 `NUDGE_EVERY`、`closeLearn` 的未交付提醒。
 
-**观察里给可执行的下一步**：请求里出现 agent 输入的值时（`observe.ts` 已有 `sentIt`）：
+观察里的请求排序不变，`sentIt` 已经把带着 agent 输入值的请求排在前面。
 
-```text
-下一步：#1203 GET /api/v4/search_v3 带着你输入的「agent」：
-  spr debug zhihu-vote-hardcore gen 1203 --name zhihu-search --param q=agent
-```
+### 4.4 删除的内容
 
-**`gen` 的范围**：
+- `try_action`：`TOOLS`、`SPECS`、`target` 分支和 `runInLearn`。
+- `--description`：`SPECS`、`DESCRIPTION_HINT`、`descriptionOf`、`RESERVED_PARAMS` 里的 `description`、`EndpointIndex.describe`、`Description` 类型、`descriptions` 字段，以及观察里"以前的 description"。
+- `closedNote`、`HANDLE`、`actionsNewerThan`、`WindowLog.runsSince`。
 
-- 只生成 `request` 型 action：`navigate` 发出请求的页面，`request` 搬 url、method、body，把 `--param` 的值换成参数。
-- 先带 `navigate`，保证能抄到请求头；去掉 `navigate` 的提速仍按现有指引手动试。
-- 请求里有 `⟨secret_…⟩` 别名时不写进文件，标 TODO 并提示用 `auth`。
-- 目标文件已存在就拒绝。
-- 不生成 DOM action：`ithome-search` 这种服务端渲染页面没有可用请求，仍然手写 `query`。
+写请求继续沿用现有规则：speedrun 不拦，由 agent 判断副作用。
 
 ## 5. 文件格式和 SDK
 
@@ -213,8 +258,10 @@ action 和 compose 共用一种写法：
 /**
  * @description 在知乎搜索，返回回答列表
  * @status draft
+ * @endpoint GET /api/v4/search_v3
  * @param q 搜索词
  * @param n?:number 要几条
+ * @returns 回答数组，每项有 id、title
  */
 import { navigate, request } from "spr";
 
@@ -225,61 +272,118 @@ export default async ({ q, n = 30 }) => {
 };
 ```
 
-| 改动 | 原因 |
+compose 调用 action，这段调用本身就声明了名字、参数和返回值的用法：
+
+```javascript
+/**
+ * @description 给知乎搜索结果里的硬核回答点赞
+ * @status draft
+ * @param q 搜索词
+ */
+import { action, ask } from "spr";
+
+export default async ({ q }) => {
+  const list = await action("zhihu-search", { q });
+  const picked = await ask("哪些是硬核技术的回答？回答 id 数组", list.map((x) => ({ id: x.id, title: x.title })));
+  for (const id of picked) await action("zhihu-vote", { id });
+  return { voted: picked.length };
+};
+```
+
+| 改动 | 实现 |
 |---|---|
-| 参数走函数参数，删除 `spr.params` | 脚本就是函数，没有"默认写死华为"的惯性 |
-| `import … from "spr"` | 取代 `../../../lib/index.js` 和 `../lib/index.js` 两种路径。`~/.speedrun/node_modules/spr` 链到 `lib/` |
-| `spr.ask` 改成 `ask` | `spr` 对象不再需要 |
-| `@summary` 并入 `@description` | 同义 |
-| 删除 `@endpoint` | 手写且没有校验。覆盖关系改由成功 run 里的 `request` 命令回填 `endpoints.json` 的 `action` 字段 |
+| 参数走函数参数 | `worker.ts` 调用 `mod.default(params)`，`index.js` 删除 `spr.params` |
+| `spr.ask` 改成 `ask` | `index.js` 导出 `ask`，删除 `spr` 对象 |
+| `import … from "spr"` | `action-lib` 加 `package.json`（`name: spr`、`type: module`、`exports: ./index.js`）。`syncActionLib` 建 `~/.speedrun/node_modules/spr` 符号链接，指向 `lib/` |
+| `@summary` 并入 `@description` | `actionSummary` 只读 `@description`，`summary` 字段改名 `description` |
+| 可选的 `@returns` | 只给 Find 时阅读，不加代码 |
 
-顺带修一个文档错误：`guide.ts:96` 和 AGENTS.md 说 run 会检查 `@endpoint` 顺序，代码里没有这个检查。
+`~/.speedrun/compose/` 和 `~/.speedrun/action/<站点>/` 都能向上找到 `~/.speedrun/node_modules`。compose 的临时 `.run-*.mjs` 文件和 compose 同目录，也能解析。
 
-## 6. 保留不动
+## 6. 代码改动清单
 
-- action 和 compose 两层。它们是"库和主程序"的关系，也是 missing-action 循环成立的前提。compose 不碰页面，这是 resume 能安全重放的基础。
-- `compose` 这个名字。改名没有行为收益。
-- 扩展、页面脚本、录制、脱敏、请求头继承、`spr.ask` 流程。
-- `get_page_text`：写 DOM action 时需要看正文。
+| 位置 | 改动 |
+|---|---|
+| `src/learn/` | 目录改名 `src/debug/`，`windows.ts`、`guide.ts`、`observe.ts` 按 §4 改 |
+| `commands/learn.ts` | 改名 `commands/debug.ts`，按 §2、§4 改 |
+| `commands/run.ts` | 只接受 compose，接入检查、失败恢复和新输出，删除 `--description` 和 `runHelp` |
+| `commands/index.ts`、`protocol.ts` | 改命令分发、`HELP`、`USAGE` |
+| `commands/context.ts`、`args.ts` | `Ctx.learn` 改 `debug`，删除 description 相关代码 |
+| `run/link.ts` | 新增 §3.1 的检查 |
+| `run/runner.ts` | 失败截图、journal 带出、错误文字，删除 `runInLearn` |
+| `run/asks.ts` | 增加 `failed` |
+| `run/actions.ts` | `note`、`description` 字段，`syncActionLib` 建链接 |
+| `run/worker.ts`、`action-lib/` | 按 §5 改 |
+| `record/windowlog.ts`、`retention.ts`、`ingest.ts` | `WinKind` 改 `debug`，目录改 `debug-windows/`，保留规则不变 |
+| `record/endpoints.ts` | 删除 `describe` 和 `descriptions`，其余保留 |
+| `browser/host.ts`、`window.ts` | 改错误文字和注释，`host.end` 不改 |
+| `daemon.ts`、`cli/doctor.ts`、`store/deploy.ts`、`utils/constants.ts` | 跟随改名 |
+| 文档 | 重写 SKILL.md、`ARCHITECTURE.md`、AGENTS.md §2.3、`topics/*`、README、PRIVACY.md，加 CHANGELOG |
 
-## 7. 这次不做
+`git grep -i learn` 现在有 45 个文件、407 行，不含 `plan.md`、CHANGELOG 和本文。
 
-- **learn 只给结构**：改动大，也影响排查。等 §9 的数字说明 agent 还在绕过 run 时再做。
-- **Stop hook**：只对 Claude Code 有效，同样等数字。
-- **主 agent 和子 agent 分离**：依赖宿主。
+同时删掉 `guide.ts` 第 96 行"run 时会检查实际发出的顺序"的说法，让文档和代码一致。`@endpoint` 本身保留，继续表示 action 用到的 endpoint。
+
+**不做迁移**：没有兼容代码。旧的 `learn-windows/`、`learn-guide.md` 留在本机不再使用。`endpoints.json` 里指向 `learn-windows/` 的样本路径会失效，实施时要确认缺文件不会报错。这台机器没有 `~/.speedrun`，不用改写脚本。其他机器上的 action 和 compose 要手动改成 §5 的写法，这写进 CHANGELOG。
+
+## 7. 保留不动
+
+- **action 和 compose 两层**：action 碰页面，compose 调用 action。compose 不碰页面，这是恢复时安全重放的基础。
+- **目录**：`compose/`、`action/<站点>/`、`run-windows/`、`lib/`、`helpers/`。
+- **`endpoints.json` 和 `@endpoint`**：继续是可 `rg` 的文件。
+- **`@status`**：继续用 `draft`、`verified`、`blocked`，升级规则不变。
+- **扩展、页面脚本、录制、脱敏、请求头继承、`ask` 流程**。
+- **`get_page_text`**：写 DOM action 时需要看正文。
+- **这次不做**：learn 只给结构、Stop hook、主 agent 和子 agent 分离。等 §9 的数字说明 agent 还在绕过 run 时再做。
 
 ## 8. 风险
 
 | 风险 | 处理 |
 |---|---|
 | 这套设计能否改变 agent 行为，没有证据 | §9 用真实任务对比，不靠感觉 |
-| 删除 `try_action` 后，依赖深层页面状态的 action 每次都要从头走 | run 本来就要从头走，这是真实成本；`@write` 的多步流程最难受，实测后再判断要不要补 |
-| 失败现场让原始请求多留 10 分钟内存 | 不落盘，TTL 到期清掉，写进 PRIVACY.md |
-| 现场窗口留在用户 Chrome 里 | 折叠组，每个名字一个，闲置 20 秒解除附着 |
-| 删除操作的 `--description`，endpoint 的 description 变少 | 找脚本靠文件头，endpoint 描述只影响还没写成脚本的接口。这是判断，不是数据 |
-| 两个 agent 用同一个名字 | 同窗口串行，报错提示换名 |
-| 简单任务第一次也要写脚本 | 接受，这是单一规则的代价 |
+| compose 还缺 action 时，已写好的 action 跑不了 | 写一个只调用它的小 compose，或把缺的都写完再 Run |
+| 删除 `try_action` 后，改 action 要从 compose 开头跑 | 失败后用 `spr resume` 跳过已完成的 action |
+| Run 窗口关闭后，失败的页面状态要重新复现 | 接受。日志文件保留，Debug 窗口可以一直开着 |
+| Debug 窗口留在用户 Chrome 里 | 折叠组，空闲 30 分钟关闭 |
+| 单步任务也要写 compose | 接受，这是流程没有例外的代价，也留下了可复用入口 |
+| 删除 `--description` 后，`endpoints.json` 没有描述可搜 | 接受。Find 主要靠 compose 和 action 的文件头 |
+| 静态检查漏掉别名导入 | `runAction` 运行时继续报 `is not defined` |
+| 两个 agent 同时 Debug 同一个 compose | 同窗口串行，后到的命令报错 |
 
 ## 9. 验证
 
-固定 5 个真实任务，覆盖请求型、服务端渲染、签名站点、写操作、canvas，新旧版本各跑：
+**自检**（`npm run check`、`npm test`），只守住会静默出错的点：
+
+- `checkCompose`：缺失、blocked、循环、非字面量、注释和字符串里的 `action(` 不算调用。
+- `spr run` 拒绝 action，`spr debug` 拒绝不存在的 compose 和 action 名。
+- 失败后 `resume` 读当前文件，已完成的 action 不重跑，失败的 action 重跑。
+- run 结束时只关 Run 窗口，Debug 窗口保持登记。
+- SDK：`import "spr"` 能解析，参数传进函数，`ask` 能停下和恢复。
+
+**真实 Chrome**：按新命令重写 AGENTS.md §2.3，重点验证：
+
+- 一个 Debug 窗口写两个 action，`spr run` 通过后窗口还在。
+- Run 成功和失败后，灰色标签组都消失，日志和失败截图都在。
+- 窗口关掉后再操作，错误提示能引导重新 `navigate`。
+- 不抢前台的要求不变。
+
+**行为对比**：固定 5 个真实任务，覆盖请求型、服务端渲染、签名站点、写操作、canvas，新旧版本各跑：
 
 | 指标 | 期望 |
 |---|---|
 | 结果来自 `spr run` 的任务比例 | 接近 100% |
 | 第一次完成的命令数和耗时 | 不比旧版明显变差 |
 | 换参数第二次的命令数 | 找一次、run 一次 |
-| 留下的脚本换参数能否直接跑 | 都能 |
+| 留下的 compose 换参数能否直接跑 | 都能 |
 
-`spr status` 增加两个长期数字：开过 debug 但目标从没跑通的比例，没开 debug 直接命中脚本的 run 比例。
-
-## 10. 实施范围
+## 10. 实施顺序
 
 一次做完，按依赖顺序：
 
-1. learn 改名 debug（约 40 个文件、479 处），目录 `debug-windows/`、`debug-guide.md`，句柄改成名字。
-2. run 的检查、`missing-action`、目标复述、成功自动关窗口；删除 `try_action`。
-3. 失败现场、失败后 resume、verified 新规则。
-4. SDK 和文件头；改写现有 action、compose。
-5. `gen`、观察里的下一步、`status` 数字。
-6. 重写 SKILL.md、debug 指引、ARCHITECTURE.md、AGENTS.md §2.3、示范文档、PRIVACY.md、CHANGELOG.md。
+1. learn 改名 debug，窗口改按 compose 名查找，`navigate` 合并打开窗口。
+2. 新增 `run/link.ts`，`spr run` 只接受 compose，加上 Debug 末行。
+3. 删除 `try_action`、`--description`、旧提醒和 `closedNote`。
+4. 失败截图、失败输出和失败后 `resume`。
+5. SDK、worker、`import "spr"` 和文件头。
+6. 重写指引和文档，删除 `@endpoint` 顺序检查的说法，加 CHANGELOG。
+7. 跑自检，本地安装，做真实 Chrome 验证和 5 个任务的对比。

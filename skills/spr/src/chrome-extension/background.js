@@ -16,7 +16,7 @@
 // 页面脚本只经 CDP 进 speedrun 的标签页（cdp.js：附着时注册、补注入），用户的网页里没有 speedrun 的任何代码；页面脚本经 CDP binding 上报。
 // 扩展 → daemon：{ type: "hello", abi, build, ... }（build 是 setup.js 写进 build.js 的版本，daemon 发现不是磁盘上的最新版就发 reload） | { type: "page", tab, group, frame, top, page, msg }（页面脚本的消息，或标签页的地址变化、新开和关闭；group 是标签页所在的 speedrun 组）
 //
-// speedrun 的标签页都在用户窗口里 speedrun 自己的标签组中（一个 learn 句柄或一次 run 一个组，始终折叠）。归属只看组：标签页在 speedrun 的组里就是 speedrun 的，录、可以操作；
+// speedrun 的标签页都在用户窗口里 speedrun 自己的标签组中（一个 debug 窗口或一次 run 一个组，始终折叠）。归属只看组：标签页在 speedrun 的组里就是 speedrun 的，录、可以操作；
 // 用户把标签页拖进组就是交给 speedrun，拖出去就收回。扩展只记哪些组是 speedrun 的（agentGroups），组属于哪个句柄由 daemon 记。
 // 不抢前台：speedrun 从不选中自己的标签页；新开标签页先开成 chrome://newtab/（Tab Activate 这类扩展会把新标签页切到前台，但跳过 newtab）；
 // 页面自己要新开标签页时（target=_blank、window.open）页面脚本拦下来交给这里开（page/newtab.js），否则 Chrome 会选中新标签页、把窗口和 Chrome 拉到前台。

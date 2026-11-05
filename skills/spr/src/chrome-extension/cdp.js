@@ -1,4 +1,4 @@
-// CDP（chrome.debugger）：speedrun 唯一的输入路径（learn 的 computer 和 action 回放都走这里），截图、执行 JS，以及把页面脚本放进 speedrun 的标签页。
+// CDP（chrome.debugger）：speedrun 唯一的输入路径（debug 的 computer 和 action 回放都走这里），截图、执行 JS，以及把页面脚本放进 speedrun 的标签页。
 // 只附着 agent 标签页；附着期间 Chrome 在窗口顶部显示「正在调试此浏览器」，用户点掉或开了 DevTools 会断开，下一次操作重新附着。
 //
 // 页面脚本只经这里进 speedrun 的标签页（用户的网页里没有 speedrun 的任何代码）：附着后注册

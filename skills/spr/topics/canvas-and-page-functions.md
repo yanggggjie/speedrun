@@ -6,9 +6,9 @@
 
 ## 找函数
 
-1. learn 窗口自动做快照：窗口目录的 `page-api/`，站点累积在 `~/.speedrun/sites/<站点>/page-api.json`。用 `rg` 搜方法名，比如 `rg -i "setvalue|delete" <目录>`。只有名字和结构，没有值。
-2. 快照没覆盖到的：`spr learn <句柄> inspect --path SpreadsheetApp.behaviorApi.cellApi`。
-3. 要参数：`spr learn <句柄> trace <函数路径…>`，再操作一次页面（`computer double_click`、`computer type`），`trace --stop` 取记录，详情在 `calls/`。手动操作走的函数不一定是你猜的那个，都包上再看。
+1. debug 窗口自动做快照：窗口目录的 `page-api/`，站点累积在 `~/.speedrun/action/<站点>/page-api.json`。用 `rg` 搜方法名，比如 `rg -i "setvalue|delete" <目录>`。只有名字和结构，没有值。
+2. 快照没覆盖到的：`spr debug <compose> inspect --path SpreadsheetApp.behaviorApi.cellApi`。
+3. 要参数：`spr debug <compose> trace <函数路径…>`，再操作一次页面（`computer double_click`、`computer type`），`trace --stop` 取记录，详情在 `calls/`。手动操作走的函数不一定是你猜的那个，都包上再看。
 
 页面没有暴露接口时，退回 `type`、`click({ x, y })`、`screenshot()`。
 
@@ -20,7 +20,7 @@
 - 批量写前先读目标区域，非空就报错，要覆盖时显式传参数。
 - 参数里的类实例（trace 记录里的 `__class`）可能要用页面自己的类：拿现有实例的原型建一个。
 
-例子：`~/.speedrun/sites/doc.weixin.qq.com/actions/` 下的表格（`wedoc-sheet-*`）和文档（`wedoc-doc-*`）。文档用 `pad.editor.clipboardManager.pasteHTML` 插入，不碰系统剪贴板；编辑器的粘贴接口常常比逐字输入好用，先搜 `paste`。
+例子：`~/.speedrun/action/doc.weixin.qq.com/` 下的表格（`wedoc-sheet-*`）和文档（`wedoc-doc-*`）。文档用 `pad.editor.clipboardManager.pasteHTML` 插入，不碰系统剪贴板；编辑器的粘贴接口常常比逐字输入好用，先搜 `paste`。
 
 ## 系统弹窗
 

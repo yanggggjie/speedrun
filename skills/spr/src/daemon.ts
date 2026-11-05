@@ -10,7 +10,7 @@ import { enforce } from "./record/retention.ts";
 import { WindowLog } from "./record/windowlog.ts";
 import { runCommand, type Ctx } from "./commands/index.ts";
 import { RunHost } from "./browser/host.ts";
-import { LearnWindows } from "./learn/windows.ts";
+import { DebugWindows } from "./debug/windows.ts";
 import { ActionRunner, runWindowsOf } from "./run/runner.ts";
 import { coveredEndpoints, syncActionLib } from "./run/actions.ts";
 import { AgentWindows, type GroupLabel } from "./browser/window.ts";
@@ -54,7 +54,7 @@ function aliasSalt(): string {
 }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
 
-/** speedrun 组的标题都是「speedrun」：learn 组蓝色，run 组灰色。 */
+/** speedrun 组的标题都是「speedrun」：debug 组蓝色，run 组灰色。 */
 function groupLabel(kind: string | undefined): GroupLabel {
   return { title: GROUP_TITLE, color: kind === "run" ? "grey" : "blue" };
 }
@@ -70,17 +70,17 @@ function build() {
   const host = new RunHost({ link, win, ingest, raw });
   const runner = new ActionRunner(host, {}, runWindowsOf(log, win));
   drainRuns = () => runner.drain();
-  const learn = new LearnWindows({ log, host, win });
+  const debug = new DebugWindows({ log, host, win });
   const ctx: Ctx = {
     ensureExtension,
     tabs: async () => ((await link.request("tabs")) as { tabs: TabInfo[] }).tabs,
-    host, runner, win, learn, log, index, ingest, raw,
+    host, runner, win, debug, log, index, ingest, raw,
     daemon: () => ({ extension: extSocket !== null, pid: process.pid }),
   };
   return { ctx, setAdblock: (engine: FiltersEngine) => { adblock = engine; } };
 }
 const { ctx, setAdblock } = build();
-const { ingest, index, log, learn, win } = ctx;
+const { ingest, index, log, debug, win } = ctx;
 
 /** 页面消息：写日志。speedrun 组里的标签页记为那个窗口的（Ingestor 按 win.winOf 判断是哪个窗口）。扩展是旧版本时一条都不收。 */
 link.on("page", (m) => {
@@ -232,16 +232,16 @@ export async function runDaemon(): Promise<void> {
   try { syncActionLib(); } catch (error) { warnCatch("sync action lib")(error); }
   loadAdblockEngine().then(setAdblock).catch(warnCatch("adblock engine"));
   // 没有扩展连接、也没有命令请求超过 DAEMON_IDLE_EXIT_MS 就退出；下次需要时由 relay 或 CLI 重新拉起
-  // 日志按窗口目录淘汰（run 窗口只留最近的；learn 窗口先只删响应体、页面和截图的旧文件，再删整个旧窗口；开着的和 endpoint 样本不动）
+  // 日志按窗口目录淘汰（run 窗口只留最近的；debug 窗口先只删响应体、页面和截图的旧文件，再删整个旧窗口；开着的和 endpoint 样本不动）
   // 这些定时任务等第一次 inode 检查通过后才开始：极端竞争下两个 daemon 可能并存最多 OWNER_CHECK_MS，
-  // 被换掉的那个不能把另一个正开着的 learn 窗口当成已关，删掉里面的文件
-  const retain = (): void => { try { enforce(log, { protect: () => index.protect(), isOpen: (w) => learn.get(w)?.open === true, changed: () => index.touchAll() }); } catch (error) { warnCatch("retention")(error); } };
+  // 被换掉的那个不能把另一个正开着的 debug 窗口当成已关，删掉里面的文件
+  const retain = (): void => { try { enforce(log, { protect: () => index.protect(), isOpen: (w) => debug.get(w)?.open === true, changed: () => index.touchAll() }); } catch (error) { warnCatch("retention")(error); } };
   setTimeout(() => {
     if (!owned?.stillMine()) return;
     retain();
     setInterval(retain, 10_000).unref();
-    // 空闲太久的 learn 窗口关掉 Chrome 窗口（句柄和目录保留）
-    setInterval(() => { for (const w of learn.idle()) void learn.close(w).catch(warnCatch("close learn window")); }, 60_000).unref();
+    // 空闲太久的 debug 窗口关掉 Chrome 窗口（目录保留）
+    setInterval(() => { for (const w of debug.idle()) void debug.close(w).catch(warnCatch("close debug window")); }, 60_000).unref();
   }, OWNER_CHECK_MS + 100).unref();
   setInterval(() => { if (!extSocket && Date.now() - lastActivity > DAEMON_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();
   process.on("SIGINT", () => void shutdown(0));

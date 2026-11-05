@@ -96,12 +96,12 @@ async function collectChecks(): Promise<Check[]> {
 
   // 日志：几个窗口、占了多少空间
   // 用 load() 不用 open()：open() 会建目录，doctor 只读
-  const usage = (() => { try { const l = new WindowLog(); l.load(); return { u: l.usage(), learn: l.listWindows("learn").length, run: l.listWindows("run").length }; } catch { return null; } })();
+  const usage = (() => { try { const l = new WindowLog(); l.load(); return { u: l.usage(), debug: l.listWindows("debug").length, run: l.listWindows("run").length }; } catch { return null; } })();
   const mb = (n: number): string => (n / 1024 / 1024).toFixed(1);
   add({
     name: "record",
     ok: true,
-    detail: `${usage?.learn ?? 0} 个 learn 窗口（时间线和请求文件 ${mb(usage?.u.learn.light ?? 0)}MB，响应体、页面和截图 ${mb(usage?.u.learn.heavy ?? 0)}MB），${usage?.run ?? 0} 个 run 窗口`,
+    detail: `${usage?.debug ?? 0} 个 debug 窗口（时间线和请求文件 ${mb(usage?.u.debug.light ?? 0)}MB，响应体、页面和截图 ${mb(usage?.u.debug.heavy ?? 0)}MB），${usage?.run ?? 0} 个 run 窗口`,
     fix: "",
     optional: true,
   });

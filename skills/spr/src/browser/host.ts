@@ -10,12 +10,12 @@ import { GOTO_WAIT_MS, QUIET_MAX_MS, STEP_TIMEOUT_MS, WAIT_REQUEST_MS } from "..
 import { isSameSite, parseUrl, siteOfUrl } from "../utils/url.ts";
 import type { AgentWindows } from "./window.ts";
 
-/** 一次运行（或一次 learn）用到的页面：绑定到 speedrun agent 窗口里的一个标签页，站点（origin）变了就换一个。 */
+/** 一次运行（或一次 debug）用到的页面：绑定到 speedrun agent 窗口里的一个标签页，站点（origin）变了就换一个。 */
 export class Session {
   tab: number | undefined;
   origin: string | undefined;
   lastUsed = Date.now();
-  /** 所在的 agent 窗口：learn 窗口的句柄，或 run 窗口的名字。 */
+  /** 所在的 agent 窗口：debug 窗口的 id，或 run 窗口的名字。 */
   readonly key: string;
   /** compose（~/.speedrun/compose/ 下的文件）：只许调用 action，任何页面操作都拒绝。 */
   composeOnly = false;
@@ -37,7 +37,7 @@ const familyOf = (name: string): string => (name.split("-").length >= 3 ? name.r
 function rejectHint(endpoint: string, status: number, src: RequestSource): string {
   const copied = src.copied.length ? `抄了 ${src.from.join("、")} 的 ${src.copied.join("、")}` : "这次窗口里没有可抄的请求头（只带了 cookie）";
   const skipped = src.skipped.length ? `；没抄 ${src.skipped.join("、")}（这次窗口里每次都变、按 endpoint 变，或和它们同一族）` : "";
-  return `${endpoint} 被拒（${status}）：${copied}${skipped}。像是登录失效就请用户登录后重跑；页面这次没发带某个头的请求的，看 learn 窗口观察里「请求头」给的来源写进 request 的 auth；每次都变的头被拒的，改用 waitRequest（goto 带参数的页面或点一下，收页面自己发的请求）或 DOM`;
+  return `${endpoint} 被拒（${status}）：${copied}${skipped}。像是登录失效就请用户登录后重跑；页面这次没发带某个头的请求的，看 debug 窗口观察里「请求头」给的来源写进 request 的 auth；每次都变的头被拒的，改用 waitRequest（goto 带参数的页面或点一下，收页面自己发的请求）或 DOM`;
 }
 
 /** run 失败时的页面现场。 */
@@ -60,7 +60,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 }
 
 /**
- * action 与 learn 命令共用的页面操作。每个操作都在 speedrun agent 窗口的标签页里执行，并且都记进日志（来源 agent 的 cmd 行）：
+ * action 与 debug 命令共用的页面操作。每个操作都在 speedrun agent 窗口的标签页里执行，并且都记进日志（来源 agent 的 cmd 行）：
  * 做过的事都记下来——写 action 从这些记录来。
  */
 export class RunHost {
@@ -73,7 +73,7 @@ export class RunHost {
   private readonly dialogs = new Map<string, string[]>();
   /** waitMessage 登记的等待：只收登记之后、这个窗口收到的 WebSocket 和事件流消息。 */
   private readonly messageWaits = new Map<number, MessageWait>();
-  /** 正在统计非 GET 请求的窗口（run 窗口的名字，或正在 run action 的 learn 窗口句柄）：endpoint → 次数。 */
+  /** 正在统计非 GET 请求的窗口（run 窗口的名字）：endpoint → 次数。 */
   private readonly sent = new Map<string, Map<string, number>>();
   /** 每个窗口最近一次被 401/403 拒的说明。 */
   private readonly rejected = new Map<string, string>();
@@ -141,7 +141,7 @@ export class RunHost {
   }
 
   /**
-   * 在页面里执行一个函数，不记时间线、不算命令：learn 的页面函数快照和 trace 用，它们不是 agent 的操作，不能抢走请求的因果。
+   * 在页面里执行一个函数，不记时间线、不算命令：debug 的页面函数快照和 trace 用，它们不是 agent 的操作，不能抢走请求的因果。
    * fn 只能用自己的参数；没有页面时返回 undefined。
    */
   async peek<T>(s: Session, fn: (...args: never[]) => T, args: unknown[] = []): Promise<T | undefined> {
@@ -187,13 +187,13 @@ export class RunHost {
     if (s.tab !== undefined) this.d.win.release(s.tab);
     s.tab = undefined;
     s.origin = undefined;
-    // 窗口关掉（run 结束、learn close）：这个窗口的原始请求一起清掉
+    // 窗口关掉（run 结束、debug close）：这个窗口的原始请求一起清掉
     this.d.raw.dropWindow(s.key);
     this.rejected.delete(s.key);
   }
 
   private page(s: Session): number {
-    if (s.tab === undefined) throw new Error("还没有打开页面：action 第一步先 navigate(url)；learn 窗口里用 spr learn <句柄> navigate <网址>");
+    if (s.tab === undefined) throw new Error("还没有打开页面：action 第一步先 navigate(url)；debug 窗口里用 spr debug <compose> navigate <网址>");
     s.lastUsed = Date.now();
     return s.tab;
   }
@@ -227,7 +227,7 @@ export class RunHost {
   }
 
   async op(s: Session, name: string, a: any): Promise<unknown> {
-    if (s.composeOnly) throw new Error(`compose 代码里只能调用 action（action("名字", 参数)），不能操作页面：缺的 action 先 spr learn 学会`);
+    if (s.composeOnly) throw new Error(`compose 代码里只能调用 action（action("名字", 参数)），不能操作页面：缺的 action 用 spr debug 写好`);
     switch (name) {
       case "navigate": return this.navigate(s, a);
       case "request": return this.request(s, a);
@@ -287,13 +287,13 @@ export class RunHost {
   }
 
   /** 打开网址，或 back / forward 后退前进（和 navigate 工具一样）；settle 为真再等页面安静。 */
-  private async navigate(s: Session, a: { url: string; timeout?: number; description?: string; settle?: boolean }): Promise<{ url: string; title: string }> {
+  private async navigate(s: Session, a: { url: string; timeout?: number; settle?: boolean }): Promise<{ url: string; title: string }> {
     if (a.url === "back" || a.url === "forward") return this.history(s, a.url, a);
     let url: URL;
     try { url = new URL(a.url.includes("://") ? a.url : `https://${a.url}`); if (!/^https?:$/.test(url.protocol)) throw new Error("协议"); } catch { throw new Error(`不是有效的网址：${a.url}`); }
     const tab = await this.bind(s, url.origin);
     const safe = this.d.ingest.sanitizer.url(url.href);
-    return this.log(tab, "navigate", safe.bareUrl, { bareUrl: safe.bareUrl, query: safe.query, ...(a.description ? { description: a.description } : {}) }, async () => {
+    return this.log(tab, "navigate", safe.bareUrl, { bareUrl: safe.bareUrl, query: safe.query }, async () => {
       let res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as { url: string; title: string; loaded?: boolean };
       // 新开的标签页还在加载占位的 robots.txt 时，这次跳转会被它盖掉：停在占位页上就再跳一次
       if (/\/robots\.txt$/.test(res.url) && !/\/robots\.txt$/.test(url.pathname)) res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as typeof res;
@@ -305,9 +305,9 @@ export class RunHost {
     }, undefined, siteOfUrl(url.href) || undefined);
   }
 
-  private async history(s: Session, dir: "back" | "forward", a: { timeout?: number; description?: string; settle?: boolean }): Promise<{ url: string; title: string }> {
+  private async history(s: Session, dir: "back" | "forward", a: { timeout?: number; settle?: boolean }): Promise<{ url: string; title: string }> {
     const tab = this.page(s);
-    return this.log(tab, "navigate", dir, { dir, ...(a.description ? { description: a.description } : {}) }, async () => {
+    return this.log(tab, "navigate", dir, { dir }, async () => {
       let res: { url: string; title: string };
       try { res = (await withTimeout(this.d.link.request("history", { tabId: tab, dir, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, dir === "back" ? "后退" : "前进")) as typeof res; }
       catch (e) { if (/history/i.test(e instanceof Error ? e.message : String(e))) throw new Error(`没有可以${dir === "back" ? "后退" : "前进"}的页面（这个标签页的历史里没有）：用 navigate <网址> 直接打开`); throw e; }
@@ -392,7 +392,7 @@ export class RunHost {
 
   /**
    * 等页面安静、记录送达：页面没有在途请求、DOM 一小段时间没变（页面自己判断），并且页面在这之前发出的记录 daemon 都收到了；
-   * 合起来不超过 maxMs。页面在这期间跳转了（执行上下文没了）就再试一次新页面。learn 每步之后、request 抄头前、goto / 操作带 settle 时用。
+   * 合起来不超过 maxMs。页面在这期间跳转了（执行上下文没了）就再试一次新页面。debug 每步之后、request 抄头前、goto / 操作带 settle 时用。
    */
   async quiet(s: Session, maxMs = QUIET_MAX_MS): Promise<{ settled: boolean; waitedMs: number }> {
     s.fresh = false;
@@ -430,7 +430,7 @@ export class RunHost {
     try { return (await this.callTab(tab, "authSnapshot", [])) as AuthSnapshot; } catch { return undefined; }
   }
 
-  /** 截图（learn 的 computer screenshot / zoom）：region 只要这块，scale 缩小；返回图和视口尺寸。图片本身不进日志。 */
+  /** 截图（debug 的 computer screenshot / zoom）：region 只要这块，scale 缩小；返回图和视口尺寸。图片本身不进日志。 */
   private async screenshot(s: Session, a: { region?: number[]; scale?: number } = {}): Promise<{ data: string; mime: string; w: number; h: number; vw: number; vh: number }> {
     const tab = this.page(s);
     const args = { tabId: tab, ...(a.region ? { region: a.region } : {}), ...(a.scale ? { scale: a.scale } : {}) };
@@ -438,7 +438,7 @@ export class RunHost {
   }
 
   /**
-   * 一次输入（learn 的 computer / form_input，和 action 的 click / hover / key / scroll / scroll_to / form_input 共用）：
+   * 一次输入（debug 的 computer / form_input，和 action 的 click / hover / key / scroll / scroll_to / form_input 共用）：
    * 目标（ref | loc | 坐标）先在页面里换成视口坐标（a11y.js 的 point：滚进视口、查遮挡、给出持久定位），再由扩展用 CDP 发真实输入（cdp.js）。
    * a.action：left_click | right_click | double_click | triple_click | hover | left_click_drag | scroll | scroll_to | key | type | form_input。
    */
@@ -450,7 +450,7 @@ export class RunHost {
     const detail = {
       ...(a.ref ? { ref: a.ref } : {}), ...(a.loc !== undefined ? { loc: a.loc } : {}), ...(a.x !== undefined ? { x: a.x, y: a.y } : {}), ...(a.sx !== undefined ? { sx: a.sx, sy: a.sy } : {}),
       ...(a.toRef ? { toRef: a.toRef } : {}), ...(a.toLoc !== undefined ? { toLoc: a.toLoc } : {}), ...(a.keys ? { keys: a.keys } : {}), ...(a.repeat ? { repeat: a.repeat } : {}),
-      ...(a.direction ? { direction: a.direction, amount: a.amount } : {}), ...(a.mods ? { mods: a.mods } : {}), ...(a.description ? { description: a.description } : {}),
+      ...(a.direction ? { direction: a.direction, amount: a.amount } : {}), ...(a.mods ? { mods: a.mods } : {}),
     };
     const to = (t: { ref?: string; loc?: unknown; x?: number; y?: number }) => (t.ref ? { ref: t.ref } : t.loc !== undefined ? { loc: t.loc, timeout: a.timeout } : { x: t.x, y: t.y });
     const send = (args: Record<string, unknown>) => withTimeout(this.d.link.request("input", { tabId: tab, ...args }), STEP_TIMEOUT_MS, "输入");

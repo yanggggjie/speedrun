@@ -33,7 +33,7 @@ export function isMirrorPath(root: string, p: string): boolean {
 
 /**
  * 把 skill 的整个目录镜像到 homeAbs（~/.speedrun）：顶层文件直接覆盖，顶层目录（如 src）先清空再拷。
- * 只动 payload 里有的名字（和上次拷过去、这次删掉了的顶层文件），不碰 sites、learn-windows、run-windows、compose、lib、session、bin、alias-salt 这些本机数据。
+ * 只动 payload 里有的名字（和上次拷过去、这次删掉了的顶层文件），不碰 action、debug-windows、run-windows、compose、lib、session、bin、alias-salt 这些本机数据。
  */
 export function mirrorPayload(payloadAbs: string, homeAbs: string): void {
   fs.mkdirSync(homeAbs, { recursive: true });
@@ -49,7 +49,7 @@ export function mirrorPayload(payloadAbs: string, homeAbs: string): void {
     }
   }
   // 新版本删掉的顶层文件（如以前的 TROUBLESHOOTING.md）不留在本机：只删上次由这里拷过去、这次 payload 里没有的。
-  // 记录在 ~/.speedrun/.payload-files；speedrun 自己生成的（learn-guide.md）、用户放的文件、数据目录都不在记录里，不会被删
+  // 记录在 ~/.speedrun/.payload-files；speedrun 自己生成的（debug-guide.md）、用户放的文件、数据目录都不在记录里，不会被删
   const record = path.join(homeAbs, PAYLOAD_RECORD);
   const now = fs.readdirSync(payloadAbs, { withFileTypes: true }).filter((e) => e.isFile() && isMirrorPath(payloadAbs, path.join(payloadAbs, e.name))).map((e) => e.name);
   let before: string[] = [];

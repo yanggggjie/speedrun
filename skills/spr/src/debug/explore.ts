@@ -1,5 +1,5 @@
 /**
- * learn 窗口里"观察"用的纯函数：游标之后发生的请求里哪些值得列出（含 GET，写明有没有响应体）、一行怎么写、
+ * debug 窗口里"观察"用的纯函数：游标之后发生的请求里哪些值得列出（含 GET，写明有没有响应体）、一行怎么写、
  * 请求之间的依赖（后一个用了前一个响应里的值）。
  */
 import type { RequestFile, Row } from "../record/types.ts";
@@ -29,13 +29,13 @@ export function shownRequests(rows: Row[], stats: ReadonlyMap<string, PeriodicSt
 
 /**
  * 一个请求的一行：编号、`方法 路径`、状态、内容类型、有没有响应体（没有就写原因）、请求文件（窗口内的相对路径）；
- * other 是请求不在 learn 窗口起点的站点时写上站点；known 是这个 endpoint 以前记下的 description（description）。
+ * other 是请求不在 debug 窗口起点的站点时写上站点。
  */
-export function describeRequest(r: Row, file: RequestFile | undefined, opts: { other?: string; known?: string }): { line: string; readable: boolean } {
+export function describeRequest(r: Row, file: RequestFile | undefined, opts: { other?: string }): { line: string; readable: boolean } {
   const ct = file?.responseHeaders?.["content-type"]?.split(";")[0]?.trim() || "未知类型";
   const readable = !!file?.responseBodyPath;
   const body = readable ? "有响应体" : `无响应体（${file?.bodyOmitted ?? file?.error ?? "没存"}）`;
-  return { line: `#${r.seq} ${r.endpoint ?? `${r.method ?? "?"} ${r.url ?? ""}`}${opts.other ? `（${opts.other}）` : ""} → ${r.status ?? "?"} ${ct}，${body}，${r.file ?? "（没有请求文件）"}${opts.known ? `（以前：${opts.known}）` : ""}`, readable };
+  return { line: `#${r.seq} ${r.endpoint ?? `${r.method ?? "?"} ${r.url ?? ""}`}${opts.other ? `（${opts.other}）` : ""} → ${r.status ?? "?"} ${ct}，${body}，${r.file ?? "（没有请求文件）"}`, readable };
 }
 
 /** 路径里的这些词多半是配置和上报，不是业务接口。 */

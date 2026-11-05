@@ -2,6 +2,15 @@
 
 ## 未发布
 
+- **破坏性改动：写可复用的脚本成为唯一主线。** 任务固定走 Find、Write、Debug、Run，不留兼容。其他机器上已有的 action、compose 要手动改成下面的写法。
+  - `learn` 改名 `debug`：`spr debug <compose> navigate <网址|tab 号>` 打开窗口，窗口按 compose 查找，可以写多个 action。删除 `learn new`、句柄、`try_action`。日志目录改成 `debug-windows/`，旧的 `learn-windows/`、`learn-guide.md` 不再使用，可以手动删除。
+  - `spr run` 只接受 compose，单步任务也写 compose。执行前检查一次报全缺的 action（`is not defined`），什么都不发。删除 `spr run <名> --help`，说明和参数直接读文件头。
+  - debug 窗口在 run 之后保留，run 窗口结束就关。compose 失败时也截图，失败输出给出出错的 action，修好后 `spr resume <编号>` 跳过已完成的 action。
+  - 删除所有 `--description`，`endpoints.json` 不再有 `descriptions`。
+  - 脚本写法：`export default async ({ q, n = 30 }) => …`，`import { action, ask } from "spr"`。删除 `spr.params`、`spr.ask`，`@summary` 并入 `@description`，新增可选的 `@returns`。
+  - 站点目录 `~/.speedrun/sites/<站点>/actions/` 改成 `~/.speedrun/action/<站点>/`，`endpoints.json`、`page-api.json` 也在这里。
+  - 删除 debug 指引里"run 会检查 @endpoint 发送顺序"的说法，代码没有这个检查。
+
 - 新图标：一个折成闪电的 S，黄底黑形（`#FFD60A`、`#17171C`），品牌色从赛车红换成闪电黄。
 - `request()` 不再只按注册域名决定在哪个页面上发：同 origin、或者当前页面自己往那个 origin 发过请求才在当前页面上发，否则在目标 origin 上开页面发。以前同一个公司域名下的不同产品（`a.example.com` 页面上请求 `b.example.com`）会被 403。
 - 改名为 speedrun（快速通关），简称 spr（之前叫 lore、habit）：名字用 speedrun（产品、仓库、扩展显示名、标签组标题、数据目录 `~/.speedrun`、native host `com.speedrun.connect`）；要敲的用 spr（skill 名和触发词、命令 `~/.speedrun/bin/spr`、SDK 的 `spr.params` / `spr.ask`）。标签组标题都是 `speedrun`，learn 蓝色、run 灰色。扩展 ABI 16。数据目录换了位置，扩展要在 `chrome://extensions` 里从 `~/.speedrun/src/chrome-extension` 重新加载一次。

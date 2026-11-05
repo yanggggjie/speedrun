@@ -57,4 +57,4 @@ const LOGIN_URL = /(?:^|[/.\-_?=])(login|signin|sign-in|sso|passport|oauth|autho
 export const isLoginUrl = (url: string): boolean => LOGIN_URL.test(url);
 
 /** 遇到登录失效时给 agent 的提醒：先看页面，点一下能登录的自己点，要账号密码、扫码、验证码的请用户登录。 */
-export const LOGIN_HINT = "点一下就能登录的（快速登录、使用此账号继续）自己点，点前点后各 find / read_page 确认；要账号密码、二维码、验证码的停下来请用户在 Chrome 里登录，登录后重跑同一条命令。不要因此重新 learn、不要改 action";
+export const LOGIN_HINT = "点一下就能登录的（快速登录、使用此账号继续）自己点，点前点后各 find / read_page 确认；要账号密码、二维码、验证码的停下来请用户在 Chrome 里登录，登录后重跑同一条命令。不要因此重新 debug、不要改 action";

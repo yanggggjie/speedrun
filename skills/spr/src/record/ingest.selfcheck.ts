@@ -16,9 +16,9 @@ const log = new WindowLog({ root: dir });
 log.open();
 const raw = new RawStore();
 const index = new EndpointIndex({ dir: log.dir });
-const W = "example.com-20261101-120000"; // tab 5、6 在 learn 窗口里，tab 9 在 run 窗口里，其余是用户自己的窗口
+const W = "example.com-20261101-120000"; // tab 5、6 在 debug 窗口里，tab 9 在 run 窗口里，其余是用户自己的窗口
 const R = "save-20261101-120500";
-log.openWindow(W, "learn");
+log.openWindow(W, "debug");
 log.openWindow(R, "run");
 const ingest = new Ingestor(log, { aliasKey: "k", raw, index, winOf: (tab) => (tab === 9 ? R : tab === 5 || tab === 6 ? W : "user") });
 const page = "https://www.example.com/";
@@ -42,7 +42,7 @@ assert.equal(raw.inWindow("user").length, 0, "用户窗口的原始请求不进�
 assert.equal(index.snapshot(SITE).endpoints.length, 0, "用户窗口的请求不进endpoints.json");
 assert.ok(!fs.readdirSync(dir, { recursive: true }).some((f) => String(f).includes("private")), "没有任何文件");
 
-// 1. agent 的命令（learn 窗口里点了一下）之后 2 秒内开始的请求指向它，阶段是 cmd；页面脚本发的请求记为 agent；
+// 1. agent 的命令（debug 窗口里点了一下）之后 2 秒内开始的请求指向它，阶段是 cmd；页面脚本发的请求记为 agent；
 //    请求属于发出请求的页面的站点（api.example.com 的请求算在 example.com 里）
 const tap = ingest.beginCmd(5, T, "left_click", "button[提交]", undefined, SITE);
 ingest.endCmd(tap, { detail: { ok: true } });
@@ -113,8 +113,8 @@ assert.equal(cmdRow.seq, cmd.seq);
 assert.equal(cmdRow.target, "button[提交]", "命令做完后补上元素描述");
 assert.equal(agent.find((r) => r.kind === "fill")!.ok, false);
 assert.equal(agent.find((r) => r.kind === "fill")!.error, "元素不在页面上");
-assert.ok(rows(W).every((r) => r.win === W), "learn 窗口的时间线里没有 run 窗口的行");
-assert.ok(fs.existsSync(path.join(dir, "run-windows", R, "timeline.jsonl")) && fs.existsSync(path.join(dir, "learn-windows", W, "timeline.jsonl")), "每个窗口一个目录");
+assert.ok(rows(W).every((r) => r.win === W), "debug 窗口的时间线里没有 run 窗口的行");
+assert.ok(fs.existsSync(path.join(dir, "run-windows", R, "timeline.jsonl")) && fs.existsSync(path.join(dir, "debug-windows", W, "timeline.jsonl")), "每个窗口一个目录");
 
 // 6. 主文档渲染后的 HTML 原样存（包括内联脚本）
 ingest.handleBatch([{ k: "doc", t: T + 5000, tab: 5, page, url: "https://www.example.com/a?x=1", html: "<!doctype html>\n<html><body>独一无二的页面文字<script>window.__S={\"a\":1}</script></body></html>" }]);
@@ -129,13 +129,12 @@ assert.ok(!rows(W).some((r) => r.url === "https://www.example.com/queued"), "还
 ingest.flush();
 assert.equal(rows(W).at(-1)!.url, "https://www.example.com/queued");
 
-// 8. 点链接在 agent 窗口里新开了标签页（tab 6，没有自己的命令）：它几秒后加载出来的请求算那一下点击引发的，带上 description
-const opener = ingest.beginCmd(5, T + 400_000, "click", "(410,421)", { description: "点开 MR 573" }, SITE);
-ingest.endCmd(opener, { detail: { description: "点开 MR 573", ok: true } });
+// 8. 点链接在 agent 窗口里新开了标签页（tab 6，没有自己的命令）：它几秒后加载出来的请求算那一下点击引发的
+const opener = ingest.beginCmd(5, T + 400_000, "click", "(410,421)", undefined, SITE);
+ingest.endCmd(opener, { detail: { ok: true } });
 ingest.handleBatch([{ k: "net", t: T + 403_500, tab: 6, page: "https://git.example.org/mr/573", via: "fetch", method: "GET", status: 200, ct: "application/json", ms: 50, id: 9, rid: "n:9", url: "https://git.example.org/api/mr/573", body: "{}", size: 2, at: 300 }]);
 const mr = rows(W).find((r) => r.type === "request" && r.site === "git.example.org")!;
 assert.equal(mr.cause, opener.seq, "新标签页的请求指向打开它的那一下点击");
-assert.equal(index.snapshot("git.example.org").endpoints[0]!.descriptions?.[0]?.text, "点开 MR 573");
 
 
 // 记录送达：按标签页和页面加载编号分开等，换了加载（跳转）的消息不能当成旧页面的到了（否则观察会漏掉这一步的请求）

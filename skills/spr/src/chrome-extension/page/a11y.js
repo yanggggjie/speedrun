@@ -1,5 +1,5 @@
 // 页面里（MAIN world）的元素模型：唯一的 role / name 算法、a11y 树（read_page）、find、持久定位的生成和解析、元素 → 视口坐标。
-// learn 里看到的 `role "name"`（read_page、find）和 action 回放时解析 { role, name } 用的是同一套算法：learn 里看到什么名字，action 里就写什么名字。
+// debug 里看到的 `role "name"`（read_page、find）和 action 回放时解析 { role, name } 用的是同一套算法：debug 里看到什么名字，action 里就写什么名字。
 // 做法来自 open-claude-in-chrome 的 content.js（getRole / getAccessibleName / generateAccessibilityTree / findElements / getRefCoordinates）。
 // 这里只找元素、算坐标，不发输入：输入都由扩展用 CDP 发（cdp.js）。
 (() => {

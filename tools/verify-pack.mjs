@@ -58,7 +58,7 @@ try {
     "src/record/ingest.ts",
     "src/record/windowlog.ts",
     "src/record/auth.ts",
-    "src/learn/windows.ts",
+    "src/debug/windows.ts",
     "src/chrome-extension/background.js",
     "src/chrome-extension/page/recorder.js",
     "src/chrome-extension/page/executor.js",
@@ -71,7 +71,7 @@ try {
   }
 
   // 本机数据：镜像不能碰
-  const keep = path.join(HOME, ".speedrun", "sites", "x.com", "keep.txt");
+  const keep = path.join(HOME, ".speedrun", "action", "x.com", "keep.txt");
   fs.mkdirSync(path.dirname(keep), { recursive: true });
   fs.writeFileSync(keep, "用户的日志\n");
 
@@ -82,7 +82,7 @@ try {
   assert.equal(setup.status, 0, `setup 失败：${setup.stderr || setup.stdout}`);
   const dest = path.join(HOME, ".speedrun", "src");
   assert.ok(fs.existsSync(path.join(dest, "daemon.ts")), "~/.speedrun/src 未建好");
-  assert.equal(fs.readFileSync(keep, "utf8"), "用户的日志\n", "setup 不应动 ~/.speedrun/sites");
+  assert.equal(fs.readFileSync(keep, "utf8"), "用户的日志\n", "setup 不应动 ~/.speedrun/action");
   // ~/.speedrun 是 skill 目录的镜像：除 node_modules、.version 和扩展的 build.js（本机生成）外，每个文件内容都相同；自检、夹具、scripts、文档都在
   const GENERATED = new Set([path.join("src", "chrome-extension", "build.js")]);
   const listFiles = (dir, rel = "") => fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).flatMap((e) => {

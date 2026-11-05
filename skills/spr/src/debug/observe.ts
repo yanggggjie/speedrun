@@ -10,7 +10,7 @@ import type { RequestFile, Row } from "../record/types.ts";
 import type { WindowLog } from "../record/windowlog.ts";
 import { LOGIN_HINT, isLoginUrl, siteOfUrl } from "../utils/url.ts";
 import { dependencies, describeRequest, relevance, shownRequests, valuesOf } from "./explore.ts";
-import type { LearnWindow } from "./windows.ts";
+import type { DebugWindow } from "./windows.ts";
 
 /** 一次观察最多列多少个请求（按相关性，其余折叠成数量，都在 timeline.jsonl 里）。 */
 const OBSERVE_MAX = 6;
@@ -32,12 +32,12 @@ export type ObserveDeps = {
 };
 
 /**
- * 观察：游标之后这个 learn 窗口发生的变化（页面、导航、请求、请求之间的依赖），然后把游标移到最新。
+ * 观察：游标之后这个 debug 窗口发生的变化（页面、导航、请求、请求之间的依赖），然后把游标移到最新。
  * 晚到的请求（懒加载、轮询、防抖）下次观察时出现（computer wait 就是等一会儿再观察），不会丢也不会重复。
  * 请求只列这个窗口里第一次出现的 endpoint，其余只计数（全部都在 timeline.jsonl 里）。
  * 列出的请求带一行「请求头」信号：每个要关心的头值怎么变、页面存储里的来源（在内存里比真值，只输出类别和来源），同时记进 endpoints.json。
  */
-export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | undefined, step?: string, inputs: string[] = []): Promise<string> {
+export async function observe(d: ObserveDeps, w: DebugWindow, sess: Session | undefined, inputs: string[] = []): Promise<string> {
   d.ingest.flush();
   d.ingest.flushSockets();
   const from = w.cursor;
@@ -58,7 +58,7 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   if (dialogs.length) lines.push(`系统弹窗：${dialogs.slice(-3).map((r) => r.target).join("、")}（已拦下，没有弹出来：alert 放过，confirm、prompt 选取消，离开确认直接离开）`);
   if (navs.length) lines.push(`导航：${navs.slice(-5).map((r) => `#${r.seq} ${r.url}${r.site && r.site !== w.site ? `（${r.site}）` : ""}`).join(" → ")}`);
   // 请求
-  type Stat = { count: number; idle: number; cmdTriggered: number; descriptions?: Array<{ text: string }>; headers?: Record<string, HeaderSignal>; action?: string | null };
+  type Stat = { count: number; idle: number; cmdTriggered: number; headers?: Record<string, HeaderSignal>; action?: string | null };
   const statsOf = new Map<string, Map<string, Stat>>();
   const stats = (site: string): Map<string, Stat> => { let m = statsOf.get(site); if (!m) { m = new Map(d.index.snapshot(site).endpoints.map((e) => [e.key, e])); statsOf.set(site, m); } return m; };
   const merged = new Map<string, Stat>();
@@ -107,8 +107,7 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
       const f = files.get(r.seq);
       const site = r.site ?? w.site;
       const st = r.endpoint ? stats(site).get(r.endpoint) : undefined;
-      const known = st?.descriptions?.find((x) => x.text !== step)?.text;
-      lines.push(`  ${describeRequest(r, f, { other: site !== w.site ? site : undefined, known }).line}`);
+      lines.push(`  ${describeRequest(r, f, { other: site !== w.site ? site : undefined }).line}`);
       // 原始请求还在内存里就现算；不在（daemon 重启过、窗口关过）就用 endpoints.json 里上次记下的
       const raw = rawOf(r);
       let signals = st?.headers;
@@ -146,11 +145,6 @@ export async function observe(d: ObserveDeps, w: LearnWindow, sess: Session | un
   if (!picked.length && !repeated) {
     const api = w.page?.canvas || w.page?.api.length;
     lines.push(api ? `下一步：没有新请求，改动可能走页面函数或 WebSocket：先用 rg 搜 ${w.page!.dir} 的方法名，要参数用 trace；都没有再用页面操作` : "下一步：页面可能还在加载，computer wait 2 等一会儿再看；或者数据在页面里，用 DOM 取（get_page_text、read_page）");
-  }
-  // 这一步引发了还没有 action 覆盖的 endpoint：提醒写成 action（computer 只是触发，结果要来自 spr run）
-  if (step !== undefined) {
-    const uncovered = [...new Set(picked.filter((r) => r.phase === "cmd" && r.endpoint && !stats(r.site ?? w.site).get(r.endpoint)?.action).map((r) => r.endpoint!))].slice(0, 3);
-    if (uncovered.length) lines.push(`下一步：${uncovered.join("、")} 还没有 action 覆盖 → 要用的写成 action，spr learn ${w.id} try_action <名> 试，spr run 交付`);
   }
   w.cursor = Math.max(w.cursor, to);
   return lines.join("\n");

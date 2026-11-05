@@ -3,7 +3,7 @@ import { COMPOSE_DIR } from "../utils/constants.ts";
 import type { TabInfo } from "../browser/extension.ts";
 import type { RunHost } from "../browser/host.ts";
 import type { AgentWindows } from "../browser/window.ts";
-import type { LearnWindow, LearnWindows } from "../learn/windows.ts";
+import type { DebugWindow, DebugWindows } from "../debug/windows.ts";
 import type { ActionRunner } from "../run/runner.ts";
 import type { EndpointIndex } from "../record/endpoints.ts";
 import type { Ingestor } from "../record/ingest.ts";
@@ -18,10 +18,10 @@ export interface Ctx {
   host: RunHost;
   runner: ActionRunner;
   win: AgentWindows;
-  learn: LearnWindows;
+  debug: DebugWindows;
   ingest: Ingestor;
   raw: RawStore;
-  /** 窗口日志；log.dir 是 sites 目录（站点的 endpoints.json、actions/ 在它下面）。 */
+  /** 窗口日志；log.dir 是 action 目录（各站点的 endpoints.json 和 action 文件在它下面）。 */
   log: WindowLog;
   index: EndpointIndex;
   daemon(): { extension: boolean; pid: number };
@@ -46,11 +46,8 @@ export class Output {
   }
 }
 
-/** 关键命令都要带 --description：一句话用用户的话说这一步要做什么。speedrun 把它存进时间线和 endpoints.json，当成 endpoint 的 description。 */
-export const DESCRIPTION_HINT = '要带 --description "一句话，用用户的话说这一步要做什么"（如"点开变更单里的 MR"，不是"click 410 421"）；它会存下来，成为这个 endpoint、action、compose 的 description';
-
 export const composeDirOf = (ctx: Pick<Ctx, "composeDir">): string => ctx.composeDir ?? COMPOSE_DIR;
-export const idleMin = (w: LearnWindow): number => Math.round((Date.now() - w.lastActive) / 60_000);
+export const idleMin = (w: DebugWindow): number => Math.round((Date.now() - w.lastActive) / 60_000);
 export const indent = (text: string): string => text.split("\n").map((l) => `  ${l}`).join("\n");
 
 /**

@@ -1,4 +1,4 @@
-// endpoints.json：按 phase 统计动作引发 / 加载期 / 其它（只有 learn 窗口的记录）、样本受保护（路径相对 ~/.speedrun）、action 覆盖标记、重启后读回；
+// endpoints.json：按 phase 统计动作引发 / 加载期 / 其它（只有 debug 窗口的记录）、样本受保护（路径相对 ~/.speedrun）、action 覆盖标记、重启后读回；
 // endpoint 名：同一路径上请求体里的 operationName / action 把不同操作拆开；站点按页面 host。
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -29,7 +29,7 @@ assert.equal(endpointOf("https://a.com/api/search", { q: "x" }).name, "/api/sear
 // ---- 聚合 ----
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "speedrun-endpoints-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
-const dir = path.join(root, "sites");
+const dir = path.join(root, "action");
 const SITE = "x.com";
 let covered = new Map<string, string>();
 const index = new EndpointIndex({ dir, coverage: () => covered, flushMs: 5 });
@@ -39,7 +39,7 @@ function observe(endpoint: string, phase: Phase, over: { win?: string; status?: 
   const method = endpoint.slice(0, endpoint.indexOf(" "));
   const win = over.win ?? "x.com-20261101-120000";
   const rel = `requests/${String(s).padStart(6, "0")}-${method}-x.json`;
-  const ref = `learn-windows/${win}/${rel}`, bodyRef = `${ref.slice(0, -5)}.response.json`;
+  const ref = `debug-windows/${win}/${rel}`, bodyRef = `${ref.slice(0, -5)}.response.json`;
   fs.mkdirSync(path.dirname(path.join(root, ref)), { recursive: true });
   fs.writeFileSync(path.join(root, ref), "{}");
   fs.writeFileSync(path.join(root, bodyRef), "{}");
@@ -50,7 +50,7 @@ function observe(endpoint: string, phase: Phase, over: { win?: string; status?: 
   return input;
 }
 
-// 点赞：在 learn 窗口里点了 3 次（动作引发）
+// 点赞：在 debug 窗口里点了 3 次（动作引发）
 for (let i = 0; i < 3; i++) observe("POST graphql FavoriteTweet", "cmd", { label: "agent cmd click button[Like]", body: { variables: { tweet_id: "1" } }, text: "{\"data\":{\"favorite_tweet\":\"Done\"}}", rid: "d:9" });
 // 时间线：页面加载期发了 2 次、轮询 4 次；agent 的动作引发 1 次
 for (let i = 0; i < 2; i++) observe("GET graphql HomeTimeline", "load", { query: { variables: "{\"count\":20,\"cursor\":\"c\"}" }, text: "{\"data\":{\"home\":{\"a\":1,\"b\":2}}}" });
@@ -104,21 +104,4 @@ assert.equal(back.count, 8);
 assert.equal(back.samples.length, SAMPLES_PER_ENDPOINT);
 reborn.observe({ ...observe("GET graphql HomeTimeline", "idle"), row: { seq: 999, t: 1, win: "x.com-20261101-120000", src: "agent", tab: 5, type: "request", method: "GET", endpoint: "GET graphql HomeTimeline", phase: "idle", status: 200, file: "requests/000999-GET-x.json" } });
 assert.equal(reborn.snapshot(SITE).endpoints.find((e) => e.key === "GET graphql HomeTimeline")!.count, 9, "读回后接着计数");
-// description：动作带的一句 description，只收成功的请求，同一句只留一份，最多 5 句（新的在前）；describe 只记到已有的 endpoint
-const descIndex = new EndpointIndex({ dir: path.join(dir, "d"), coverage: () => new Map() });
-const obsD = (status: number, text: string, phase: Phase = "cmd") => {
-  const base = observe("GET /api/item", phase, { status });
-  descIndex.observe({ ...base, row: { ...base.row, status }, description: { text, from: "click" } });
-};
-obsD(500, "失败的不收");
-for (let i = 0; i < 7; i++) obsD(200, `第 ${i} 句`);
-obsD(200, "第 6 句");
-obsD(200, "轮询不收", "idle");
-const item = descIndex.snapshot(SITE).endpoints.find((e) => e.key === "GET /api/item")!;
-assert.deepEqual(item.descriptions!.map((d) => d.text), ["第 6 句", "第 5 句", "第 4 句", "第 3 句", "第 2 句"]);
-assert.equal(item.descriptions![0]!.from, "click");
-assert.equal(descIndex.describe(SITE, "GET /api/item", { text: "查一个条目", from: "run" }), true);
-assert.equal(descIndex.snapshot(SITE).endpoints.find((e) => e.key === "GET /api/item")!.descriptions![0]!.from, "run");
-assert.equal(descIndex.describe(SITE, "GET /api/nope", { text: "x", from: "run" }), false, "没有的 endpoint 不记");
-
 console.log("endpoints.selfcheck ok");

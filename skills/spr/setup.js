@@ -1,5 +1,5 @@
 // speedrun bootstrap：把本 skill 目录整个镜像到 ~/.speedrun（src、文档），再在 ~/.speedrun/src 里 npm install，然后建数据目录。
-// 日志在 .speedrun/learn-windows、run-windows，action 在 .speedrun/sites、compose，本脚本永不碰。
+// 日志在 .speedrun/debug-windows、run-windows，action 在 .speedrun/action、compose，本脚本永不碰。
 // 用法：node <此 skill 目录>/setup.js
 import * as fs from "node:fs";
 import * as os from "node:os";

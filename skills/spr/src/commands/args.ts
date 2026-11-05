@@ -58,5 +58,3 @@ function distance(a: string, b: string): number {
 /** 某个参数最后一次给的值。 */
 export const valueOf = (a: Args, name: string): string | undefined => a.values.get(name)?.at(-1);
 
-/** `--description` 的值（去掉首尾空白，空的当没给）。 */
-export const descriptionOf = (a: Args): string | undefined => valueOf(a, "description")?.trim() || undefined;

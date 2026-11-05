@@ -46,15 +46,15 @@ export type IngestOptions = {
   engine?: () => FiltersEngine | undefined;
   aliasKey?: string;
   raw?: RawStore;
-  /** 标签页所在的窗口：learn 窗口的句柄、run 窗口的名字；不是 agent 窗口的（user）一律不记。不给就当作都不是。 */
+  /** 标签页所在的窗口：debug 窗口的 id、run 窗口的名字；不是 agent 窗口的（user）一律不记。不给就当作都不是。 */
   winOf?: (tab: number) => string;
-  /** endpoints.json：learn 窗口里每写一个请求就通知它（run 窗口的不进）。 */
+  /** endpoints.json：debug 窗口里每写一个请求就通知它（run 窗口的不进）。 */
   index?: EndpointIndex;
 };
 
 /** beginCmd 返回的句柄：编号已经预留，行在 endCmd 时才写。 */
 export type CmdRef = { seq: number; site: string; win: string; tab: number; ts: number; verb: string; target: string; detail?: Record<string, unknown> };
-type LastAction = { seq: number; ts: number; label: string; description?: string; verb?: string; inherited?: boolean };
+type LastAction = { seq: number; ts: number; label: string; inherited?: boolean };
 
 /** 页面发出、刚收录的一个请求（原始内容，只在内存里交给 waitRequest）。 */
 export type SeenRequest = { seq: number; win: string; tab: number; method: string; url: string; endpoint: string; status?: number; body?: string; reqBody?: string; ct?: string; truncated?: boolean; error?: string; noise?: boolean };
@@ -98,7 +98,7 @@ export class Ingestor {
   push(msg: PageMsg): void {
     this.noteDelivered(msg);
     this.queue.push(msg);
-    // 定时写盘出错（磁盘满、没权限）只记下来：抛到定时器外面会让 daemon 退出，内存里的原始请求、ask 恢复记录、learn 窗口的页面全丢
+    // 定时写盘出错（磁盘满、没权限）只记下来：抛到定时器外面会让 daemon 退出，内存里的原始请求、ask 恢复记录、debug 窗口的页面全丢
     this.timer ??= setTimeout(() => { try { this.flush(); } catch (error) { logger.warn("写日志失败", { err: error instanceof Error ? error.message : String(error) }); } }, FLUSH_MS);
   }
 
@@ -153,8 +153,7 @@ export class Ingestor {
     const seq = this.log.reserve();
     if (site) { this.tabSite.set(tab, site); trimMap(this.tabSite); }
     const ref: CmdRef = { seq, site: site ?? this.tabSite.get(tab) ?? OTHER_SITE, win: this.winOf(tab), tab, ts, verb, target, detail };
-    const description = typeof detail?.description === "string" ? detail.description : undefined;
-    const act: LastAction = { seq, ts, label: `agent cmd ${verb} ${target}`.trim(), ...(description ? { description, verb } : {}) };
+    const act: LastAction = { seq, ts, label: `agent cmd ${verb} ${target}`.trim() };
     this.lastAction.set(tab, act);
     this.lastCmdOfWin.set(this.winOf(tab), act);
     trimMap(this.lastAction);
@@ -163,10 +162,9 @@ export class Ingestor {
 
   /** 命令做完：写这一行，带上元素描述和结果。 */
   endCmd(ref: CmdRef, fields: { target?: string; size?: number; detail?: Record<string, unknown> }): void {
-    const { ok, error, description, ...rest } = { ...(fields.detail ?? ref.detail ?? {}) } as Record<string, unknown>;
+    const { ok, error, ...rest } = { ...(fields.detail ?? ref.detail ?? {}) } as Record<string, unknown>;
     const row: Row = {
       seq: ref.seq, t: ref.ts, win: ref.win, site: ref.site, src: "agent", tab: ref.tab, type: "cmd", kind: ref.verb, target: fields.target ?? ref.target,
-      ...(typeof description === "string" && description ? { description } : {}),
       ...(fields.size !== undefined ? { size: fields.size } : {}),
       ...(typeof ok === "boolean" ? { ok } : {}), ...(typeof error === "string" ? { error } : {}),
       ...(Object.keys(rest).length ? { detail: rest } : {}),
@@ -355,8 +353,8 @@ export class Ingestor {
       const seen: SeenRequest = { seq, win, tab: msg.tab, method, url: rawUrl, endpoint, ...(status !== undefined ? { status } : {}), ...(rawBody !== undefined ? { body: rawBody } : {}), ...(rawReqBody !== undefined ? { reqBody: rawReqBody } : {}), ...(ct ? { ct } : {}), ...(msg.truncated ? { truncated: true } : {}), ...(str(msg.err) ? { error: str(msg.err) } : {}), ...(noise ? { noise: true } : {}) };
       for (const fn of this.seenListeners) { try { fn(seen); } catch { /* 订阅者的错不影响收录 */ } }
     }
-    // endpoints.json只由 learn 窗口累积；run 窗口的日志只给反查用
-    if (!noise && this.log.kindOf(win) === "learn") this.index?.observe({ site, row, file, ref: this.log.ref(win, rel), ...(responseBodyPath ? { bodyRef: this.log.ref(win, responseBodyPath) } : {}), text, label: cause?.label, ...(cause?.description ? { description: { text: cause.description, from: cause.verb ?? "cmd" } } : {}) });
+    // endpoints.json只由 debug 窗口累积；run 窗口的日志只给反查用
+    if (!noise && this.log.kindOf(win) === "debug") this.index?.observe({ site, row, file, ref: this.log.ref(win, rel), ...(responseBodyPath ? { bodyRef: this.log.ref(win, responseBodyPath) } : {}), text, label: cause?.label });
   }
 
   /** 标签页还没有自己的命令（页面新开的）：窗口最近一条命令在 NEW_TAB_MS 之内，就当它是引发者，并记给这个标签页。 */

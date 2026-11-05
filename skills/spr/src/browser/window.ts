@@ -4,18 +4,18 @@ import { sleep } from "../utils/async.ts";
 
 type Tab = { tabId: number; groupId?: number; speedrun?: boolean };
 type Owned = { origin: string; busy: boolean; idleSince: number; key: string };
-/** speedrun 的标签组标题：所有组都叫这个（learn、run 用颜色区分），扩展清理旧组时也按它认。 */
+/** speedrun 的标签组标题：所有组都叫这个（debug、run 用颜色区分），扩展清理旧组时也按它认。 */
 export const GROUP_TITLE = "speedrun";
 /** 组的标题和颜色（Chrome 标签组的颜色名）。 */
 export type GroupLabel = { title: string; color: string };
 
 /**
  * speedrun 窗口：agent 干活的地方。不是单独的 Chrome 窗口，而是用户窗口里 speedrun 的一个**标签组**（始终折叠），不开窗口、不抢前台。两种，key 就是窗口的名字：
- * learn 窗口（key 是句柄，如 zhihu.com-20261101-130245）一直保留，agent 显式关；run 窗口（key 是 run 的名字）一次 run 一个，跑完就关（dispose）。
+ * debug 窗口（key 是窗口 id，如 zhihu-vote-20261101-130245）run 之后也保留，agent 显式关或空闲太久才关；run 窗口（key 是 run 的名字）一次 run 一个，跑完就关（dispose）。
  * 组里的标签页按站点（origin）池化，只在这个组内复用。归属看组：扩展只认 speedrun 的组；组属于哪个 key 只记在这里（内存），
  * 页面自己开出来的标签页（扩展替它开在同一个组里）按扩展报来的组号归到 key。
  * 后台标签页靠调试器渲染（扩展附着时开 focus emulation）；一个组 GROUP_IDLE_MS 没有操作就解除附着（不吃 CPU，没有附着时「正在调试此浏览器」的横幅也会消失），下次操作扩展自动重新附着。
- * daemon 重启（或扩展链路重连）一切归零：第一次用时关掉所有 speedrun 组；开着的 learn 窗口随之算关掉（句柄只剩日志）。run 窗口的组被用户关了，下次用到时重建。
+ * daemon 重启（或扩展链路重连）一切归零：第一次用时关掉所有 speedrun 组；开着的 debug 窗口随之算关掉（只剩日志）。run 窗口的组被用户关了，下次用到时重建。
  */
 export class AgentWindows {
   private readonly link: Pick<ExtensionLink, "request">;
@@ -43,7 +43,7 @@ export class AgentWindows {
 
   isAgentTab(tab: number): boolean { return this.owned.has(tab) || this.adopted.has(tab); }
 
-  /** 标签页所在的窗口（learn 窗口的句柄、run 窗口的名字）；不在 speedrun 组里的就是用户自己的 user。 */
+  /** 标签页所在的窗口（debug 窗口的 id、run 窗口的名字）；不在 speedrun 组里的就是用户自己的 user。 */
   winOf(tab: number): string { return this.owned.get(tab)?.key ?? this.adopted.get(tab) ?? "user"; }
 
   /** key 对应的组号（还没开就是 undefined）。 */
@@ -127,7 +127,7 @@ export class AgentWindows {
     return a;
   }
 
-  /** 在这个标签页上做一次操作（页面操作、等请求、learn 的 wait）：期间它的组不算闲置。返回结束时调用的函数。 */
+  /** 在这个标签页上做一次操作（页面操作、等请求、debug 的 wait）：期间它的组不算闲置。返回结束时调用的函数。 */
   busy(tab: number): () => void {
     const key = this.winOf(tab);
     if (key === "user") return () => {};
@@ -156,7 +156,7 @@ export class AgentWindows {
     await this.link.request("closeTab", { tabId: tab }).catch(() => {});
   }
 
-  /** 关掉一个 key 的整个组（run 跑完、learn 窗口 close 或空闲太久）。 */
+  /** 关掉一个 key 的整个组（run 跑完、debug 窗口 close 或空闲太久）。 */
   async dispose(key: string): Promise<void> {
     const group = this.groups.get(key);
     this.groups.delete(key);

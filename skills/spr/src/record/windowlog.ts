@@ -4,25 +4,25 @@ import { DATA_HOME } from "../utils/constants.ts";
 import type { Row } from "./types.ts";
 
 /**
- * 日志按窗口存：一个窗口一个目录，learn 窗口在 <root>/learn-windows/<句柄>/，run 窗口在 <root>/run-windows/<名字>/。
+ * 日志按窗口存：一个窗口一个目录，debug 窗口在 <root>/debug-windows/<id>/，run 窗口在 <root>/run-windows/<名字>/。
  * 每个目录里：meta.json、timeline.jsonl（这个窗口发生的一切，跨站点，每行带 site，追加写，不改已写的行）、
  * requests/（请求文件和响应体）、pages/（页面 HTML、快照）、screenshots/（截图）。文件名以 6 位编号开头，后面是语义（方法、endpoint 名、页面路径）。
  *
  * 文件引用分两种：窗口内的相对路径（`requests/001203-GET-api-v4-search_v3.json`，时间线和请求文件里用），
- * 和相对 root 的路径（`learn-windows/<句柄>/requests/…`，endpoints.json 的样本用，脱离窗口也能找到）。
+ * 和相对 root 的路径（`debug-windows/<id>/requests/…`，endpoints.json 的样本用，脱离窗口也能找到）。
  *
  * 分两层：时间线和请求文件是 meta、时间线和请求文件，响应体、页面和截图是响应体、页面、截图（见 tierOf）。淘汰见 retention.ts。
- * 站点目录（endpoints.json、actions/）按站点放在 <root>/sites/<站点>/，不在这里。
- * 编号 seq 全局递增，上界按块落盘到 <root>/sites/.seq：崩溃重启只会留下编号空洞，不会重复。只有 daemon 写这些目录。
+ * 站点目录（endpoints.json、action 文件）按站点放在 <root>/action/<站点>/，不在这里。
+ * 编号 seq 全局递增，上界按块落盘到 <root>/action/.seq：崩溃重启只会留下编号空洞，不会重复。只有 daemon 写这些目录。
  */
 export type Tier = "light" | "heavy";
-export type WinKind = "learn" | "run";
+export type WinKind = "debug" | "run";
 export type WindowMeta = { id: string; kind: WinKind; createdAt: number } & Record<string, unknown>;
 export type WindowUsage = { kind: WinKind; light: number; heavy: number; createdAt: number };
 
 const SEQ_BLOCK = 1000;
 const BODY_MEMO_MAX = 5_000;
-const KIND_DIR: Record<WinKind, string> = { learn: "learn-windows", run: "run-windows" };
+const KIND_DIR: Record<WinKind, string> = { debug: "debug-windows", run: "run-windows" };
 
 export const seqPrefix = (seq: number): string => String(seq).padStart(6, "0");
 
@@ -48,7 +48,7 @@ export type RowQuery = {
 
 export class WindowLog {
   readonly root: string;
-  /** 站点目录：<root>/sites（各站点的 endpoints.json、actions/）。 */
+  /** 站点目录：<root>/action（各站点的 endpoints.json 和 action 文件）。 */
   readonly dir: string;
   private readonly now: () => number;
   private seq = 0;
@@ -59,7 +59,7 @@ export class WindowLog {
 
   constructor(options: WindowLogOptions = {}) {
     this.root = options.root ?? DATA_HOME;
-    this.dir = path.join(this.root, "sites");
+    this.dir = path.join(this.root, "action");
     this.now = options.now ?? Date.now;
   }
 
@@ -74,7 +74,7 @@ export class WindowLog {
   /** 只读地扫一遍已有的窗口（doctor 用：不建目录）。 */
   load(): void {
     try { this.seq = this.seqHigh = Math.max(0, Number(fs.readFileSync(this.seqFile(), "utf8").trim()) || 0); } catch { /* 第一次 */ }
-    for (const kind of ["learn", "run"] as const) {
+    for (const kind of ["debug", "run"] as const) {
       const base = path.join(this.root, KIND_DIR[kind]);
       if (!fs.existsSync(base)) continue;
       for (const e of fs.readdirSync(base, { withFileTypes: true })) if (e.isDirectory()) this.scan(e.name, kind);
@@ -107,7 +107,7 @@ export class WindowLog {
 
   // ---- 窗口 ----
 
-  /** 登记一个窗口（建目录、写 meta）。同名已存在时合并 meta（learn 窗口重新打开）。 */
+  /** 登记一个窗口（建目录、写 meta）。同名已存在时合并 meta（debug 窗口重新打开）。 */
   openWindow(win: string, kind: WinKind, meta: Record<string, unknown> = {}): void {
     const dir = path.join(this.root, KIND_DIR[kind], win);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -127,12 +127,12 @@ export class WindowLog {
   kindOf(win: string): WinKind | undefined {
     const known = this.wins.get(win)?.kind;
     if (known) return known;
-    for (const kind of ["learn", "run"] as const) if (fs.existsSync(path.join(this.root, KIND_DIR[kind], win, "meta.json"))) { this.scan(win, kind); return kind; }
+    for (const kind of ["debug", "run"] as const) if (fs.existsSync(path.join(this.root, KIND_DIR[kind], win, "meta.json"))) { this.scan(win, kind); return kind; }
     return undefined;
   }
 
-  /** 窗口目录的绝对路径；没登记过的窗口算 learn 窗口。 */
-  winDir(win: string): string { return path.join(this.root, KIND_DIR[this.kindOf(win) ?? "learn"], win); }
+  /** 窗口目录的绝对路径；没登记过的窗口算 debug 窗口。 */
+  winDir(win: string): string { return path.join(this.root, KIND_DIR[this.kindOf(win) ?? "debug"], win); }
 
   readMeta(win: string): WindowMeta | undefined {
     try { return JSON.parse(fs.readFileSync(path.join(this.winDir(win), "meta.json"), "utf8")) as WindowMeta; } catch { return undefined; }
@@ -147,11 +147,6 @@ export class WindowLog {
   }
 
   /** 某一种窗口，按创建时间从旧到新。 */
-  /** t 之后开的 run 窗口的 meta（learn close 时看这个窗口学到的有没有用 spr run 交付过）。 */
-  runsSince(t: number): WindowMeta[] {
-    return this.listWindows("run").map((w) => this.readMeta(w)).filter((m): m is WindowMeta => !!m && Number(m.createdAt) >= t);
-  }
-
   listWindows(kind: WinKind): string[] {
     return [...this.wins].filter(([, u]) => u.kind === kind).sort((a, b) => a[1].createdAt - b[1].createdAt).map(([win]) => win);
   }
@@ -159,7 +154,7 @@ export class WindowLog {
   // ---- 路径 ----
 
   /** 窗口内的相对路径 → 相对 root 的路径。 */
-  ref(win: string, rel: string): string { return path.posix.join(KIND_DIR[this.kindOf(win) ?? "learn"], win, rel); }
+  ref(win: string, rel: string): string { return path.posix.join(KIND_DIR[this.kindOf(win) ?? "debug"], win, rel); }
   /** 窗口内的相对路径 → 绝对路径。 */
   abs(win: string, rel: string): string { return path.join(this.winDir(win), rel); }
   /** 相对 root 的路径 → 绝对路径。 */
@@ -246,8 +241,8 @@ export class WindowLog {
 
   // ---- 占用、淘汰用 ----
 
-  usage(): { learn: { light: number; heavy: number }; run: { light: number; heavy: number }; windows: Record<string, WindowUsage> } {
-    const total = { learn: { light: 0, heavy: 0 }, run: { light: 0, heavy: 0 } };
+  usage(): { debug: { light: number; heavy: number }; run: { light: number; heavy: number }; windows: Record<string, WindowUsage> } {
+    const total = { debug: { light: 0, heavy: 0 }, run: { light: 0, heavy: 0 } };
     for (const u of this.wins.values()) { total[u.kind].light += u.light; total[u.kind].heavy += u.heavy; }
     return { ...total, windows: Object.fromEntries(this.wins) };
   }

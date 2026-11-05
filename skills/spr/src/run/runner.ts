@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
-import { COMPOSE_DIR, SESSION_DIR, SITES_DIR } from "../utils/constants.ts";
+import { COMPOSE_DIR, SESSION_DIR, ACTION_DIR } from "../utils/constants.ts";
 import { RunHost, Session, type FailurePage } from "../browser/host.ts";
 import type { AgentWindows } from "../browser/window.ts";
 import type { WindowLog } from "../record/windowlog.ts";
@@ -16,7 +16,7 @@ export type AskState = { journal: JournalEntry[]; answers: unknown[] };
 /** ask 的 code：停下那一刻 compose 文件的内容，恢复时照它重放（中途改了文件也不影响）。runWindow：这次 run 用的 run 窗口（名字）；drafts：这次真跑成功的 draft（文件路径），由命令层判断变成 verified；sent：这次实际发出的非 GET 请求（`POST /api/x ×2`）。三者只在最外层有。 */
 export type Outcome = (
   | { status: "success"; result: unknown }
-  | { status: "failure"; error: string; failedAction?: string; page?: FailurePage; hint?: string }
+  | { status: "failure"; error: string; failedAction?: string; page?: FailurePage; hint?: string; journal?: JournalEntry[]; answers?: unknown[] }
   | { status: "ask"; question: string; data: unknown; journal: JournalEntry[]; code?: string }
 ) & { runWindow?: string; drafts?: string[]; sent?: string[]; dialogs?: string[] };
 
@@ -28,9 +28,9 @@ export function looksLoggedOut(error: string, url: string | undefined): boolean 
   return /\b(401|403)\b|unauthori[sz]ed|未登录|登录/i.test(error);
 }
 
-/** sitesDir：各站点的 actions/ 在它下面；composeDir：compose。 */
-export type RunnerPaths = { sitesDir: string; composeDir: string };
-const DEFAULT_PATHS: RunnerPaths = { sitesDir: SITES_DIR, composeDir: COMPOSE_DIR };
+/** actionDir：各站点的 action 文件在它下面；composeDir：compose。 */
+export type RunnerPaths = { actionDir: string; composeDir: string };
+const DEFAULT_PATHS: RunnerPaths = { actionDir: ACTION_DIR, composeDir: COMPOSE_DIR };
 const WORKER = path.join(import.meta.dirname, "worker.ts");
 const MAX_LOG_LINES = 50;
 
@@ -63,7 +63,7 @@ export class ActionRunner {
   private readonly host: RunHost;
   private readonly paths: RunnerPaths;
   private readonly windows: RunWindows;
-  /** 停在 spr.ask 的 run 的恢复记录。 */
+  /** 可以接着跑的 run 的恢复记录。 */
   readonly asks = new PendingAsks();
   /** 正在后台关的 run 窗口：结果先返回，daemon 退出前等它们关完（drain）。 */
   private readonly closing = new Set<Promise<void>>();
@@ -74,12 +74,12 @@ export class ActionRunner {
 
   /** 按名字运行一个 action 或 compose（spr run，或 compose 里的 action() 调用）。nested 传进来表示嵌套调用，共用这次 run 的窗口和页面。draft 也能跑。 */
   async runAction(name: string, params: Record<string, unknown>, nested?: Session, opts: RunOptions = {}): Promise<Outcome> {
-    const found = findAction(this.paths.sitesDir, name, this.paths.composeDir);
+    const found = findAction(this.paths.actionDir, name, this.paths.composeDir);
     const tag = nested ? { failedAction: name } : {};
-    if (!found) return { status: "failure", error: `action 不存在：${name}（action 在 ${this.paths.sitesDir}/<站点>/actions/ 和 ${this.paths.composeDir}/ 下，ls 看有哪些）`, ...tag };
+    if (!found) return { status: "failure", error: `${name} is not defined（action 在 ${this.paths.actionDir}/<站点>/，compose 在 ${this.paths.composeDir}/）`, ...tag };
     const file = found.file;
     const summary = actionSummary(file);
-    if (summary.status === "blocked") return { status: "failure", error: `[${name}] 是学不会的 action（@status blocked，原因见 ${file} 的 @note）：不要再 learn，向用户说明卡在哪；有新证据才把 @status 改回 draft、在 @note 写明为什么，回 learn 窗口修`, ...tag };
+    if (summary.status === "blocked") return { status: "failure", error: `[${name}] 是写不出来的 action（@status blocked，原因见 ${file} 的 @note）：不要再 debug，向用户说明卡在哪；有新证据才把 @status 改回 draft、在 @note 写明为什么，回 debug 窗口修`, ...tag };
     const composed = isCompose(found);
     const problem = checkParams(file, params);
     if (problem) return { status: "failure", error: `[${name}] ${problem}`, ...tag };
@@ -93,17 +93,19 @@ export class ActionRunner {
     if (nested) { session.tab = nested.tab; session.origin = nested.origin; session.fresh = nested.fresh; }
     else this.host.watchSent(key);
     try {
-      // 只有最外层的 compose 能 ask：嵌套调用的 compose 不带重跑状态
+      // 只有最外层的 compose 能 ask 和恢复：嵌套调用的 compose 不带重跑状态
+      const state = composed && !nested ? (opts.askState ?? { journal: [], answers: [] }) : undefined;
       const code = composed ? (nested ? undefined : opts.code) ?? fs.readFileSync(file, "utf8") : undefined;
       const out: Outcome = code !== undefined
-        ? await this.execCompose(file, code, params, actionTimeoutMs(file), session, nested ? undefined : (opts.askState ?? { journal: [], answers: [] }))
+        ? await this.execCompose(file, code, params, actionTimeoutMs(file), session, state)
         : await this.work(file, params, actionTimeoutMs(file), session);
       if (out.status === "ask") out.code = code;
       if (out.status === "failure" && nested) out.failedAction ??= name;
-      if (out.status === "failure" && !nested && !composed) {
+      if (out.status === "failure" && state) { out.journal = state.journal; out.answers = state.answers; }
+      if (out.status === "failure" && !nested) {
         const page = await this.host.failureShot(session, this.windows.failureFile(key));
         if (page) out.page = page;
-        if (looksLoggedOut(out.error, page?.url)) out.hint = `像是登录失效：用读图片的方式看 page.screenshot。要点登录的，用 spr learn new --url <这个页面> 打开 learn 窗口去点；${LOGIN_HINT}。`;
+        if (looksLoggedOut(out.error, page?.url)) out.hint = `像是登录失效：用读图片的方式看 page.screenshot。要点登录的，用 spr debug ${name} navigate <这个页面> 打开 debug 窗口去点；${LOGIN_HINT}。`;
         else if (page?.screenshot) out.hint = "看 page.screenshot 判断页面停在了哪；页面正常但 action 失败，才是 action 坏了。";
       }
       if (out.status === "failure" && !nested) this.addRejected(out, key);
@@ -129,17 +131,6 @@ export class ActionRunner {
   private addRejected(out: Outcome, key: string): void {
     const why = this.host.takeRejected(key);
     if (why && out.status === "failure") out.hint = out.hint ? `${why}\n${out.hint}` : why;
-  }
-
-  /** 在 learn 窗口当前的页面上跑一个 action（spr learn <句柄> try_action）：共用这个窗口的页面，结果里带这次实际发出的非 GET 请求。 */
-  async runInLearn(name: string, params: Record<string, unknown>, learn: Session): Promise<Outcome> {
-    this.host.watchSent(learn.key);
-    try {
-      const out = await this.runAction(name, params, learn);
-      if (out.status === "failure") this.addRejected(out, learn.key);
-      out.sent = this.host.takeSent(learn.key);
-      return out;
-    } finally { this.host.takeSent(learn.key); }
   }
 
   /**
@@ -176,11 +167,13 @@ export class ActionRunner {
       const worker = new Worker(WORKER, { workerData: { file, params }, env: {} });
       let settled = false;
       let calls = 0, asks = 0;
+      let failedAction: string | undefined;
       const finish = (out: Outcome): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         void worker.terminate();
+        if (out.status === "failure" && failedAction) out.failedAction ??= failedAction;
         if (out.status === "failure" && logs.length) out.error += `\n--- action 输出 ---\n${logs.slice(-10).join("\n")}`;
         resolve(out);
       };
@@ -194,16 +187,16 @@ export class ActionRunner {
         if (m.type !== "call") return;
         const reply = (body: Record<string, unknown>): void => { if (!settled) worker.postMessage({ type: "reply", id: m.id, ...body }); };
         if (m.op === "ask") {
-          if (!askState) return reply({ error: "spr.ask 只能用在 spr run 直接跑的那个 compose 里：被它调用的 compose 和学出来的 action 里不能用" });
+          if (!askState) return reply({ error: "ask 只能用在 spr run 直接跑的那个 compose 里：被它调用的 compose 和 action 里不能用" });
           const i = asks++;
           if (i < askState.answers.length) return reply({ result: askState.answers[i] ?? null });
           const size = JSON.stringify(m.args.data ?? null).length;
-          if (size > ASK_DATA_LIMIT) return finish({ status: "failure", error: `spr.ask 交回的数据有 ${Math.round(size / 1024)}KB，超过 ${ASK_DATA_LIMIT / 1024}KB：先在 compose 代码里裁剪，只留判断要用的字段` });
+          if (size > ASK_DATA_LIMIT) return finish({ status: "failure", error: `ask 交回的数据有 ${Math.round(size / 1024)}KB，超过 ${ASK_DATA_LIMIT / 1024}KB：先在 compose 代码里裁剪，只留判断要用的字段` });
           return finish({ status: "ask", question: String(m.args.question ?? ""), data: m.args.data ?? null, journal: askState.journal });
         }
         let run: Promise<unknown>;
         if (m.op === "action") {
-          if (!session.composeOnly) return reply({ error: "学出来的 action 里不能调用别的 action：要串起几个 action，写成 compose（~/.speedrun/compose/<名>.js，再 spr run <名>）" });
+          if (!session.composeOnly) return reply({ error: "action 里不能调用别的 action：要串起几个 action，写成 compose（~/.speedrun/compose/<名>.js，再 spr run <名>）" });
           const name = String(m.args.name);
           const p = Object.fromEntries(Object.entries(m.args.params ?? {}).filter(([, v]) => v !== undefined)) as Record<string, unknown>;
           const i = calls++;
@@ -215,6 +208,7 @@ export class ActionRunner {
             return reply({ result: prev.result ?? null });
           }
           run = this.runAction(name, p, session).then((o) => {
+            if (o.status === "failure") failedAction = o.failedAction ?? name;
             if (o.status !== "success") throw new Error(`[${name}] ${o.status === "failure" ? o.error : "被调用的 action 不能 ask"}`);
             if (askState) askState.journal[i] = { name, params: p, result: o.result };
             return o.result;

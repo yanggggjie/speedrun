@@ -1,4 +1,4 @@
-export const USAGE = "用法：spr learn new --url <链接|tab 号> --description \"…\" | learn <句柄> <工具> … | learn list | learn close <句柄> | run <名> --description \"…\" [--参数 值] | resume <编号> --answer '<json>' | tabs | status | daemon restart | doctor [--json]；spr --help 看全部用法和退出码";
+export const USAGE = "用法：spr run <compose> [--参数 值] | resume <编号> [--answer …] | debug <compose> <工具> … | debug list | tabs | status | doctor | daemon restart；详情 spr --help";
 export type HandshakeStatus = "need-install" | "need-chrome" | "need-extension";
 export type RpcMethod = "ping" | "run";
 export type JsonRpcRequest = { jsonrpc: "2.0"; id: string; method: RpcMethod; params?: Record<string, unknown> };

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ENDPOINTS_FLUSH_MS, LOG_LIMITS, SITES_DIR } from "../utils/constants.ts";
+import { ENDPOINTS_FLUSH_MS, LOG_LIMITS, ACTION_DIR } from "../utils/constants.ts";
 import { siteDirName } from "../utils/url.ts";
 import { shapeOf, variablesOf } from "./digest.ts";
 import type { HeaderSignal } from "./auth.ts";
@@ -8,30 +8,26 @@ import type { RequestFile, Row } from "./types.ts";
 
 /**
  * endpoints.json：每个站点一个 <站点>/endpoints.json，写入时增量维护（不用每次重读日志）。
- * 只由 learn 窗口的记录累积（run 窗口的日志只给反查用），给 agent 判断"这个站点学过、跑过哪些 endpoint，哪些还没有 action"。不排序、不替 agent 下结论，只给信号：
+ * 只由 debug 窗口的记录累积（run 窗口的日志只给反查用），给 agent 判断"这个站点看过哪些 endpoint，哪些还没有 action"。不排序、不替 agent 下结论，只给信号：
  * cmdTriggered（动作引发的次数）、onLoad（页面加载期自动发的次数）、idle（轮询等）、lastCause（最近一次是什么动作触发的）。
- * 每个 endpoint 最近几次成功请求登记成样本（文件路径相对 ~/.speedrun，如 learn-windows/<句柄>/requests/…），样本的请求文件和响应体在日志淘汰时受保护。
+ * 每个 endpoint 最近几次成功请求登记成样本（文件路径相对 ~/.speedrun，如 debug-windows/<id>/requests/…），样本的请求文件和响应体在日志淘汰时受保护。
  */
 export const SAMPLES_PER_ENDPOINT = 5;
 const SHAPE_TEXT_MAX = 2 * 1024 * 1024;
 
 export type Sample = { seq: number; file: string; body?: string; t: number; size: number };
-/** agent 用 --description 写下的一句 description：引发它的动作、跑覆盖它的 action 时写的。 */
-export type Description = { text: string; from: string; t: number };
-export const DESCRIPTIONS_PER_ENDPOINT = 5;
 export type EndpointStat = {
   key: string; method: string; host: string; name: string;
   count: number; firstSeq: number; lastSeq: number; lastStatus?: number;
   cmdTriggered: number; onLoad: number; idle: number; lastCause?: string;
-  descriptions?: Description[];
-  /** 请求头的信号（learn 窗口观察时算的最近一次）：头名 → 值怎么变（page / endpoint / varies / few）和页面里的来源（"cookie:_xsrf"）。只有名字和类别，没有值；只给 agent 读，run 不读。 */
+  /** 请求头的信号（debug 窗口观察时算的最近一次）：头名 → 值怎么变（page / endpoint / varies / few）和页面里的来源（"cookie:_xsrf"）。只有名字和类别，没有值；只给 agent 读，run 不读。 */
   headers?: Record<string, HeaderSignal>;
   variables: string[]; shape?: string; samples: Sample[];
 };
 export type EndpointJson = Omit<EndpointStat, "samples"> & { samples: Array<Omit<Sample, "size"> & { available: boolean }>; action: string | null };
 export type EndpointsFile = { site: string; updatedAt: number; endpoints: EndpointJson[] };
 
-export type ObserveInput = { site: string; row: Row; file: RequestFile; ref: string; bodyRef?: string; text?: string; label?: string; description?: { text: string; from: string } };
+export type ObserveInput = { site: string; row: Row; file: RequestFile; ref: string; bodyRef?: string; text?: string; label?: string };
 export type IndexOptions = {
   dir?: string;
   /** 这个站点的 action 覆盖了哪些 endpoint：键是 `方法 路径`，值是 action 名。 */
@@ -54,7 +50,7 @@ export class EndpointIndex {
   private timer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: IndexOptions = {}) {
-    this.dir = options.dir ?? SITES_DIR;
+    this.dir = options.dir ?? ACTION_DIR;
     this.root = path.dirname(this.dir);
     this.coverage = options.coverage ?? (() => new Map());
     this.flushMs = options.flushMs ?? ENDPOINTS_FLUSH_MS;
@@ -115,21 +111,11 @@ export class EndpointIndex {
       if (input.text !== undefined && input.text.length <= SHAPE_TEXT_MAX && row.seq >= e.lastSeq) {
         try { e.shape = shapeOf(JSON.parse(input.text)); } catch { /* 不是 JSON */ }
       }
-      if (input.description && (row.phase === "cmd" || row.phase === "load")) addDescription(e, { ...input.description, t: row.t });
       e.samples.push({ seq: row.seq, file: ref, body: input.bodyRef, t: row.t, size: this.sizeOf(ref, input.bodyRef) });
       if (e.samples.length > SAMPLES_PER_ENDPOINT) e.samples.shift();
       this.trimSamples(map);
     }
     this.touch(site);
-  }
-
-  /** 记一句 description 到已有的 endpoint 上（run 成功时用）；endpoint 还不在聚合里就不记。返回记没记上。 */
-  describe(site: string, key: string, d: { text: string; from: string; t?: number }): boolean {
-    const e = this.load(site).get(key);
-    if (!e || !d.text.trim()) return false;
-    addDescription(e, { text: d.text, from: d.from, t: d.t ?? this.now() });
-    this.touch(site);
-    return true;
   }
 
   /** 记下请求头的信号（观察里算出的）；endpoint 还不在聚合里就不记。 */
@@ -204,9 +190,3 @@ export class EndpointIndex {
   }
 }
 
-/** 同一句只留一份（新的在前），最多 DESCRIPTIONS_PER_ENDPOINT 句。 */
-function addDescription(e: EndpointStat, d: Description): void {
-  const text = d.text.trim().slice(0, 200);
-  if (!text) return;
-  e.descriptions = [{ ...d, text }, ...(e.descriptions ?? []).filter((x) => x.text !== text)].slice(0, DESCRIPTIONS_PER_ENDPOINT);
-}

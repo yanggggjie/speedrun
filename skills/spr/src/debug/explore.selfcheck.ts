@@ -26,8 +26,8 @@ const file = (over: Partial<RequestFile>): RequestFile => ({ seq: 8, win: "x.com
 const none = describeRequest(rows[6]!, file({ responseHeaders: { "content-type": "application/connect+proto" }, bodyOmitted: "no-body" }), {});
 assert.equal(none.readable, false);
 assert.match(none.line, /^#8 POST \/rpc\/StreamTimeline → .*connect\+proto，无响应体（no-body）/);
-const ok = describeRequest({ ...rows[0]!, file: "requests/000001-GET-api-list.json" }, file({ responseHeaders: { "content-type": "application/json; charset=utf-8" }, responseBodyPath: "requests/000001-GET-api-list.response.json" }), { other: "api.x.com", known: "列出条目" });
-assert.equal(ok.readable, true); assert.match(ok.line, /^#1 GET \/api\/list（api\.x\.com） → .*application\/json，有响应体，requests\/000001-GET-api-list\.json（以前：列出条目）$/);
+const ok = describeRequest({ ...rows[0]!, file: "requests/000001-GET-api-list.json" }, file({ responseHeaders: { "content-type": "application/json; charset=utf-8" }, responseBodyPath: "requests/000001-GET-api-list.response.json" }), { other: "api.x.com" });
+assert.equal(ok.readable, true); assert.match(ok.line, /^#1 GET \/api\/list（api\.x\.com） → .*application\/json，有响应体，requests\/000001-GET-api-list\.json$/);
 
 // 依赖：后一个请求带出去的值（长度 ≥ 6）等于前一个响应里的值
 const files: Record<number, RequestFile> = {

@@ -67,7 +67,7 @@
   T.visible = (el) => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; const cs = getComputedStyle(el); return cs.visibility !== "hidden" && cs.display !== "none"; };
 
   // ---- 元素引用 ref_N：元素第一次被列出（read_page、find、快照）时得到编号，同一个元素一直是同一个编号；页面不刷新就不变，元素被移除后失效。
-  // 只用于 learn 里的探索（computer --ref、form_input），写进 action 的永远是持久定位（a11y.js 的 T.locOf）。----
+  // 只用于 debug 里的探索（computer --ref、form_input），写进 action 的永远是持久定位（a11y.js 的 T.locOf）。----
   const ids = new WeakMap(), byRef = new Map();
   let nextRef = 1;
   T.refOf = (el) => {
