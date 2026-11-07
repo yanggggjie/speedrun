@@ -13,16 +13,8 @@
   const SENSITIVE_HEADER = /^(cookie|set-cookie)$/i; // 页面脚本看不到 cookie；其余请求头的真值也交给 daemon（只在内存里，用来给 request() 继承请求头）
   const post = T.post;
 
-  // ---- 同站的粗判断（只决定读不读响应体，最终判断在 daemon）----
-  const SLD = /^(com|co|org|net|gov|edu|ac)$/;
-  const registrable = (host) => {
-    const p = host.split(".");
-    if (p.length <= 2) return host;
-    const n = p.length;
-    return p[n - 1].length === 2 && SLD.test(p[n - 2]) ? p.slice(-3).join(".") : p.slice(-2).join(".");
-  };
-  const sameSite = (url) => { try { return registrable(new URL(url).hostname) === registrable(location.hostname); } catch { return false; } };
-  const readBodyOf = (url, ct) => T.foreground() && sameSite(url) && TEXTY.test(ct || "") && !/event-stream/i.test(ct || "");
+  // ---- 读不读响应体：文本类的都读（跨站的也读，噪声由 daemon 判断）；不读的上报原因（bodySkip），daemon 写进 bodyOmitted ----
+  const skipOf = (ct) => (/event-stream/i.test(ct || "") ? "event-stream" : !TEXTY.test(ct || "") ? "not-text" : !T.foreground() ? "background" : null);
 
   const bodyStr = (b) => {
     if (b == null) return null;
@@ -65,8 +57,10 @@
     p.then(async (res) => {
       const rec = { k: "net", via: "fetch", id, rid: docId + ":" + id, url, finalUrl: res.url, method, reqHeaders, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0), at: Math.round(t0) };
       try {
+        const skip = res.body ? skipOf(rec.ct) : null;
         if (!res.body) { rec.size = 0; rec.body = ""; }
-        else if (readBodyOf(url, rec.ct)) {
+        else if (skip) rec.bodySkip = skip;
+        else {
           const rd = res.clone().body.getReader(), dec = new TextDecoder();
           let s = "", n = 0, trunc = false;
           for (;;) {
@@ -103,11 +97,12 @@
         this.addEventListener("loadend", () => {
           const xid = ++seq, rec = { k: "net", via: "xhr", id: xid, rid: docId + ":" + xid, ...t, finalUrl: this.responseURL, status: this.status, ct: this.getResponseHeader("content-type"), ms: Math.round(performance.now() - t0), at: Math.round(t0) };
           try {
-            if (readBodyOf(t.url, rec.ct)) {
-              const rt = this.responseType;
-              if (rt === "" || rt === "text") { rec.body = this.responseText.slice(0, BODY_MAX); rec.size = this.responseText.length; rec.truncated = this.responseText.length > BODY_MAX; }
-              else if (rt === "json") { const s = JSON.stringify(this.response) || ""; rec.body = s.slice(0, BODY_MAX); rec.size = s.length; rec.truncated = s.length > BODY_MAX; }
-            }
+            const skip = skipOf(rec.ct);
+            const rt = this.responseType;
+            if (skip) rec.bodySkip = skip;
+            else if (rt === "" || rt === "text") { rec.body = this.responseText.slice(0, BODY_MAX); rec.size = this.responseText.length; rec.truncated = this.responseText.length > BODY_MAX; }
+            else if (rt === "json") { const s = JSON.stringify(this.response) || ""; rec.body = s.slice(0, BODY_MAX); rec.size = s.length; rec.truncated = s.length > BODY_MAX; }
+            else rec.bodySkip = `responseType-${rt}`;
           } catch (e) { rec.bodyErr = String(e); }
           post(rec);
         });

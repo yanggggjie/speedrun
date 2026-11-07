@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { endpointOf, normalizeSite, siteOf } from "./digest.ts";
+import { endpointOf, normalizeSite } from "./digest.ts";
+import { siteOfUrl as siteOf } from "../utils/url.ts";
 import { EndpointIndex, SAMPLES_PER_ENDPOINT, type ObserveInput } from "./endpoints.ts";
 import type { Phase, RequestFile, Row } from "./types.ts";
 

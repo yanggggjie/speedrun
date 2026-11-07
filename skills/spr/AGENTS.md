@@ -55,18 +55,20 @@ npm run verify:pack
 3. 走一遍 debug 窗口，至少在三个站点上试：一个公共站点、一个 GraphQL 站点、一个公司内部多子域站点：
    - 先写好 compose，`spr debug <compose> navigate <链接|tab 号>`（`tab 号` 用 `spr tabs` 按标题对出来）：第一行 `ok`，输出里有窗口目录、debug 指引的路径（第一次或有更新时附全文，写在 `~/.speedrun/debug-guide.md`）、起点的观察结果。compose 不存在、写成 action 名都是用法错误。
    - **看结构**：`find "<查询>"` 找得到目标、带 ref 和定位；`read_page --filter interactive` 的 `role "name"` 和页面相符，`--ref` 只看一块；全文存进 `pages/<编号>-a11y.txt`；`get_page_text` 取到正文。三者不计操作次数。
-   - **观察**：多步操作（`computer left_click --ref` / `form_input` / `computer type` / `key` / `scroll`），每步附带的观察和实际操作相符（「稳定：」写了等了多久），输出里的文件名在窗口目录里都找得到、是语义化的（`requests/<编号>-<方法>-<endpoint 名>.json`）；`computer wait 2` 拿到晚到的请求，且和上一次不重复；第二步之后的观察不再列 `/me` 这类前面出现过的 endpoint。页面跳到别的站点时写明站点。
+   - **观察**：多步操作（`computer left_click --ref` / `form_input` / `computer type` / `key` / `scroll`），每步附带的观察和实际操作相符（「稳定：」写了等了多久），输出里的文件名在窗口目录里都找得到、是语义化的（`requests/<编号>-<方法>-<endpoint 名>.json`）；`computer wait 2` 拿到晚到的请求，且和上一次不重复；第二步之后的观察不再在「请求」里列前面出现过的 endpoint，改在「重复」里写第几次、上次的编号，没有建议文字。页面跳到别的站点时写明站点。
    - **定位能回放**：每个用 ref 的操作输出的「定位：」，在 run 窗口的 action 里用同名 SDK 函数能找回同一个元素（`read_page` 显示的名字和回放的匹配是同一套算法）。
    - **标签组和不抢前台**：第一次 `navigate` 后用户窗口里出现一个折叠的、标题是 `speedrun` 的蓝色组，没有新窗口；点 `target=_blank` 链接、cmd+点击、中键点击、`window.open(url)`、`window.open()` 后设地址、`target=_blank` 表单：都不抢前台，新标签页进同一个组并被录，观察里有「新标签页：页面打开了…」；带窗口参数的 `window.open` 照常弹出；用户把一个标签页拖进组后被录，拖出去后不录；组闲置 20 秒后「正在调试此浏览器」的横幅消失（请用户看一眼），再操作照常；懒加载（滚动后才发的请求，如 IT之家评论）在后台组里照常触发。
    - **CDP 输入**：speedrun 的标签页从不被选中，点击、输入、滚动照样生效；截图不把标签页切到前台；在 speedrun 的标签页里打开 DevTools 后操作报「连不上这个标签页的调试接口」，关掉后恢复；点掉「正在调试此浏览器」提示条后下一次操作自动重新附着；严格 CSP 的页面上 `evaluate` 能跑。
+   - **跨站和疑似埋点**：页面调另一个注册域名的接口（如 hn.algolia.com 调 `*.algolia.net`），请求文件里有响应体、`waitRequest` 拿得到；按路径规则猜的埋点在观察里折叠成「可能是埋点」，请求文件和响应体照常存；命中广告规则的不存，`bodyOmitted` 是 `noise`。
+   - **查询参数**：key 在地址查询参数里、值在页面存储里的请求，观察里有一行「查询参数」（名字和来源，没有值）；`request` 用 `authQuery` 现读拼进地址能跑通，`run-windows/` 的请求文件里这个值是别名。
    - **请求头**：观察里带非浏览器头的请求有一行「请求头」（值怎么变、页面里的位置），和实际相符、没有真值；action 只写 `request({ url, method, json })`，写一个调用它的 compose，`spr run` 跑通、换参数也跑通（头从这次窗口里页面发过的请求抄）；故意去掉 `navigate` 让它被拒，失败输出写清抄了什么、没抄什么。
    - **写请求**：点赞这类轻量写操作真的发出（站点上看得到结果）；带 `@write` 的 action 在 `spr run` 里直接发，输出的「已发出的非 GET 请求」和实际一致；观察里的请求行没有 `write` 前缀。
-   - **工具对齐和目标行**：`computer` 的 13 个 action 都能用，坐标和 `--ref` 两种写法都行（`zoom` 的图只有那块、`hover` 出悬停菜单、`left_click_drag` 拖得动、`type` 时页面收到按键事件、`key "Enter"` 能提交表单、`key "cmd+a"` 能全选）；`form_input` 填文本框、选下拉、勾复选框，填完核对；`navigate back` 能后退；每条成功输出的末行是 `目标：spr run <compose>`，缺 action 时列出还缺哪些。
+   - **工具对齐和目标行**：`computer` 的 13 个 action 都能用，坐标和 `--ref` 两种写法都行（`zoom` 的图只有那块、`hover` 出悬停菜单、`left_click_drag` 拖得动、`type` 时页面收到按键事件、`key "Enter"` 能提交表单、`key "cmd+a"` 能全选）；`form_input` 填文本框、选下拉、勾复选框，填完核对；`navigate back` 能后退；每条成功输出的末行是 `目标：spr run <compose>`，缺 action 时列出还缺哪些，带 compose 里的调用参数（`zhihu-vote({ id })`）。
    - **一个窗口写多个 action**：在同一个窗口里写两个 action（draft），写一个调用这两个 action 的 compose（`~/.speedrun/compose/<名>.js`），`spr run <名>` 新开 run 窗口、跑完窗口消失、`run-windows/<名字>/` 有日志和 meta、两个 draft 变成 verified、`endpoints.json` 没有多出 run 窗口的请求；run 成功和失败后 debug 窗口都还在，失败后 `screenshots/failure.*` 和日志都在。
    - **关掉的窗口**：`spr debug <compose> close` 后、`spr daemon restart` 后（旧组被关掉）、用户手动关掉组后，`computer screenshot` / `computer left_click`：报「窗口没开」、退出码 3，提示重新 navigate；日志目录还在；重开时换一个新目录。debug 窗口空闲 30 分钟自动关。
    - **run 窗口**：`run` 期间出现一个标题是 `speedrun` 的灰色组，跑完组消失；同一个站点连跑两次 `run`，第二次不沿用第一次的页面；两个 `run` 同时跑，各开各的组，互不排队。
-   - **compose 和恢复**：写一个 `@status draft` 的 compose 文件 → `spr run <名>` 停在 ask → `spr resume` 继续 → 成功，compose 和它调用的 draft 都变成 verified，compose 文件除了 `@status` 一个字节没变；让一个 action 失败，修好文件后 `spr resume <编号>` 接着跑，已完成的 action 不重跑；缺 action 时 `spr run` 报 `is not defined` 且没有打开窗口。
-   - **@write 和 compose**：带 `@write` 的 draft 在 `spr status` 里标出；action 里调用 `action()` 被拒；compose 里调用 `navigate` 这类页面操作被拒。
+   - **compose 和恢复**：写一个 `@status draft` 的 compose 文件 → `spr run <名>` 停在 ask → `spr resume` 继续 → 成功，compose 和它调用的 draft 都变成 verified，compose 文件除了 `@status` 一个字节没变；让一个 action 失败，修好文件后 `spr resume <编号>` 接着跑，已完成的 action 不重跑；缺 action 时 `spr run` 报 `<名>(<参数>) is not defined` 且没有打开窗口。
+   - **@write 和 compose**：带 `@write` 的 draft 在 `spr status` 里标出；action 里调用 `action()` 被拒；compose 里调用 `navigate` 这类页面操作被拒；compose 里调用别的 compose，执行前检查和运行时都被拒。
    - **同一个 compose 串行**：在 Claude Code 里一次并行发两条 `spr debug <同一个 compose> computer …`：一条成功，一条报「上一条命令还没结束」。
    - **SDK、参数、helpers**：`export default async () => …` 加 `navigate(url)`、`request({…})`、`click(定位)`、`hover(定位)`、`form_input(定位, 值)`、`key(…)`、`scroll({ direction })`、`get_page_text()` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.speedrun/helpers/` 里的函数被 action `import` 后能跑，`spr daemon restart` 后还在。
 4. 页面脚本只进 speedrun 的标签页：

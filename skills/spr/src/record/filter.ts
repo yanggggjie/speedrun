@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { DATA_HOME } from "../utils/constants.ts";
 import { FiltersEngine, Request as FilterRequest } from "@ghostery/adblocker";
-import { isSameSite, parseUrl } from "../utils/url.ts";
 
 export const ADBLOCK_CACHE = path.join(DATA_HOME, "adblock-engine.bin");
 const ADBLOCK_MAX_AGE_MS = 7 * 24 * 3600_000;
@@ -45,11 +44,15 @@ function adblockMatches(url: string, via: string, sourceUrl: string, engine: Fil
  * 只对非 GET 生效：GET /api/stats 这类可能是人要看的数据，不能当噪声。
  */
 export const TELEMETRY_HOST = /(analytics|telemetry|apm|datahub|track|metrics|sentry|beacon|collector)/i;
-export const TELEMETRY_PATH = /(^|[/._-])(collect|collector|track|tracking|beacon|analytics|telemetry|metrics|pixel|apm|sentry|logs?|stats?|events?|monitor|heartbeat|profiler|za)([/._?-]|$)/i;
+export const TELEMETRY_PATH = /(^|[/._-])(collect|collector|track|tracking|beacon|analytics|telemetry|metrics|pixel|apm|sentry|heartbeat|profiler|za)([/._?-]|$)/i;
 
 export type NoiseInput = { url: string; method: string; status?: number; via: string; page: string };
 
-/** 返回噪声原因，不是噪声返回 null。adblock 引擎没加载好（离线）时只用启发式。 */
+/**
+ * 返回原因，都不是返回 null。只有 "adblock"（命中公开的广告和追踪规则列表，误判少）算噪声：不存响应体和原始请求。
+ * 其余（"telemetry-host"、"telemetry-path"、"no-content"）是按规则猜的“可能是埋点”：只打标签，照常存（错误的信号不如原始数据）。
+ * adblock 引擎没加载好（离线）时只用启发式。
+ */
 export function noiseReason(input: NoiseInput, engine?: FiltersEngine): string | null {
   if (adblockMatches(input.url, input.via, input.page, engine)) return "adblock";
   if (input.method === "GET") return null;
@@ -62,10 +65,12 @@ export function noiseReason(input: NoiseInput, engine?: FiltersEngine): string |
   return null;
 }
 
-/** 响应体写不写盘：只写同站、非噪声、有内容的；失败的请求只留小响应体（够看出错在哪）。 */
-export function shouldStoreBody(input: { noise: boolean; url: string; page: string; status?: number; body?: string }): boolean {
+/** 是不是噪声（只有命中广告规则的算）。 */
+export const isNoise = (reason: string | null): boolean => reason === "adblock";
+
+/** 响应体写不写盘：非噪声、有内容的都写（跨站的也写）；失败的请求只留小响应体（够看出错在哪）。 */
+export function shouldStoreBody(input: { noise: boolean; status?: number; body?: string }): boolean {
   if (input.noise || !input.body) return false;
-  if (!isSameSite(parseUrl(input.url), parseUrl(input.page))) return false;
   const ok = typeof input.status === "number" && input.status >= 200 && input.status < 300;
   return ok || input.body.length <= 4096;
 }

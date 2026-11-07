@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ActionRunner, looksLoggedOut, type Outcome, type RunWindows } from "./runner.ts";
+import { ActionRunner, type Outcome, type RunWindows } from "./runner.ts";
 import { syncActionLib } from "./actions.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "speedrun-runner-"));
@@ -70,13 +70,14 @@ assert.equal(sdk.status, "failure");
 assert.match((sdk as { error: string }).error, /不该碰页面|compose/, "compose 里的页面操作被拒绝");
 assert.deepEqual(fs.readdirSync(composeDir).filter((f) => f.startsWith(".")), [], "跑完不留临时文件");
 
-// compose 的参数和 action 一样按 @param 检查；compose 里的 compose 也能调用；@status draft 的 compose 跑通后交给命令层变成 verified
+// compose 的参数和 action 一样按 @param 检查；compose 不能调用 compose；@status draft 的 compose 跑通后交给命令层变成 verified
 const twice = compose("twice", `const a = await action("echo", { v: params.v ?? "z" }); return a.v + a.v;`, " * @status draft\n * @param v? 值");
 const tw = await runner.runAction("twice", { v: "k" });
 assert.deepEqual(plain(tw), { status: "success", result: "kk" });
 assert.ok(tw.drafts?.includes(twice), "draft 的 compose 跑通也要变成 verified");
 compose("outer", `return await action("twice", { v: "q" });`);
-assert.deepEqual(plain(await runner.runAction("outer", {})), { status: "success", result: "qq" }, "compose 可以调用 compose");
+const outer = await runner.runAction("outer", {});
+assert.ok(outer.status === "failure" && /outer 里调用了 compose twice：compose 只能调用 action/.test(outer.error), "运行时也拒绝 compose 调用 compose");
 const unknown = await runner.runAction("twice", { w: "1" });
 assert.ok(unknown.status === "failure" && /没有这些参数/.test(unknown.error), "compose 的参数也按 @param 检查");
 
@@ -103,11 +104,6 @@ assert.equal(fs.readFileSync(counter, "utf8"), "xx", "恢复时 ask 之前的 ac
 const missing = await runner.runAction("nope", {});
 assert.equal(missing.status, "failure");
 assert.match((missing as { error: string }).error, /nope is not defined/);
-// 登录失效判断：登录页 URL 或 401/403 算；普通业务错误、普通页面不算
-assert.equal(looksLoggedOut("x", "https://passport.example.com/login?next=/"), true);
-assert.equal(looksLoggedOut("请求返回 401", "https://example.com/home"), true);
-assert.equal(looksLoggedOut("元素没找到", "https://example.com/author/list"), false);
-assert.equal(looksLoggedOut("元素没找到", undefined), false);
 // 失败后恢复：journal 带出来；修好文件后已完成的 action 不重跑，失败的 action 用当前文件重新执行，failedAction 指到它
 fs.writeFileSync(path.join(root, "count2.txt"), "");
 fs.writeFileSync(path.join(dir, "done.js"), `/**\n * @status verified\n */\nimport * as fs from "node:fs";\nexport default async () => { fs.appendFileSync(${JSON.stringify(path.join(root, "count2.txt"))}, "x"); return 1; };\n`);

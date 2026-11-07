@@ -24,7 +24,6 @@ const SEQ_BLOCK = 1000;
 const BODY_MEMO_MAX = 5_000;
 const KIND_DIR: Record<WinKind, string> = { debug: "debug-windows", run: "run-windows" };
 
-export const seqPrefix = (seq: number): string => String(seq).padStart(6, "0");
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 /** 窗口名里的时间：本地时间 20261101-130245。 */

@@ -1,9 +1,9 @@
 import type { FiltersEngine } from "@ghostery/adblocker";
-import { isSameSite, parseUrl, siteOfUrl } from "../utils/url.ts";
+import { parseUrl, siteOfUrl } from "../utils/url.ts";
 import { createLogger } from "../utils/logger.ts";
 import { endpointOf } from "./digest.ts";
 import type { EndpointIndex } from "./endpoints.ts";
-import { noiseReason, shouldStoreBody } from "./filter.ts";
+import { isNoise, noiseReason, shouldStoreBody } from "./filter.ts";
 import type { RawStore } from "./raw.ts";
 import { docOf } from "./headers.ts";
 import { bodyExt, hashText, pageSlug, requestBodyValue, requestStem, responseText, slug } from "./reqfile.ts";
@@ -57,7 +57,7 @@ export type CmdRef = { seq: number; site: string; win: string; tab: number; ts: 
 type LastAction = { seq: number; ts: number; label: string; inherited?: boolean };
 
 /** 页面发出、刚收录的一个请求（原始内容，只在内存里交给 waitRequest）。 */
-export type SeenRequest = { seq: number; win: string; tab: number; method: string; url: string; endpoint: string; status?: number; body?: string; reqBody?: string; ct?: string; truncated?: boolean; error?: string; noise?: boolean };
+export type SeenRequest = { seq: number; win: string; tab: number; method: string; url: string; endpoint: string; status?: number; body?: string; reqBody?: string; ct?: string; truncated?: boolean; error?: string; bodyOmitted?: string; noise?: boolean };
 
 export class Ingestor {
   readonly sanitizer: Sanitizer;
@@ -285,7 +285,9 @@ export class Ingestor {
     const win = this.winOf(msg.tab);
     const src: Src = "agent";
     const reason = noiseReason({ url: rawUrl, method, status, via, page: rawPage }, this.engine());
-    const noise = reason !== null;
+    // 噪声只有命中广告规则的；按规则猜的埋点只打标签，照常存
+    const noise = isNoise(reason);
+    const maybeTelemetry = reason !== null && !noise;
     const rawBody = str(msg.body);
     const ct = str(msg.ct);
     const reqHeadersRaw = (msg.reqHeaders && typeof msg.reqHeaders === "object" ? msg.reqHeaders : null) as Record<string, string> | null;
@@ -305,18 +307,18 @@ export class Ingestor {
     const cause = last && causeDt !== undefined && causeDt >= 0 && causeDt <= (last.inherited ? NEW_TAB_MS : CAUSE_MS) ? last : undefined;
     const phase = this.phaseOf(msg.tab, reqStart, num(msg.at));
 
-    // 原始请求（含 token 真值）只放内存，按窗口存：request() 从这次窗口里抄头、观察统计请求头怎么变用；只存同站的、非噪声的
+    // 原始请求（含 token 真值）只放内存，按窗口存：request() 从这次窗口里抄头、观察统计请求头怎么变用；跨站的也存（抄头时只抄发往同一目标站点的），只跳过噪声和出错的
     const rid = str(msg.rid);
-    if (rid && this.raw && !noise && !msg.err && isSameSite(parseUrl(rawUrl), parseUrl(rawPage))) {
+    if (rid && this.raw && !noise && !msg.err) {
       this.raw.put(msg.tab, rid, { win, doc: docOf(rid), endpoint, method, url: rawUrl, headers: reqHeadersRaw ?? {}, body: rawReqBody ?? null, page: rawPage, t: msg.t });
     }
 
-    // 响应体：只写同站的、非噪声的、有内容的；失败的请求只留小响应体（够看出错在哪）
+    // 响应体：非噪声、有内容的都写；失败的请求只留小响应体（够看出错在哪）。页面脚本没读的，用它带来的原因（bodySkip）
     let responseBodyPath: string | undefined;
     let text: string | undefined;
     let bodyOmitted: string | undefined;
-    if (rawBody === undefined) bodyOmitted = msg.err ? "error" : "no-body";
-    else if (!shouldStoreBody({ noise, url: rawUrl, page: rawPage, status, body: rawBody })) bodyOmitted = noise ? "noise" : !isSameSite(parseUrl(rawUrl), parseUrl(rawPage)) ? "cross-site" : "large-error";
+    if (rawBody === undefined) bodyOmitted = msg.err ? "error" : str(msg.bodySkip) ?? "no-body";
+    else if (!shouldStoreBody({ noise, status, body: rawBody })) bodyOmitted = noise ? "noise" : "large-error";
     else {
       text = responseText(this.sanitizer, rawBody, ct);
       responseBodyPath = this.log.putBody(win, `${stem}.response.${bodyExt(ct, text)}`, text, hashText(text));
@@ -346,11 +348,11 @@ export class Ingestor {
     const row: Row = {
       seq, t: msg.t, win, site, src, tab: msg.tab, ...(msg.frame ? { frame: msg.frame } : {}), type: "request", requestType: via, method, url: url.bareUrl,
       ...(page ? { page } : {}), ...(status !== undefined ? { status } : {}), ...(num(msg.size) !== undefined || rawBody !== undefined ? { size: num(msg.size) ?? rawBody?.length } : {}),
-      endpoint, ...(noise ? { noise: 1 as const } : {}), ...(cause ? { cause: cause.seq, causeDt } : {}), phase, file: rel,
+      endpoint, ...(noise ? { noise: 1 as const } : {}), ...(maybeTelemetry ? { maybeTelemetry: 1 as const } : {}), ...(cause ? { cause: cause.seq, causeDt } : {}), phase, file: rel,
     };
     this.log.append(row);
     if (this.seenListeners.size) {
-      const seen: SeenRequest = { seq, win, tab: msg.tab, method, url: rawUrl, endpoint, ...(status !== undefined ? { status } : {}), ...(rawBody !== undefined ? { body: rawBody } : {}), ...(rawReqBody !== undefined ? { reqBody: rawReqBody } : {}), ...(ct ? { ct } : {}), ...(msg.truncated ? { truncated: true } : {}), ...(str(msg.err) ? { error: str(msg.err) } : {}), ...(noise ? { noise: true } : {}) };
+      const seen: SeenRequest = { seq, win, tab: msg.tab, method, url: rawUrl, endpoint, ...(status !== undefined ? { status } : {}), ...(rawBody !== undefined ? { body: rawBody } : {}), ...(rawReqBody !== undefined ? { reqBody: rawReqBody } : {}), ...(ct ? { ct } : {}), ...(msg.truncated ? { truncated: true } : {}), ...(str(msg.err) ? { error: str(msg.err) } : {}), ...(bodyOmitted ? { bodyOmitted } : {}), ...(noise ? { noise: true } : {}) };
       for (const fn of this.seenListeners) { try { fn(seen); } catch { /* 订阅者的错不影响收录 */ } }
     }
     // endpoints.json只由 debug 窗口累积；run 窗口的日志只给反查用

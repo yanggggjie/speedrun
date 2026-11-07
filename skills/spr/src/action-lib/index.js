@@ -28,10 +28,10 @@ function call(op, args = {}) {
 const toLog = (...a) => parentPort?.postMessage({ type: "log", text: a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ") });
 console.log = console.info = console.warn = console.error = toLog;
 
-/** 只能用在 spr run 直接跑的那个 compose 里：run 在这里停下，把 question 和 data 交给 agent；agent 用 spr resume <编号> --answer … 恢复时，返回它的回答。 */
+/** ask(问题, 数据)：只能用在 compose 里。compose 在这里停下，spr run 结束（退出码 2），把问题和数据交给 agent；agent 自己判断或转问用户后 spr resume <编号> --answer …，compose 从头重新执行（已完成的 action 直接返回记录的结果），这次的 ask 返回这个回答。 */
 export const ask = (question, data) => call("ask", { question, data });
 
-/** compose 里调用一个 action（或别的 compose）：action(名字, 参数)，返回它的 result，失败时抛错。action 里不能用。 */
+/** compose 里调用一个 action：action(名字, 参数)，返回它的 result，失败时抛错。action 里不能用，compose 不能调用 compose。 */
 export const action = (name, params = {}) => call("action", { name, params });
 
 /** navigate(url | "back" | "forward", { settle?, timeout? })：和 debug 的 navigate 一样，打开网址或后退、前进，等到页面可用（文档不再是 loading）；settle: true 再等页面安静（没有在途请求、DOM 一小段时间没变，最多 2 秒），等渲染完用它，不要 sleep。 */
@@ -47,13 +47,15 @@ const withJson = (res) => ({
 });
 
 /**
- * 在页面里发请求：request({ url, method?, json?, body?, auth?, headers?, timeout? }) → { status, ok, text, json(), ct, finalUrl, ms, source }
+ * 在页面里发请求：request({ url, method?, json?, body?, auth?, authQuery?, headers?, timeout? }) → { status, ok, text, json(), ct, finalUrl, ms, source }
  * 请求头不用写，speedrun 按顺序凑齐：
  * 1. 浏览器自己带的（cookie）。
  * 2. 从这次窗口里页面发过的请求抄：页面发过同一个 endpoint 就整组抄它的；否则抄这次窗口里值都一样的头（token、xsrf），每次都变的（签名、nonce）不跨 endpoint 抄。
  *    所以先 navigate 打开会发这些请求的页面。
  * 3. auth：{ 头: 来源 }，页面这次没发带这个头的请求时用，发送时在页面里现读；来源 cookie:名字、local:key[.JSON 路径]、session:key[.路径]、meta:名字，前面加 "Bearer " 会拼上前缀。来源看 debug 窗口观察里的「请求头」。
- * 4. 前序请求：先 request 拿到 token，再 headers: { "x-token": r.json().token }（照观察里的「依赖」写）。
+ *    authQuery：{ 查询参数: 来源 }，来源写法一样，发送时在页面里现读，拼进地址（key、签名放在地址里的站点用）。来源看观察里的「查询参数」。
+ *    auth、authQuery 读到的值写盘前一律换成别名，不管名字像不像秘密。
+ * 4. 前序请求：先 request 拿到 token，再 headers: { "x-token": r.json().token }（照观察里的「依赖」核对后写）。
  * headers 显式写的最后覆盖。被 401/403 拒时，失败输出里会写抄了什么、没抄什么、下一步；每次都变的头被拒，改用 waitRequest 或 DOM。
  * 和当前页面同 origin，或者当前页面自己往那个 origin 发过请求（a.com 页面调 api.a.com）的，在当前页面上发；否则在请求自己的 origin 上开页面发（同一个公司域名下的不同产品互不放行跨域）。
  */

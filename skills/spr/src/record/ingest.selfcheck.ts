@@ -88,12 +88,21 @@ assert.deepEqual(lists.map((r) => r.phase), ["load", "load"]);
 ingest.handleBatch([net(T + 200_000, { id: 4, url: "https://www.example.com/api/poll", body: "{}", size: 2, at: 190_000 })]);
 assert.equal(rows(W).find((r) => r.endpoint === "GET /api/poll")!.phase, "idle", "既不是加载期也不是动作引发的是 idle");
 
-// 4. 噪声（埋点）标 noise、不进原始请求表、不进endpoints.json
+// 4. 按规则猜的埋点只打标签（maybeTelemetry），不是噪声：照常进原始请求表（猜错了 request() 还能抄它的头）
 ingest.handleBatch([net(T + 7000, { id: 5, rid: "d:5", method: "POST", url: "https://apm.example.com/collector/apm", status: 200, body: "", size: 0 })]);
-const noise = rows(W).find((r) => r.url?.includes("collector"))!;
-assert.equal(noise.noise, 1);
-assert.equal(raw.get(W, 5, "d:5"), undefined);
-assert.ok(!index.snapshot(SITE).endpoints.some((e) => e.key.includes("collector")));
+const telemetry = rows(W).find((r) => r.url?.includes("collector"))!;
+assert.equal(telemetry.maybeTelemetry, 1);
+assert.equal(telemetry.noise, undefined);
+assert.ok(raw.get(W, 5, "d:5"), "疑似埋点也进原始请求表");
+// 4b. 跨站请求（页面 www.example.com，接口 api.other-cdn.net）：响应体写盘、进原始请求表；页面脚本没读响应体时，原因是它带来的 bodySkip，不是 no-body
+ingest.handleBatch([net(T + 7100, { id: 6, rid: "d:6", method: "POST", url: "https://x1.other-cdn.net/1/indexes/items/query", status: 200, body: "{\"hits\":[]}", size: 11 })]);
+const cross = rows(W).find((r) => r.url?.includes("other-cdn"))!;
+const crossFile = JSON.parse(log.readText(W, cross.file!)!);
+assert.ok(crossFile.responseBodyPath, "跨站的响应体也写盘");
+assert.ok(raw.get(W, 5, "d:6"), "跨站的也进原始请求表");
+ingest.handleBatch([net(T + 7200, { id: 7, rid: "d:7", url: "https://www.example.com/img/a.png", ct: "image/png", bodySkip: "not-text" })]);
+const img = rows(W).find((r) => r.url?.includes("a.png"))!;
+assert.equal(JSON.parse(log.readText(W, img.file!)!).bodyOmitted, "not-text");
 
 // 5. agent 窗口（tab 9）：命令先预留编号，行在做完时写；它引发的请求指向命令；页面脚本触发的一切记为 agent，写在 run 窗口自己的文件里
 const cmd = ingest.beginCmd(9, T + 300_000, "click", "@e12", undefined, SITE);

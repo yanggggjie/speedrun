@@ -47,6 +47,15 @@ assert.throws(() => new Sanitizer("test-key").resolve(aliased), /已失效/, "�
   assert.match(h["x-xsrftoken"]!, /^⟨secret_/); assert.match(h.csrftoken!, /^⟨secret_/); assert.match(h["x-accesstoken"]!, /^⟨secret_/);
   assert.equal(h["content-type"], "application/json");
 }
+// 登记过的值（auth、authQuery 现读的）：名字再普通，在 URL、请求头、请求体里也换成别名
+const reg = new Sanitizer("k2");
+reg.register("PLAINVALUE-998877");
+assert.match(reg.url("https://x.com/q?key=PLAINVALUE-998877&q=a").query.key!, /^⟨secret_/);
+assert.equal(reg.url("https://x.com/q?key=PLAINVALUE-998877&q=a").query.q, "a");
+assert.match(reg.headers({ "x-k": "PLAINVALUE-998877" })["x-k"]!, /^⟨secret_/);
+assert.ok(!JSON.stringify(reg.body({ sig: "PLAINVALUE-998877" })).includes("PLAINVALUE"));
+reg.register("abc");
+assert.equal(reg.url("https://x.com/q?v=abc").query.v, "abc", "太短的不登记");
 console.log("sanitize.selfcheck ok");
 
 // HTML：密码框、隐藏框、卡号框、像秘密的 meta 换成别名；普通输入框、普通 meta 原样（页面快照不能把秘密写盘，也不能把正常内容弄乱）

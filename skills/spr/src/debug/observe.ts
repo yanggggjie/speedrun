@@ -1,7 +1,7 @@
 import type { TabInfo } from "../browser/extension.ts";
 import type { RunHost, Session } from "../browser/host.ts";
 import type { AgentWindows } from "../browser/window.ts";
-import { describeHeaders, headerSignals, type AuthSnapshot, type HeaderSignal } from "../record/auth.ts";
+import { describeHeaders, describeQuery, headerSignals, querySignals, type AuthSnapshot, type HeaderSignal } from "../record/auth.ts";
 import { headerKinds, type HeaderKind } from "../record/headers.ts";
 import type { EndpointIndex } from "../record/endpoints.ts";
 import type { Ingestor } from "../record/ingest.ts";
@@ -20,6 +20,8 @@ const MATCH_FILES = 15;
 const PAGE_HITS = 3;
 /** 找依赖的来源时，往前看这个窗口里最近多少个请求。 */
 const DEP_SOURCES = 50;
+/** 重复的 endpoint 最多列多少个。 */
+const REPEAT_MAX = 6;
 
 export type ObserveDeps = {
   ingest: Ingestor;
@@ -63,7 +65,7 @@ export async function observe(d: ObserveDeps, w: DebugWindow, sess: Session | un
   const stats = (site: string): Map<string, Stat> => { let m = statsOf.get(site); if (!m) { m = new Map(d.index.snapshot(site).endpoints.map((e) => [e.key, e])); statsOf.set(site, m); } return m; };
   const merged = new Map<string, Stat>();
   for (const site of new Set(rows.map((r) => r.site ?? w.site))) for (const [k, v] of stats(site)) merged.set(k, v);
-  const { shown, noise, periodic, assets } = shownRequests(rows, merged);
+  const { shown, noise, telemetry, periodic, assets } = shownRequests(rows, merged);
   // 默认只列这个窗口里第一次出现的 endpoint；页面重新加载时的 /me 这类不再列
   // 请求文件：时间线行的 file（相对窗口目录）；请求文件先写、行后追加，有行就有文件
   const fileOf = (r: Row): RequestFile | undefined => { const text = r.file ? d.log.readText(w.id, r.file) : undefined; try { return text ? (JSON.parse(text) as RequestFile) : undefined; } catch { return undefined; } };
@@ -76,6 +78,10 @@ export async function observe(d: ObserveDeps, w: DebugWindow, sess: Session | un
     return true;
   });
   const repeated = shown.length - picked.length;
+  // 重复的 endpoint：只列事实（这个窗口里第几次、上次的编号），对不对由 agent 判断
+  const pickedSeqs = new Set(picked.map((r) => r.seq));
+  const lastRepeat = new Map<string, Row>();
+  for (const r of shown) if (r.endpoint && !pickedSeqs.has(r.seq)) lastRepeat.set(r.endpoint, r);
   if (!picked.length) lines.push("请求：没有新的请求");
   else {
     const rawOf = (r: Row): RawEntry | undefined => { const f = files.get(r.seq); return f?.rid && f.tab !== undefined ? d.raw.get(w.id, f.tab, f.rid) : undefined; };
@@ -117,6 +123,9 @@ export async function observe(d: ObserveDeps, w: DebugWindow, sess: Session | un
         if (r.endpoint && Object.keys(signals).length) d.index.setHeaders(site, r.endpoint, signals);
       }
       if (signals && Object.keys(signals).length) lines.push(`    请求头：${describeHeaders(signals)}`);
+      // 查询参数里的值在页面存储里找得到的：给 authQuery 用（只写名字和来源，不写值）
+      const query = raw ? querySignals(raw.url, snap) : {};
+      if (Object.keys(query).length) lines.push(`    查询参数：${describeQuery(query)}`);
     }
     // 依赖的来源不只看这次列出的：这个窗口里更早的请求（之前几步的、这次没列出的重复 endpoint）也算，最近 DEP_SOURCES 个
     const listed = new Set(list.map((r) => r.seq));
@@ -125,9 +134,18 @@ export async function observe(d: ObserveDeps, w: DebugWindow, sess: Session | un
     const rowOf = new Map(sources.map((r) => [r.seq, r]));
     const fileAt = (seq: number): RequestFile | undefined => { if (!files.has(seq) && rowOf.has(seq)) files.set(seq, fileOf(rowOf.get(seq)!)); return files.get(seq); };
     const deps = dependencies([...sources, ...list], fileAt, (f) => (f.responseBodyPath ? d.log.readText(w.id, f.responseBodyPath) : undefined), (f) => (f.tab !== undefined && f.rid ? d.raw.get(w.id, f.tab, f.rid) : undefined), listed);
-    if (deps.length) lines.push(`依赖：\n${deps.map((x) => `  #${x.to} 用了 #${x.from} 响应的 ${x.field}`).join("\n")}`);
+    if (deps.length) lines.push(`依赖（值相同，可能是巧合）：\n${deps.map((x) => `  #${x.to} 里有一个值与 #${x.from} 响应的 ${x.field} 相同`).join("\n")}`);
   }
   const others = picked.length > OBSERVE_MAX ? picked.length - OBSERVE_MAX : 0;
+  if (lastRepeat.size) {
+    const reqRows = timeline.filter((r) => r.type === "request" && !r.noise && r.endpoint);
+    const items = [...lastRepeat.values()].map((r) => {
+      const before = reqRows.filter((x) => x.endpoint === r.endpoint && x.seq < r.seq);
+      const action = stats(r.site ?? w.site).get(r.endpoint!)?.action;
+      return `  ${r.endpoint} 这个窗口里第 ${before.length + 1} 次${before.length ? `（上次 #${before.at(-1)!.seq}）` : ""}${action ? `（已有 action ${action}）` : ""}`;
+    });
+    lines.push(`重复（这个窗口里之前出现过的 endpoint）：\n${items.slice(0, REPEAT_MAX).join("\n")}${items.length > REPEAT_MAX ? `\n  还有 ${items.length - REPEAT_MAX} 个，见 timeline.jsonl` : ""}`);
+  }
   // WebSocket、事件流：每条连接只给最新的累计数，内容在 sockets/ 文件里
   const sockets = new Map(rows.filter((r) => r.type === "socket" && r.file).map((r) => [r.file!, r]));
   if (sockets.size) lines.push(`通道：\n${[...sockets.values()].slice(0, 5).map((r) => `  ${r.channel === "sse" ? "事件流" : "WebSocket"} ${r.url} 发 ${r.sent ?? 0} 收 ${r.received ?? 0}，${r.file}`).join("\n")}${sockets.size > 5 ? `\n  另有 ${sockets.size - 5} 条` : ""}`);
@@ -136,12 +154,12 @@ export async function observe(d: ObserveDeps, w: DebugWindow, sess: Session | un
     w.page.fresh = false;
     lines.push(`页面：${[w.page.canvas ? "主体是 canvas，内容不在 DOM 里" : "", w.page.api.length ? `发现页面接口 ${w.page.api.join("、")}` : ""].filter(Boolean).join("；")}（${w.page.dir}，用 rg 搜方法名）`);
   }
-  const folded = [others ? `其余 ${others} 个` : "", repeated ? `之前出现过的 ${repeated}` : "", noise ? `埋点广告 ${noise}` : "", periodic ? `轮询 ${periodic}` : "", assets ? `静态资源 ${assets}` : ""].filter(Boolean);
+  const folded = [others ? `其余 ${others} 个` : "", noise ? `命中广告规则 ${noise}` : "", telemetry ? `可能是埋点 ${telemetry}（按路径、域名规则判断，可能误判）` : "", periodic ? `轮询 ${periodic}` : "", assets ? `静态资源 ${assets}` : ""].filter(Boolean);
   if (folded.length) lines.push(`没列出：${folded.join("，")}（都在 timeline.jsonl 里）`);
-  // 像是登录失效：这一段里有同站请求被 401/403 拒，或者页面到了登录页。放在其它「下一步」前面，先解决登录
+  // 登录相关的事实：这一段里有同站请求被 401/403 拒，或者页面地址命中登录页规则。是不是登录失效由 agent 看页面判断
   const denied = rows.filter((r) => r.type === "request" && !r.noise && (r.status === 401 || r.status === 403) && (r.site ?? w.site) === w.site).slice(-3);
   const atLogin = current ? isLoginUrl(current.url) : navs.some((r) => isLoginUrl(String(r.url ?? "")));
-  if (denied.length || atLogin) lines.push(`下一步：像是登录失效（${[...denied.map((r) => `#${r.seq} ${r.endpoint ?? r.url} ${r.status}`), ...(atLogin ? ["页面在登录页"] : [])].join("、")}）：先 computer screenshot 或 read_page 看页面是什么样；${LOGIN_HINT}`);
+  if (denied.length || atLogin) lines.push(`被拒或登录页：${[...denied.map((r) => `#${r.seq} ${r.endpoint ?? r.url} ${r.status}`), ...(atLogin ? ["页面地址命中登录页规则（login、sso、passport 这类）"] : [])].join("、")}。401/403 也可能是限流、没权限：先 computer screenshot 或 read_page 看页面；如果是登录失效：${LOGIN_HINT}`);
   if (!picked.length && !repeated) {
     const api = w.page?.canvas || w.page?.api.length;
     lines.push(api ? `下一步：没有新请求，改动可能走页面函数或 WebSocket：先用 rg 搜 ${w.page!.dir} 的方法名，要参数用 trace；都没有再用页面操作` : "下一步：页面可能还在加载，computer wait 2 等一会儿再看；或者数据在页面里，用 DOM 取（get_page_text、read_page）");

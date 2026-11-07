@@ -8,6 +8,7 @@ import type { WindowLog } from "../record/windowlog.ts";
 import { PendingAsks } from "./asks.ts";
 import { LOGIN_HINT, isLoginUrl } from "../utils/url.ts";
 import { actionSummary, actionTimeoutMs, checkParams, coerceParams, findAction, isCompose } from "./actions.ts";
+import { composeCallError } from "./link.ts";
 
 /** 最外层 compose 里每次 action() 调用的记录，按调用顺序；恢复时前几次直接返回记下的结果，不再执行。 */
 export type JournalEntry = { name: string; params: Record<string, unknown>; result: unknown };
@@ -21,12 +22,6 @@ export type Outcome = (
 ) & { runWindow?: string; drafts?: string[]; sent?: string[]; dialogs?: string[] };
 
 const ASK_DATA_LIMIT = 100 * 1024;
-
-/** 失败时的页面看起来像登录页，或错误里是 401/403：多半是登录失效，不是 action 坏了。 */
-export function looksLoggedOut(error: string, url: string | undefined): boolean {
-  if (url && isLoginUrl(url)) return true;
-  return /\b(401|403)\b|unauthori[sz]ed|未登录|登录/i.test(error);
-}
 
 /** actionDir：各站点的 action 文件在它下面；composeDir：compose。 */
 export type RunnerPaths = { actionDir: string; composeDir: string };
@@ -55,8 +50,8 @@ export function runWindowsOf(log: Pick<WindowLog, "freshName" | "openWindow" | "
   };
 }
 
-/** askState：恢复一次停在 ask 的 compose；code：恢复时用停下那一刻的 compose 代码。 */
-export type RunOptions = { askState?: AskState; code?: string };
+/** askState：恢复一次停在 ask 的 compose；code：恢复时用停下那一刻的 compose 代码；from：嵌套调用时，发起调用的 compose 名。 */
+export type RunOptions = { askState?: AskState; code?: string; from?: string };
 
 /** 在 worker 线程里跑 action。每次 run 有自己的 run 窗口，不同的 run 可以同时跑。 */
 export class ActionRunner {
@@ -72,7 +67,7 @@ export class ActionRunner {
 
   constructor(host: RunHost, paths: Partial<RunnerPaths> = {}, windows: RunWindows = NO_WINDOWS) { this.host = host; this.paths = { ...DEFAULT_PATHS, ...paths }; this.windows = windows; }
 
-  /** 按名字运行一个 action 或 compose（spr run，或 compose 里的 action() 调用）。nested 传进来表示嵌套调用，共用这次 run 的窗口和页面。draft 也能跑。 */
+  /** 按名字运行：spr run 跑 compose，compose 里的 action() 调用跑 action（nested 传进来，共用这次 run 的窗口和页面）。compose 不能调用 compose。draft 也能跑。 */
   async runAction(name: string, params: Record<string, unknown>, nested?: Session, opts: RunOptions = {}): Promise<Outcome> {
     const found = findAction(this.paths.actionDir, name, this.paths.composeDir);
     const tag = nested ? { failedAction: name } : {};
@@ -81,23 +76,24 @@ export class ActionRunner {
     const summary = actionSummary(file);
     if (summary.status === "blocked") return { status: "failure", error: `[${name}] 是写不出来的 action（@status blocked，原因见 ${file} 的 @note）：不要再 debug，向用户说明卡在哪；有新证据才把 @status 改回 draft、在 @note 写明为什么，回 debug 窗口修`, ...tag };
     const composed = isCompose(found);
+    if (nested && composed) return { status: "failure", error: composeCallError(opts.from ?? "compose", name), ...tag };
     const problem = checkParams(file, params);
     if (problem) return { status: "failure", error: `[${name}] ${problem}`, ...tag };
     const typed = coerceParams(file, params);
     if ("error" in typed) return { status: "failure", error: `[${name}] ${typed.error}`, ...tag };
     params = typed.params;
     const key = nested?.key ?? this.windows.open(name, { action: name, params });
-    // 嵌套调用共用页面状态；compose 的"只能调用 action"只约束 compose 自己的代码，不约束被它调用的 action
+    // 嵌套调用（compose 调用的 action）共用页面状态；compose 的"只能调用 action"只约束 compose 自己的代码
     const session = new Session(key);
     session.composeOnly = composed;
     if (nested) { session.tab = nested.tab; session.origin = nested.origin; session.fresh = nested.fresh; }
     else this.host.watchSent(key);
     try {
-      // 只有最外层的 compose 能 ask 和恢复：嵌套调用的 compose 不带重跑状态
-      const state = composed && !nested ? (opts.askState ?? { journal: [], answers: [] }) : undefined;
-      const code = composed ? (nested ? undefined : opts.code) ?? fs.readFileSync(file, "utf8") : undefined;
+      // compose 带重跑状态（ask 和失败后恢复用）
+      const state = composed ? (opts.askState ?? { journal: [], answers: [] }) : undefined;
+      const code = composed ? opts.code ?? fs.readFileSync(file, "utf8") : undefined;
       const out: Outcome = code !== undefined
-        ? await this.execCompose(file, code, params, actionTimeoutMs(file), session, state)
+        ? await this.execCompose(file, code, params, actionTimeoutMs(file), session, name, state)
         : await this.work(file, params, actionTimeoutMs(file), session);
       if (out.status === "ask") out.code = code;
       if (out.status === "failure" && nested) out.failedAction ??= name;
@@ -105,8 +101,8 @@ export class ActionRunner {
       if (out.status === "failure" && !nested) {
         const page = await this.host.failureShot(session, this.windows.failureFile(key));
         if (page) out.page = page;
-        if (looksLoggedOut(out.error, page?.url)) out.hint = `像是登录失效：用读图片的方式看 page.screenshot。要点登录的，用 spr debug ${name} navigate <这个页面> 打开 debug 窗口去点；${LOGIN_HINT}。`;
-        else if (page?.screenshot) out.hint = "看 page.screenshot 判断页面停在了哪；页面正常但 action 失败，才是 action 坏了。";
+        // 只给事实：页面地址是否命中登录页规则；是不是登录失效由 agent 看截图判断
+        if (page?.url && isLoginUrl(page.url)) out.hint = `页面地址命中登录页规则（login、sso、passport 这类）：${page.url}。如果是登录失效：${LOGIN_HINT}；要点登录的，用 spr debug ${name} navigate <这个页面> 去点`;
       }
       if (out.status === "failure" && !nested) this.addRejected(out, key);
       if (out.status === "success" && summary.status === "draft") session.draftsOk.push(file);
@@ -137,11 +133,11 @@ export class ActionRunner {
    * 跑 compose：把代码写成它旁边的一个临时文件再跑（文件里的相对 import 照样能用）。
    * 每次都跑这一刻读到的代码：恢复时传进来的是停下那一刻的代码，agent 中途改了文件也不影响重放。
    */
-  private async execCompose(file: string, code: string, params: Record<string, unknown>, timeoutMs: number, session: Session, askState?: AskState): Promise<Outcome> {
+  private async execCompose(file: string, code: string, params: Record<string, unknown>, timeoutMs: number, session: Session, owner: string, askState?: AskState): Promise<Outcome> {
     const tmp = path.join(path.dirname(file), `.run-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}.mjs`);
     fs.writeFileSync(tmp, code, "utf8");
     try {
-      return await this.work(tmp, params, timeoutMs, session, askState);
+      return await this.work(tmp, params, timeoutMs, session, askState, owner);
     } finally {
       fs.rmSync(tmp, { force: true });
     }
@@ -160,7 +156,7 @@ export class ActionRunner {
    * askState 只有最外层 compose 才有：每次 action() 按调用顺序记进 journal；恢复时从头重跑代码，
    * 前面记下的 action() 直接返回记录的结果（不重复发请求），第 i 次 ask 返回第 i 个回答，没有回答就停下交给 agent。
    */
-  private work(file: string, params: Record<string, unknown>, timeoutMs: number, session: Session, askState?: AskState): Promise<Outcome> {
+  private work(file: string, params: Record<string, unknown>, timeoutMs: number, session: Session, askState?: AskState, owner?: string): Promise<Outcome> {
     const limit = this.timeoutOverrideMs ?? timeoutMs;
     return new Promise((resolve) => {
       const logs: string[] = [];
@@ -187,7 +183,7 @@ export class ActionRunner {
         if (m.type !== "call") return;
         const reply = (body: Record<string, unknown>): void => { if (!settled) worker.postMessage({ type: "reply", id: m.id, ...body }); };
         if (m.op === "ask") {
-          if (!askState) return reply({ error: "ask 只能用在 spr run 直接跑的那个 compose 里：被它调用的 compose 和 action 里不能用" });
+          if (!askState) return reply({ error: "ask 只能用在 compose 里，action 里不能用" });
           const i = asks++;
           if (i < askState.answers.length) return reply({ result: askState.answers[i] ?? null });
           const size = JSON.stringify(m.args.data ?? null).length;
@@ -207,7 +203,7 @@ export class ActionRunner {
             }
             return reply({ result: prev.result ?? null });
           }
-          run = this.runAction(name, p, session).then((o) => {
+          run = this.runAction(name, p, session, { ...(owner ? { from: owner } : {}) }).then((o) => {
             if (o.status === "failure") failedAction = o.failedAction ?? name;
             if (o.status !== "success") throw new Error(`[${name}] ${o.status === "failure" ? o.error : "被调用的 action 不能 ask"}`);
             if (askState) askState.journal[i] = { name, params: p, result: o.result };

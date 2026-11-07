@@ -2,11 +2,6 @@
 import { siteOfUrl } from "../utils/url.ts";
 import type { RequestFile } from "./types.ts";
 
-/** 站点：页面的 host（去 www.，非默认端口带上）；不是网址返回空串。 */
-export function siteOf(url: string | undefined): string {
-  return siteOfUrl(url);
-}
-
 /** 把用户输入（域名或网址）变成站点。 */
 export function normalizeSite(input: string): string {
   const text = input.trim().toLowerCase();

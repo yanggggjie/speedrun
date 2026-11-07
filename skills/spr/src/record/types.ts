@@ -40,8 +40,10 @@ export type Row = {
   size?: number;
   /** request：`方法 路径`，也就是 action 文件头 @endpoint 的写法。 */
   endpoint?: string;
-  /** 1 = 埋点、广告等噪声，默认不看。 */
+  /** 1 = 命中广告和追踪规则列表（adblock）的噪声：不存响应体和原始请求。 */
   noise?: 1;
+  /** 1 = 按路径、域名规则猜的埋点（可能误判）：照常存，观察里折叠。 */
+  maybeTelemetry?: 1;
   /** 这个请求由哪个动作引发：同一标签页 2 秒内最近一次 agent 命令的 seq，causeDt 是相隔的毫秒数。 */
   cause?: number;
   causeDt?: number;

@@ -14,12 +14,13 @@ export function isPeriodic(stat: PeriodicStat | undefined): boolean {
   return !!stat && stat.idle >= 3 && stat.idle * 2 >= stat.count && stat.cmdTriggered * 4 <= stat.idle;
 }
 
-/** 值得列出的请求：非噪声、非静态资源、非周期性 endpoint（轮询、心跳）。返回列出的和折叠掉的个数。 */
-export function shownRequests(rows: Row[], stats: ReadonlyMap<string, PeriodicStat>): { shown: Row[]; noise: number; periodic: number; assets: number } {
-  const out = { shown: [] as Row[], noise: 0, periodic: 0, assets: 0 };
+/** 值得列出的请求：非噪声、非疑似埋点、非静态资源、非周期性 endpoint（轮询、心跳）。返回列出的和折叠掉的个数。 */
+export function shownRequests(rows: Row[], stats: ReadonlyMap<string, PeriodicStat>): { shown: Row[]; noise: number; telemetry: number; periodic: number; assets: number } {
+  const out = { shown: [] as Row[], noise: 0, telemetry: 0, periodic: 0, assets: 0 };
   for (const r of rows) {
     if (r.type !== "request") continue;
     if (r.noise) out.noise++;
+    else if (r.maybeTelemetry) out.telemetry++;
     else if (STATIC.test(r.url ?? "")) out.assets++;
     else if (isPeriodic(r.endpoint ? stats.get(r.endpoint) : undefined)) out.periodic++;
     else out.shown.push(r);
@@ -98,7 +99,7 @@ function sentValues(file: RequestFile, raw?: { url: string; body: string | null;
 
 /**
  * 请求之间的依赖：后一个请求的查询参数或请求体里，有长度 ≥ 6 的值和前一个请求的响应体里某个值完全相等。
- * 例如 "#813 用了 #812 响应的 data.token"。agent 据此判断几个请求是一条依赖链（放进同一个 action，或拆开再用 compose 串起来），还是互不相干。只输出字段路径，不输出值。
+ * 例如 "#813 里有一个值与 #812 响应的 data.token 相同"（值相同可能是巧合）。agent 据此判断几个请求是一条依赖链（放进同一个 action，或拆开再用 compose 串起来），还是互不相干。只输出字段路径，不输出值。
  */
 /**
  * 请求之间的依赖：后一个请求里的值等于前面某个响应里的值，就记下来源（最近的那个）。

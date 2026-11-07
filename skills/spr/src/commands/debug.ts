@@ -6,7 +6,7 @@ import { makeDebugGuide } from "../debug/guide.ts";
 import { observe } from "../debug/observe.ts";
 import { clues, mergeCalls, mergeScan, scanPage, traceEnd, traceStart, type PageScan, type TraceCall } from "../debug/page-api.ts";
 import { findAction, isCompose } from "../run/actions.ts";
-import { checkCompose } from "../run/link.ts";
+import { checkCompose, missingText } from "../run/link.ts";
 import { normalizeSite } from "../record/digest.ts";
 import { siteOfUrl } from "../utils/url.ts";
 import { parseArgs, valueOf, type ArgSpec } from "./args.ts";
@@ -150,10 +150,10 @@ async function closeDebug(compose: string, ctx: Ctx, out: Output): Promise<void>
   out.line([`ok 已关掉 ${compose} 的 debug 窗口`, `窗口目录：${ctx.log.winDir(w.id)}（日志留着）`].join("\n"));
 }
 
-/** 输出末行：这个窗口要达成的目标。代替分散的提醒：缺什么由 compose 文件算出来。 */
+/** 输出末行：这个窗口要达成的目标。只列事实：缺哪些 action、compose 里怎么调用它们（参数源码），由 compose 文件算出来。 */
 function targetLine(compose: string, ctx: Ctx): string {
   const { missing } = checkCompose(compose, { actionDir: ctx.log.dir, composeDir: composeDirOf(ctx) });
-  return `目标：spr run ${compose}${missing.length ? `（还缺 ${missing.join("、")}）` : ""}`;
+  return `目标：spr run ${compose}${missing.length ? `（还缺 ${missingText(missing)}）` : ""}`;
 }
 
 /**
@@ -325,7 +325,7 @@ async function traceTool(ctx: Ctx, w: DebugWindow, sess: Session, a: Record<stri
   return [
     `ok trace 录 ${seconds} 秒：${r.wrapped.join("、")}`,
     ...(r.failed.length ? [`没包住：${r.failed.join("；")}`] : []),
-    `下一步：现在操作一次页面；到时间后下一条命令会带上记录，或 spr debug ${w.id} trace --stop。这期间不要跳转页面`,
+    `下一步：现在操作一次页面；到时间后下一条命令会带上记录，或 spr debug ${w.compose} trace --stop。这期间不要跳转页面`,
   ];
 }
 

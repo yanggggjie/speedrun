@@ -2,7 +2,7 @@
 
 ## 未发布
 
-- **破坏性改动：写可复用的脚本成为唯一主线。** 任务固定走 Find、Write、Debug、Run，不留兼容。其他机器上已有的 action、compose 要手动改成下面的写法。
+- **破坏性改动：写可复用的脚本成为唯一主线。** 任务固定走 `Find → Write → Run ⇄ Debug`，不留兼容。其他机器上已有的 action、compose 要手动改成下面的写法。
   - `learn` 改名 `debug`：`spr debug <compose> navigate <网址|tab 号>` 打开窗口，窗口按 compose 查找，可以写多个 action。删除 `learn new`、句柄、`try_action`。日志目录改成 `debug-windows/`，旧的 `learn-windows/`、`learn-guide.md` 不再使用，可以手动删除。
   - `spr run` 只接受 compose，单步任务也写 compose。执行前检查一次报全缺的 action（`is not defined`），什么都不发。删除 `spr run <名> --help`，说明和参数直接读文件头。
   - debug 窗口在 run 之后保留，run 窗口结束就关。compose 失败时也截图，失败输出给出出错的 action，修好后 `spr resume <编号>` 跳过已完成的 action。
@@ -10,6 +10,13 @@
   - 脚本写法：`export default async ({ q, n = 30 }) => …`，`import { action, ask } from "spr"`。删除 `spr.params`、`spr.ask`，`@summary` 并入 `@description`，新增可选的 `@returns`。
   - 站点目录 `~/.speedrun/sites/<站点>/actions/` 改成 `~/.speedrun/action/<站点>/`，`endpoints.json`、`page-api.json` 也在这里。
   - 删除 debug 指引里"run 会检查 @endpoint 发送顺序"的说法，代码没有这个检查。
+  - 流程顺序改成 `Find → Write → Run ⇄ Debug`：Debug 只在 `spr run` 报 `is not defined` 或运行失败时出现。规划写在 compose 里（调哪个、调几次、怎么选、返回什么），Debug 只做一次：用最容易的参数调一次 action，重复交给 compose。
+  - compose 不能调用别的 compose：执行前检查和运行时都拒绝。几个 compose 共用的数据处理放进 `~/.speedrun/helpers/`。调用了别的 compose 的已有 compose 要手动改成直接调用 action。
+  - `spr run` 报缺和 debug 末行带 compose 里的调用参数（`zhihu-vote({ id }) is not defined`）。`action()` 的名字不是字面量时不再拒绝运行，只列出检查不了的调用。
+  - 实现方式改成五层，从上往下逐层试、不跳层：1 不需要 token 的官方 API（缺 action 时打开 debug 窗口之前先查）→ 2 页面发的 HTTP 请求 → 3 页面函数 → 4 WebSocket、事件流 → 5 DOM。不在第 1 层的 action，`@note` 按层写明上面每一层试了什么。
+  - 录和存要宽，展示时再筛：跨站请求（页面 a.com 调 b.net）也录响应体、进原始请求表，`waitRequest` 拿得到；按路径、域名规则猜的埋点只标 `maybeTelemetry`，照常存，观察里折叠成「可能是埋点」；只有命中广告规则的标 `noise`、不存。`events`、`stats`、`logs`、`monitor` 不再算埋点。`bodyOmitted` 的原因写对（`not-text`、`event-stream` 等），不再一律写成 `no-body`；`waitRequest` 拿到没有响应体的请求时报错并带原因。
+  - `request()` 新增 `authQuery: { 查询参数: 来源 }`，和 `auth` 一样在页面里现读，拼进地址；观察里新增「查询参数」一行给出来源。`auth`、`authQuery` 读到的值写盘前一律换成别名，不管名字像不像秘密。
+  - 输出只给事实、不替 agent 下结论：观察新增「重复」一段（同一个 endpoint 第几次、上次的编号），不再说「像是登录失效」，改为列出被拒的请求和状态码、页面地址命中登录页规则；「依赖」改说「值相同」。run 失败的事实放进「说明」，「下一步」只有一行；参数错误时只提示改参数重跑；已发出写请求又没有恢复编号时写明重新 run 会从头执行；结果截断时提示在 compose 里做筛选、统计。
 
 - 新图标：一个折成闪电的 S，黄底黑形（`#FFD60A`、`#17171C`），品牌色从赛车红换成闪电黄。
 - `request()` 不再只按注册域名决定在哪个页面上发：同 origin、或者当前页面自己往那个 origin 发过请求才在当前页面上发，否则在目标 origin 上开页面发。以前同一个公司域名下的不同产品（`a.example.com` 页面上请求 `b.example.com`）会被 403。

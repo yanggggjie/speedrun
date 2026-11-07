@@ -56,8 +56,29 @@ export function headerSignals(headers: Record<string, string>, snap: AuthSnapsho
   return out;
 }
 
+/**
+ * 查询参数的来源：原始 URL（真值）里每个查询参数，值在页面存储里找到同一个的，返回 { 参数名: 来源 }（request 的 authQuery 写法）；找不到的不返回，不猜。
+ */
+export function querySignals(url: string, snap: AuthSnapshot | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!snap) return out;
+  let params: URLSearchParams;
+  try { params = new URL(url).searchParams; } catch { return out; }
+  for (const [name, value] of params) {
+    const source = sourceOf(value, snap);
+    if (source && !source.startsWith("Bearer ")) out[name] = source;
+  }
+  return out;
+}
+
+const where = (spec: string): string => spec.replace(/^(Bearer )?(\w+):/, (_w, b, k) => `${b ?? ""}${{ cookie: "cookie ", local: "localStorage ", session: "sessionStorage ", meta: "meta " }[k as string]}`);
+
+/** 一行给 agent 看的查询参数来源（不含值）：x-algolia-api-key ← localStorage cfg.key。 */
+export function describeQuery(signals: Record<string, string>): string {
+  return Object.entries(signals).map(([name, source]) => `${name} ← ${where(source)}`).join("；");
+}
+
 /** 一行给 agent 看的信号（不含值）：x-xsrftoken 页面级不变 ← cookie _xsrf；x-zse-96 每次都变。 */
 export function describeHeaders(signals: Record<string, HeaderSignal>): string {
-  const where = (spec: string): string => spec.replace(/^(Bearer )?(\w+):/, (_w, b, k) => `${b ?? ""}${{ cookie: "cookie ", local: "localStorage ", session: "sessionStorage ", meta: "meta " }[k as string]}`);
   return Object.entries(signals).map(([h, s]) => `${h} ${HEADER_KIND_TEXT[s.kind]}${s.source ? ` ← ${where(s.source)}` : ""}`).join("；");
 }

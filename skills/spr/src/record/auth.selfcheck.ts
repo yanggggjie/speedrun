@@ -1,6 +1,6 @@
 // 请求头的信号错了，agent 会写错 auth 或白改发法：值怎么变（页面级不变、按 endpoint 不变、每次都变、样本太少）、页面存储里的来源都要分对；只输出类别和来源，不输出值。
 import assert from "node:assert/strict";
-import { describeHeaders, headerSignals } from "./auth.ts";
+import { describeHeaders, describeQuery, headerSignals, querySignals } from "./auth.ts";
 import { headerKinds } from "./headers.ts";
 
 // 一个窗口里的同站请求：x-xsrftoken、x-api-version 各请求一样；x-zse-96 同一个 endpoint 也每次不同；x-key 按 endpoint 不同；x-once 只出现一次
@@ -52,4 +52,10 @@ const text = describeHeaders(s);
 assert.match(text, /x-xsrftoken 页面级不变 ← cookie _xsrf/); assert.match(text, /authorization 样本太少 ← Bearer localStorage auth\.user\.accessToken/); assert.match(text, /x-zse-96 每次都变/);
 for (const v of Object.values(headers)) if (v.length > 6 && !/json|\*/.test(v)) assert.ok(!text.includes(v.replace(/^Bearer /, "")), `说明里没有值：${v}`);
 assert.deepEqual(headerSignals({ "x-token": "only-once-123456" }, undefined, new Map()), { "x-token": { kind: "few" } }, "没有快照：只给类别");
+// 查询参数的来源：值在 localStorage 里找得到就给出来源，找不到的不返回；说明里没有真值
+const qsnap = { cookie: {}, local: { cfg: JSON.stringify({ search: { key: "abcdef0123456789" } }) }, session: {}, meta: {} };
+const q = querySignals("https://x1.cdn.net/1/query?api-key=abcdef0123456789&q=agent&page=2", qsnap);
+assert.deepEqual(q, { "api-key": "local:cfg.search.key" });
+assert.ok(!describeQuery(q).includes("abcdef0123456789"));
+assert.deepEqual(querySignals("https://x1.cdn.net/1/query?api-key=abcdef0123456789", undefined), {}, "没有快照：不猜");
 console.log("auth.selfcheck ok");

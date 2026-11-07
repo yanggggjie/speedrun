@@ -27,7 +27,7 @@ export class Session {
 }
 
 /** request 的请求头从哪来（只有名字）：from 抄自这次窗口里的哪些 endpoint，copied 抄了哪些头，skipped 因为每次都变没抄的，auth 现读的。 */
-export type RequestSource = { from: string[]; copied: string[]; skipped: string[]; auth: string[] };
+export type RequestSource = { from: string[]; copied: string[]; skipped: string[]; auth: string[]; authQuery: string[] };
 
 
 /** 请求头的族：去掉最后一段（x-zse-93、x-zse-96 → x-zse）；只有一段的就是它自己。 */
@@ -37,7 +37,9 @@ const familyOf = (name: string): string => (name.split("-").length >= 3 ? name.r
 function rejectHint(endpoint: string, status: number, src: RequestSource): string {
   const copied = src.copied.length ? `抄了 ${src.from.join("、")} 的 ${src.copied.join("、")}` : "这次窗口里没有可抄的请求头（只带了 cookie）";
   const skipped = src.skipped.length ? `；没抄 ${src.skipped.join("、")}（这次窗口里每次都变、按 endpoint 变，或和它们同一族）` : "";
-  return `${endpoint} 被拒（${status}）：${copied}${skipped}。像是登录失效就请用户登录后重跑；页面这次没发带某个头的请求的，看 debug 窗口观察里「请求头」给的来源写进 request 的 auth；每次都变的头被拒的，改用 waitRequest（goto 带参数的页面或点一下，收页面自己发的请求）或 DOM`;
+  const read = [...src.auth.map((h) => `请求头 ${h}`), ...src.authQuery.map((q) => `查询参数 ${q}`)];
+  const fromPage = read.length ? `；从页面现读了 ${read.join("、")}` : "";
+  return `${endpoint} 被拒（${status}）：${copied}${skipped}${fromPage}。登录失效的请用户登录后重跑；页面这次没发带某个头的请求的，看 debug 窗口观察里「请求头」给的来源写进 request 的 auth；每次都变的头被拒的，改用 waitRequest（goto 带参数的页面或点一下，收页面自己发的请求）或 DOM`;
 }
 
 /** run 失败时的页面现场。 */
@@ -106,7 +108,7 @@ export class RunHost {
     if (!r.noise) this.noteSent(r.win, r.method, r.endpoint);
     for (const w of this.waits.values()) {
       if (w.key !== r.win) continue;
-      if (!r.noise) w.others.push(r.endpoint); // 超时时列给 agent 看的，埋点广告不列
+      if (!r.noise) w.others.push(r.endpoint); // 超时时列给 agent 看的，命中广告规则的不列
       if (w.hit || r.method !== w.method || !(r.endpoint === `${w.method} ${w.path}` || w.pattern.test(pathOf(r.url)))) continue;
       w.hit = r;
       w.resolve?.(r);
@@ -279,6 +281,7 @@ export class RunHost {
       }
       if (r.error) throw new Error(`${r.endpoint} 请求失败：${r.error}`);
       if (r.truncated) throw new Error(`${r.endpoint} 的响应太大，录制时被截断了，拿不到完整内容：换成 request()，或缩小查询范围`);
+      if (r.body === undefined) throw new Error(`${r.endpoint} 没有录到响应体（${r.bodyOmitted ?? "no-body"}）：not-text 是响应不是文本类型，event-stream 是事件流（用 waitMessage），noise 是命中广告规则；换成 request()、页面函数或 DOM`);
       return { status: r.status ?? 0, text: r.body ?? "", ct: r.ct ?? "", url: r.url, requestBody: r.reqBody ?? null, seq: r.seq };
     } finally {
       done();
@@ -320,10 +323,11 @@ export class RunHost {
 
   /**
    * 在页面里发请求。请求头按顺序凑齐：浏览器自己带的（cookie）→ 从这次窗口里页面发过的请求抄 → auth 声明的页面固定位置（发送时现读）→ headers 显式写的。
+   * authQuery 和 auth 一样在页面里现读，拼进地址的查询参数。auth、authQuery 读到的值登记给脱敏器：日志里一律是别名，不管名字像不像秘密。
    * 从页面请求抄：页面发过同一个 endpoint 就整组抄它最近一次的；否则按头名看这次窗口里的同站请求，值都一样的（页面级不变）抄，各不相同的（签名、nonce）不跨 endpoint 抄。
    * 只用这次窗口里的原始请求，不用以前或别的窗口的。
    */
-  private async request(s: Session, a: { url: string; method?: string; headers?: Record<string, string>; json?: unknown; body?: string; auth?: Record<string, string>; timeout?: number }): Promise<unknown> {
+  private async request(s: Session, a: { url: string; method?: string; headers?: Record<string, string>; json?: unknown; body?: string; auth?: Record<string, string>; authQuery?: Record<string, string>; timeout?: number }): Promise<unknown> {
     const method = (a.method ?? (a.json !== undefined || a.body !== undefined ? "POST" : "GET")).toUpperCase();
     let target: URL;
     try { target = new URL(a.url); } catch { throw new Error(`request 需要完整的网址：${a.url}`); }
@@ -336,18 +340,24 @@ export class RunHost {
     const endpoint = endpointKey(method, endpointOf(target.href, a.json ?? body ?? undefined).name);
     const copy = await this.copyHeaders(s, target, endpoint);
     const headers: Record<string, string> = { ...copy.headers };
-    // 声明了来源的头：发送时在页面里现读，取不到就报错，不静默发出去
+    // 声明了来源的头和查询参数：发送时在页面里现读，取不到就报错，不静默发出去；读到的值登记给脱敏器
     const auth = Object.fromEntries(Object.entries(a.auth ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
-    if (Object.keys(auth).length) {
-      const vals = (await this.callTab(tab, "authRead", [auth])) as Record<string, string | null>;
-      for (const [h, spec] of Object.entries(auth)) {
-        if (vals?.[h] == null) throw new Error(`取不到请求头 ${h}（${spec}）：页面里没有这个值（没登录、换了存储位置，或页面不对）`);
-        headers[h] = vals[h]!;
+    const authQuery = a.authQuery ?? {};
+    const specs = { ...Object.fromEntries(Object.entries(auth).map(([k, v]) => [`h:${k}`, v])), ...Object.fromEntries(Object.entries(authQuery).map(([k, v]) => [`q:${k}`, v])) };
+    if (Object.keys(specs).length) {
+      const vals = (await this.callTab(tab, "authRead", [specs])) as Record<string, string | null>;
+      for (const [key, spec] of Object.entries(specs)) {
+        const name = key.slice(2), header = key.startsWith("h:");
+        const v = vals?.[key];
+        if (v == null) throw new Error(`取不到${header ? "请求头" : "查询参数"} ${name}（${spec}）：页面里没有这个值（没登录、换了存储位置，或页面不对）`);
+        this.d.ingest.sanitizer.register(v);
+        if (header) headers[name] = v;
+        else target.searchParams.set(name, v);
       }
     }
     for (const [k, v] of Object.entries(a.headers ?? {})) headers[k.toLowerCase()] = v;
     if (a.json !== undefined) headers["content-type"] ??= "application/json";
-    const source = { from: copy.from, copied: Object.keys(copy.headers), skipped: copy.skipped, auth: Object.keys(auth) };
+    const source = { from: copy.from, copied: Object.keys(copy.headers), skipped: copy.skipped, auth: Object.keys(auth), authQuery: Object.keys(authQuery) };
     const safe = this.d.ingest.sanitizer.url(target.href);
     const detail = { method, endpoint, bareUrl: safe.bareUrl, query: safe.query, ...(a.json !== undefined ? { reqBody: JSON.stringify(this.d.ingest.sanitizer.body(a.json)).slice(0, 4000) } : {}), headersFrom: source.from, copied: source.copied, ...(source.skipped.length ? { skipped: source.skipped } : {}) };
     this.noteSent(s.key, method, endpoint);

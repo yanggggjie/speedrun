@@ -1,7 +1,7 @@
 import { EXIT } from "../protocol.ts";
 import type { Outcome, AskState } from "../run/runner.ts";
 import { findAction, isCompose, promoteAction, actionSummary } from "../run/actions.ts";
-import { checkCompose } from "../run/link.ts";
+import { checkCompose, missingText } from "../run/link.ts";
 import { parseArgs } from "./args.ts";
 import { composeDirOf, indent, type Ctx, type Output } from "./context.ts";
 
@@ -28,14 +28,20 @@ export async function runCommand(argv: string[], ctx: Ctx, out: Output): Promise
   return runNamed(ctx, out, { name, params: a.params });
 }
 
-/** 执行前检查：缺 action、依赖 blocked、写法不对都在这里报，什么都不发。通过返回 true。 */
+/**
+ * 执行前检查：缺 action、依赖 blocked、调用了 compose 都在这里报，什么都不发。通过返回 true。
+ * 名字不是字面量的调用检查不了，照常运行，只列出来。
+ */
 function linked(name: string, ctx: Ctx, out: Output): boolean {
-  const { missing, blocked, errors } = checkCompose(name, { actionDir: ctx.log.dir, composeDir: composeDirOf(ctx) });
+  const { missing, blocked, errors, dynamic } = checkCompose(name, { actionDir: ctx.log.dir, composeDir: composeDirOf(ctx) });
   if (errors.length) { out.usage(errors.join("；")); return false; }
-  if (!missing.length && !blocked.length) return true;
+  if (!missing.length && !blocked.length) {
+    if (dynamic.length) out.line(`检查不了：这几处 action() 的名字不是字面量，执行前检查不了：${dynamic.join("、")}；运行时缺了会报 is not defined`);
+    return true;
+  }
   out.code = EXIT.fail;
   if (missing.length) {
-    out.line(`fail ${name}：${missing.join("、")} is not defined（没有执行任何操作）`);
+    out.line(`fail ${name}：${missingText(missing)} is not defined（没有执行任何操作）`);
     out.line(`下一步：spr debug ${name} navigate <网址>，写好后再 spr run ${name}`);
   }
   if (blocked.length) {
@@ -93,7 +99,7 @@ function outcomeLines(name: string, outcome: Outcome, saveFull?: (json: string) 
     if (json.length <= RESULT_MAX) lines.push(`ok ${name}`, `结果：\n${indent(json)}`);
     else {
       const file = saveFull?.(json);
-      lines.push(`ok ${name}`, `结果（截断了：一共 ${json.length} 字，只列前 ${RESULT_MAX} 字；${file ? `全文在 ${file}，用 node 或 jq 读` : "让 action 只返回要用的字段"}）：\n${indent(json.slice(0, RESULT_MAX))}`);
+      lines.push(`ok ${name}`, `结果（截断了：一共 ${json.length} 字，只列前 ${RESULT_MAX} 字；${file ? `全文在 ${file}` : "全文没存下来"}。在 compose 里做筛选、统计，只返回回答用户要的东西；用户确实要全部数据时，告诉用户文件位置，不要把全文读进上下文）：\n${indent(json.slice(0, RESULT_MAX))}`);
     }
   } else if (outcome.status === "failure") {
     const [head, ...more] = outcome.error.split("\n");
@@ -101,7 +107,7 @@ function outcomeLines(name: string, outcome: Outcome, saveFull?: (json: string) 
     if (more.length) lines.push(`错误：\n${indent(more.join("\n"))}`);
     if (outcome.failedAction) lines.push(`出错的 action：${outcome.failedAction}`);
     if (outcome.page) lines.push(`页面：${outcome.page.url} "${outcome.page.title}"`, ...(outcome.page.screenshot ? [`截图：${outcome.page.screenshot}`] : []));
-    if (outcome.hint) lines.push(`下一步：${outcome.hint}`);
+    if (outcome.hint) lines.push(`说明：\n${indent(outcome.hint)}`);
   }
   if (outcome.dialogs?.length) lines.push(`被拦下的系统弹窗（alert 放过，confirm、prompt 选取消，离开确认直接离开，有没保存的改动要核对）：\n${indent(outcome.dialogs.join("\n"))}`);
   if (outcome.sent?.length) lines.push(`已发出的非 GET 请求：\n${indent(outcome.sent.join("\n"))}`);
@@ -120,7 +126,7 @@ function handleAsk(ctx: Ctx, out: Output, outcome: Outcome, o: RunOpts): boolean
   out.line(`ask ${outcome.question}`);
   out.line(`数据：\n${indent(JSON.stringify(outcome.data ?? null, null, 2))}`);
   if (outcome.sent?.length) out.line(`已发出的非 GET 请求：\n${indent(outcome.sent.join("\n"))}`);
-  out.line(`恢复：spr resume ${id} --answer '<json>'（前面已执行的 action 不会重跑；30 分钟内有效）`);
+  out.line(`恢复：spr resume ${id} --answer '<json>'（你自己判断，或转问用户后回答；回答就是 ask() 的返回值。compose 从头重新执行，已完成的 action 直接返回记录的结果；30 分钟内有效）`);
   if (outcome.runWindow) out.line(`run 窗口目录：${ctx.log.winDir(outcome.runWindow)}`);
   return true;
 }
@@ -147,8 +153,13 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts, resumeId: string | un
     if (promoted.length) lines.push(`已变成 verified：${promoted.join("、")}`);
   }
   if (outcome.status === "failure") {
-    const fix = outcome.failedAction ? `修好 ${outcome.failedAction} 后` : "修好后";
-    lines.push(`下一步：spr debug ${o.name} navigate ${outcome.page?.url || "<网址>"}，${fix} ${resumeId ? `spr resume ${resumeId}（已完成的 action 不重跑；30 分钟内有效）` : `spr run ${o.name}`}`);
+    // 没开 run 窗口就失败的（参数不对）：什么都没执行，改参数重跑就行
+    if (!win) lines.push(`下一步：改好参数后重新 spr run ${o.name}`);
+    else {
+      const fix = outcome.failedAction ? `修好 ${outcome.failedAction} 后` : "修好后";
+      lines.push(`下一步：spr debug ${o.name} navigate ${outcome.page?.url || "<网址>"}，${fix} ${resumeId ? `spr resume ${resumeId}（已完成的 action 不重跑；30 分钟内有效）` : `spr run ${o.name}`}`);
+      if (!resumeId && outcome.sent?.length) lines.push(`这次已经发出上面「已发出的非 GET 请求」；没有恢复编号，重新 spr run 会从头执行`);
+    }
   }
   return lines;
 }

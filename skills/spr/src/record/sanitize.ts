@@ -29,8 +29,24 @@ function shape(value: string): string {
 export class Sanitizer {
   private readonly aliasKey: string;
   private readonly table = new Map<string, string>();
+  /** 登记过的真值（request() 的 auth、authQuery 在页面里现读出来的）：不管名字像不像秘密，出现在 URL、请求头、请求体里都换成别名。只在内存里。 */
+  private readonly known = new Set<string>();
 
   constructor(aliasKey: string) { this.aliasKey = aliasKey; }
+
+  /** 登记一个真值：之后它在 URL 查询参数、请求头、请求体里一律换成别名（"Bearer xxx" 连同 xxx 一起登记）。太短的不登记（会误伤普通值）。 */
+  register(value: string): void {
+    for (const v of [value, value.replace(/^Bearer\s+/i, "")]) {
+      if (v.length < 6 || this.known.has(v)) continue;
+      this.known.add(v);
+      if (this.known.size > ALIAS_LIMIT) this.known.delete(this.known.values().next().value as string);
+    }
+  }
+
+  /** 这个值要不要换成别名：名字像秘密、值是 JWT，或者是登记过的真值。 */
+  private secret(name: string, value: string): boolean {
+    return SECRET_NAME.test(name) || JWT.test(value) || this.known.has(value);
+  }
 
   private redact(raw: string): string {
     const alias = `secret_${createHmac("sha256", this.aliasKey).update(raw).digest("hex").slice(0, 12)}`;
@@ -53,7 +69,7 @@ export class Sanitizer {
   url(urlText: string): ParsedUrl {
     const parsed = parseUrl(urlText);
     for (const [name, value] of Object.entries(parsed.query)) {
-      if (SECRET_NAME.test(name) || JWT.test(value)) parsed.query[name] = this.redact(value);
+      if (this.secret(name, value)) parsed.query[name] = this.redact(value);
     }
     return parsed;
   }
@@ -61,7 +77,7 @@ export class Sanitizer {
   headers(headers: Record<string, string>): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [name, raw] of Object.entries(headers)) {
-      out[name] = SECRET_NAME.test(name) || JWT.test(raw) ? this.redact(raw) : raw;
+      out[name] = this.secret(name, raw) ? this.redact(raw) : raw;
     }
     return out;
   }
@@ -93,13 +109,13 @@ export class Sanitizer {
     const walk = (value: unknown, key = "", depth = 0): unknown => {
       if (depth > 20 || value == null) return value;
       if (typeof value === "string") {
-        if (SECRET_NAME.test(key) || JWT.test(value)) return this.redact(value);
+        if (this.secret(key, value)) return this.redact(value);
         if (depth === 0 && parseForm && value.includes("=")) {
           const obj: Record<string, string> = {};
           let count = 0;
           for (const [name, child] of new URLSearchParams(value)) {
             count++;
-            obj[name] = SECRET_NAME.test(name) || JWT.test(child) ? this.redact(child) : child;
+            obj[name] = this.secret(name, child) ? this.redact(child) : child;
           }
           if (count > 0) return obj;
         }
@@ -109,7 +125,7 @@ export class Sanitizer {
       if (typeof value === "object") {
         return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([name, child]) => [name, walk(child, name, depth + 1)]));
       }
-      return SECRET_NAME.test(key) ? this.redact(String(value)) : value;
+      return this.secret(key, String(value)) ? this.redact(String(value)) : value;
     };
     return walk(input);
   }

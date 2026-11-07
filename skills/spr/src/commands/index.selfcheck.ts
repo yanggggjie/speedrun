@@ -60,6 +60,7 @@ const tabs = [
   { tabId: 20, windowId: 1, groupId: 5, speedrun: true, active: false, url: page, title: "示例", status: "complete" },
 ];
 const requests: Array<Record<string, unknown>> = [];
+let inputs = 0;
 const host = {
   op: async (s: Session, name: string, a: Record<string, unknown>) => {
     WINS[20] = s.key;
@@ -71,7 +72,8 @@ const host = {
     }
     if (name === "input") {
       const ref = ingest.beginCmd(20, Date.now(), String(a.action), "x", undefined, "x.com");
-      ingest.handleBatch([net(Date.now() + 20, { id: 2, rid: "p:2", method: "POST", url: "https://www.x.com/api/answers/12345678/voters", reqHeaders: { "x-xsrftoken": "XSRF-REAL-0123456789", "x-zse-96": "2.0_SIGN" }, reqBody: "{\"type\":\"up\"}", body: "{\"ok\":1}", size: 8 })]);
+      const n = 100 + inputs++;
+      ingest.handleBatch([net(Date.now() + 20, { id: n, rid: `p:${n}`, method: "POST", url: "https://www.x.com/api/answers/12345678/voters", reqHeaders: { "x-xsrftoken": "XSRF-REAL-0123456789", "x-zse-96": "2.0_SIGN" }, reqBody: "{\"type\":\"up\"}", body: "{\"ok\":1}", size: 8 })]);
       ingest.endCmd(ref, { detail: { ok: true } });
       return { ok: true, loc: { role: "button", name: "赞同" }, settle: { settled: true, waitedMs: 100 } };
     }
@@ -129,7 +131,7 @@ assert.equal(onlyCompose.code, 3); assert.match(onlyCompose.stdout, /vote0 是 a
 assert.equal((await run("run", "missing")).code, 3, "名字不对是用法错误");
 const notDefined = await run("run", "flow");
 assert.equal(notDefined.code, 1, notDefined.stdout);
-assert.match(notDefined.stdout, /^fail flow：vote、like is not defined（没有执行任何操作）/);
+assert.match(notDefined.stdout, /^fail flow：vote\(\{\}\)、like\(\{\}\) is not defined（没有执行任何操作）/, "报缺时带 compose 里的调用参数");
 assert.match(notDefined.stdout, /下一步：spr debug flow navigate/);
 assert.equal(ranCalls, 0, "缺 action 时什么都不执行");
 
@@ -140,7 +142,7 @@ assert.match(opened.stdout, /^ok debug 窗口已打开：flow/);
 const id = debug.of("flow")!.id;
 assert.match(id, /^flow-\d{8}-\d{6}$/);
 assert.match(opened.stdout, new RegExp(`窗口目录：.*debug-windows/${id}`));
-assert.match(opened.stdout, /目标：spr run flow（还缺 vote、like）$/);
+assert.match(opened.stdout, /目标：spr run flow（还缺 vote\(\{\}\)、like\(\{\}\)）$/);
 const first = seqsIn(opened.stdout);
 assert.equal(first.length, 1, `起点加载期的请求：${opened.stdout}`);
 
@@ -149,7 +151,6 @@ const again = await run("debug", "flow", "computer", "wait", "0.1");
 assert.deepEqual(seqsIn(again.stdout), [], "已经观察过的不再出现");
 
 // 页面操作自动附带观察：只列这一步之后的；请求行没有 write 前缀，带语义化的请求文件名
-assert.match((await run("debug", "flow", "computer", "left_click", "1", "2", "--description", "x")).stdout, /不认识的参数 --description/);
 const clicked = await run("debug", "flow", "computer", "left_click", "100", "200");
 const second = seqsIn(clicked.stdout);
 assert.equal(second.length, 1); assert.ok(second[0]! > first[0]!);
@@ -160,19 +161,20 @@ assert.match(clicked.stdout, /^ok computer left_click/);
 assert.match(clicked.stdout, /请求头：.*x-xsrftoken 样本太少 ← cookie _xsrf.*x-zse-96 样本太少/);
 assert.ok(!clicked.stdout.includes("草稿"), "观察里没有草稿");
 assert.ok(!clicked.stdout.includes("XSRF-REAL-0123456789"), "输出里没有 auth 头的真值");
+// 同一个 endpoint 再次出现：只列事实（第几次、上次的编号），不加建议
+const clickedAgain = await run("debug", "flow", "computer", "left_click", "100", "200");
+assert.match(clickedAgain.stdout, new RegExp(`重复（这个窗口里之前出现过的 endpoint）：\\n  POST /api/answers/:id/voters 这个窗口里第 2 次（上次 #${second[0]}）`), clickedAgain.stdout);
+assert.ok(!/交给 compose|写成 action/.test(clickedAgain.stdout), "重复只列事实，不加建议");
 // 晚到的请求（操作之后才到）：下一次观察出现，而且只出现一次
 ingest.handleBatch([net(Date.now() + 5000, { id: 3, rid: "p:3", url: "https://www.x.com/api/lazy", body: "{}", size: 2 })]);
 const late = await run("debug", "flow", "computer", "wait", "0.1");
 const lateSeqs = seqsIn(late.stdout);
 assert.equal(lateSeqs.length, 1, late.stdout); assert.ok(lateSeqs[0]! > second[0]!);
 assert.deepEqual(seqsIn((await run("debug", "flow", "computer", "wait", "0.1")).stdout), [], "不重复");
-// 同站请求被 401 拒：观察里提醒像是登录失效，先看页面（不然 agent 会以为 action 写错了）
-assert.ok(!late.stdout.includes("像是登录失效"), "没有 401 时不提醒");
+// 同站请求被 401 拒：观察里列出事实（哪个请求被拒、状态码），不下“登录失效”的结论
+assert.ok(!late.stdout.includes("被拒或登录页"), "没有 401 时不列");
 ingest.handleBatch([net(Date.now() + 5000, { id: 4, rid: "p:4", url: "https://www.x.com/api/me", status: 401, body: "{}", size: 2 })]);
-assert.match((await run("debug", "flow", "computer", "wait", "0.1")).stdout, /下一步：像是登录失效（#\d+ .*401）：先 computer screenshot 或 read_page 看页面/);
-// 不再有 observe、try_action
-assert.match((await run("debug", "flow", "observe")).stdout, /^fail 不认识的操作「observe」/);
-assert.match((await run("debug", "flow", "try_action", "vote")).stdout, /^fail 不认识的操作「try_action」/);
+assert.match((await run("debug", "flow", "computer", "wait", "0.1")).stdout, /被拒或登录页：#\d+ .*401。401\/403 也可能是限流、没权限：先 computer screenshot 或 read_page 看页面/);
 // 同一个 compose 上两条命令同时到：后到的立刻报错，先到的照常完成，之后又能用
 const [earlier, later] = await Promise.all([run("debug", "flow", "computer", "wait", "0.2"), run("debug", "flow", "computer", "wait", "0.1")]);
 assert.equal(earlier.code, 0, earlier.stdout);
@@ -181,7 +183,7 @@ assert.equal((await run("debug", "flow", "computer", "wait", "0.1")).code, 0, "�
 
 // 写好一个 action，目标行跟着变；都写好后只剩 spr run
 writeAction("vote");
-assert.match((await run("debug", "flow", "computer", "wait", "0.1")).stdout, /目标：spr run flow（还缺 like）$/);
+assert.match((await run("debug", "flow", "computer", "wait", "0.1")).stdout, /目标：spr run flow（还缺 like\(\{\}\)）$/);
 writeAction("like", " * @status draft\n * @write");
 assert.match((await run("debug", "flow", "computer", "wait", "0.1")).stdout, /目标：spr run flow$/);
 
