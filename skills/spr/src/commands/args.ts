@@ -1,12 +1,12 @@
-/** 一条命令的参数：values 是 speedrun 自己的参数（可重复，如 --answer），switches 是不带值的开关，params 是交给 action 的 `--名字 值`，rest 是不以 -- 开头的。 */
+/** 一条命令的参数：values 是 speedrun 自己的参数（可重复，如 --answer），switches 是不带值的开关，params 是交给 action 的 `--<name> <value>`，rest 是不以 -- 开头的。 */
 export type Args = { values: Map<string, string[]>; switches: Set<string>; params: Record<string, string>; rest: string[] };
 
-/** values：认识的带值参数；switches：认识的开关；params 为真时，其余的 `--名字 值` 是 action 参数，否则报错。 */
+/** values：认识的带值参数；switches：认识的开关；params 为真时，其余的 `--<name> <value>` 是 action 参数，否则报错。 */
 export type ArgSpec = { values?: string[]; switches?: string[]; params?: boolean };
 
 const PARAM_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** 解析 `--名字 值` 和 `--名字=值`。值不能以 `--` 开头（多半是漏写了上一个参数的值）；确实要以 `--` 开头时写成 `--名字=值`。 */
+/** 解析 `--<name> <value>` 和 `--<name>=<value>`。值不能以 `--` 开头（多半是漏写了上一个参数的值）；确实要以 `--` 开头时写成 `--<name>=<value>`。 */
 export function parseArgs(args: string[], spec: ArgSpec): Args | { error: string } {
   const values = new Map<string, string[]>();
   const switches = new Set<string>();
@@ -24,7 +24,7 @@ export function parseArgs(args: string[], spec: ArgSpec): Args | { error: string
     }
     const known = spec.values?.includes(name) ?? false;
     if (!known && !spec.params) return { error: `不认识的参数 --${name}${didYouMean(name, [...(spec.values ?? []), ...(spec.switches ?? [])])}；可用：${[...(spec.values ?? []), ...(spec.switches ?? [])].map((n) => `--${n}`).join("、") || "（无）"}` };
-    if (!known && !PARAM_NAME.test(name)) return { error: `参数要写成 --名字 值（名字只用字母、数字、下划线），不接受：${arg}` };
+    if (!known && !PARAM_NAME.test(name)) return { error: `参数要写成 --<name> <value>（<name> 只用英文字母、数字、下划线），不接受：${arg}` };
     const value = eq < 0 ? args[++i] : arg.slice(eq + 1);
     if (value === undefined) return { error: `--${name} 缺少值` };
     if (eq < 0 && value.startsWith("--")) return { error: `--${name} 缺少值：后面紧跟的是 ${value}；值确实以 -- 开头时写成 --${name}=${value}` };

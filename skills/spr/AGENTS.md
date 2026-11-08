@@ -67,10 +67,10 @@ npm run verify:pack
    - **一个窗口写多个 action**：在同一个窗口里写两个 action（draft），写一个调用这两个 action 的 compose（`~/.speedrun/compose/<名>.js`），`spr run <名>` 新开 run 窗口、跑完窗口消失、`run-windows/<名字>/` 有日志和 meta、两个 draft 变成 verified、`endpoints.json` 没有多出 run 窗口的请求；run 成功和失败后 debug 窗口都还在，失败后 `screenshots/failure.*` 和日志都在。
    - **关掉的窗口**：`spr debug <compose> close` 后、`spr daemon restart` 后（旧组被关掉）、用户手动关掉组后，`computer screenshot` / `computer left_click`：报「窗口没开」、退出码 3，提示重新 navigate；日志目录还在；重开时换一个新目录。debug 窗口空闲 30 分钟自动关。
    - **run 窗口**：`run` 期间出现一个标题是 `speedrun` 的灰色组，跑完组消失；同一个站点连跑两次 `run`，第二次不沿用第一次的页面；两个 `run` 同时跑，各开各的组，互不排队。
-   - **compose 和恢复**：写一个 `@status draft` 的 compose 文件 → `spr run <名>` 停在 ask → `spr resume` 继续 → 成功，compose 和它调用的 draft 都变成 verified，compose 文件除了 `@status` 一个字节没变；让一个 action 失败，修好文件后 `spr resume <编号>` 接着跑，已完成的 action 不重跑；缺 action 时 `spr run` 报 `<名>(<参数>) is not defined` 且没有打开窗口。
+   - **compose 和恢复**：写一个 `@status draft` 的 compose 文件 → `spr run <名>` 停在 ask → `spr resume` 继续 → 成功，compose 和它调用的 draft 都变成 verified，compose 文件除了 `@status` 一个字节没变；让一个 action 失败，修好文件后 `spr resume <编号>` 接着跑，已完成的 action 不重跑；缺 action 时 `spr run` 报 `<name>(<params>) is not defined` 且没有打开窗口。
    - **@write 和 compose**：带 `@write` 的 draft 在 `spr status` 里标出；action 里调用 `action()` 被拒；compose 里调用 `navigate` 这类页面操作被拒；compose 里调用别的 compose，执行前检查和运行时都被拒。
    - **同一个 compose 串行**：在 Claude Code 里一次并行发两条 `spr debug <同一个 compose> computer …`：一条成功，一条报「上一条命令还没结束」。
-   - **SDK、参数、helpers**：`export default async () => …` 加 `navigate(url)`、`request({…})`、`click(定位)`、`hover(定位)`、`form_input(定位, 值)`、`key(…)`、`scroll({ direction })`、`get_page_text()` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.speedrun/helpers/` 里的函数被 action `import` 后能跑，`spr daemon restart` 后还在。
+   - **SDK、参数、helpers**：`export default async () => …` 加 `navigate(url)`、`request({…})`、`click(<locator>)`、`hover(<locator>)`、`form_input(<locator>, <value>)`、`key(…)`、`scroll({ direction })`、`get_page_text()` 写法的 action 能跑；`@param n:number` 收到的是数字；`~/.speedrun/helpers/` 里的函数被 action `import` 后能跑，`spr daemon restart` 后还在。
 4. 页面脚本只进 speedrun 的标签页：
    - 用户的普通标签页里（用 Claude in Chrome 打开）`window.__spr` 是 `undefined`，`fetch.toString()` 含 `[native code]`。
    - debug 窗口打开后第一次观察里有加载期的请求；有跨站 iframe 的页面，iframe 里的请求也录到。

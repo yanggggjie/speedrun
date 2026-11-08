@@ -18,7 +18,7 @@ export async function runCommand(argv: string[], ctx: Ctx, out: Output): Promise
   if (a.switches.has("help")) { out.line(`ok ${RUN_HELP}`); return; }
   const [name, ...extra] = a.rest;
   if (!name) return out.usage(`要写 compose 的名字。用法：${RUN_USAGE}（compose 在 ${composeDirOf(ctx)}/）`);
-  if (extra.length) return out.usage(`多余的参数：${extra.join(" ")}（参数要写成 --名字 值）。用法：${RUN_USAGE}`);
+  if (extra.length) return out.usage(`多余的参数：${extra.join(" ")}（参数要写成 --<name> <value>）。用法：${RUN_USAGE}`);
   if (name === "list") return out.usage(`list 是保留名，compose 换一个名字`);
   const found = findAction(ctx.log.dir, name, composeDirOf(ctx));
   if (!found) return out.usage(`没有叫 ${name} 的 compose：写 ${composeDirOf(ctx)}/${name}.js，再 spr run ${name}`);

@@ -4,9 +4,9 @@ import { ACTION_TIMEOUT_MS, HELPERS_DIR, LIB_DIR } from "../utils/constants.ts";
 import { siteDirName } from "../utils/url.ts";
 
 /**
- * 两种文件，都是 ES 模块（`export default async () => 结果`），文件头写法一样，由放在哪里区分：
+ * 两种文件，都是 ES 模块（`export default async () => result`），文件头写法一样，由放在哪里区分：
  * - action：`~/.speedrun/action/<站点>/<名>.js`，agent 写的业务动作，发请求或 DOM 兜底的页面操作（`@endpoint` 可以多行，按发送顺序）；
- * - compose：`~/.speedrun/compose/<名>.js`，agent 自己写的、用 action 串成的流程，只能 `action("名字", 参数)` 调用 action，不能碰页面。
+ * - compose：`~/.speedrun/compose/<名>.js`，agent 自己写的、用 action 串成的流程，只能 `action("<name>", params)` 调用 action，不能碰页面。
  * 两者都一直保留，名字全局唯一。`spr run` 只运行 compose，action 由 compose 调用。
  */
 
@@ -72,7 +72,7 @@ export const isCompose = (found: { site?: string }): boolean => found.site === u
 export type ParamType = "string" | "number" | "boolean" | "json";
 export interface ParamSpec { name: string; optional: boolean; type: ParamType; description: string }
 
-/** 解析文件头的 `@param 名字 说明`：名字后面可以带 `?`（可选）和 `:类型`（number、boolean、json，不写是字符串），如 `@param offset?:number 从第几条开始`。 */
+/** 解析文件头的 `@param <name> 说明`：<name> 只用英文字母、数字、下划线，后面可以带 `?`（可选）和 `:类型`（number、boolean、json，不写是字符串），如 `@param offset?:number 从第几条开始`。 */
 export function paramSpecs(file: string): ParamSpec[] {
   return actionSummary(file).params.map((value) => {
     const match = /^([A-Za-z_][A-Za-z0-9_]*)(\?)?(?::(string|number|boolean|json))?(\?)?\s*(.*)$/s.exec(value);

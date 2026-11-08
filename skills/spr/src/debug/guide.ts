@@ -43,7 +43,7 @@ export function makeDebugGuide(info: DebugInfo): string {
 1. **不需要 token 的官方 API**：公开、不用认证，或用网站登录态就能调（\`request()\` 自动带 cookie）。最好在打开这个窗口之前就查过（文档、\`/api/\` 路径）：用它写 action 不用操作页面。要开发者 token、OAuth 授权的跳过这一层。停止条件：返回要的数据。
 2. **页面发的 HTTP 请求**（\`request\`、\`waitRequest\`）：页面发了可用请求。停止条件：参数能由 action 参数决定，响应里有要的数据。
    - \`request({ url, method, json })\` 直接发，请求头 speedrun 从这次窗口里页面发过的请求自动抄。
-   - \`request\` 被拒（签名和参数绑定）、或请求体由页面拼出来复现不了，但响应能读的，用 \`waitRequest("方法 路径", 触发动作)\`：触发动作让页面自己发，action 拿它的响应。
+   - \`request\` 被拒（签名和参数绑定）、或请求体由页面拼出来复现不了，但响应能读的，用 \`waitRequest("<METHOD> <path>", <trigger>)\`：触发动作让页面自己发，action 拿它的响应。
    - key、签名放在地址的查询参数里、值在页面存储里：\`request({ url, authQuery: { "api-key": "local:cfg.key" } })\`，来源看观察里的「查询参数」。
 3. **页面函数**（\`evaluate\`）：没有可用请求，但页面有自己的接口。先 rg 窗口的 page-api/，要参数用 trace。停止条件：调用函数能完成动作或取到数据。
 4. **WebSocket、事件流**（\`waitMessage\`）：数据从长连接或事件流来。停止条件：收到的消息里有要的数据。
@@ -63,7 +63,7 @@ export function makeDebugGuide(info: DebugInfo): string {
 - 改变页面的操作（computer 的点击、输入、滚动，form_input、navigate）执行完会等页面安静、这一步引发的记录都到了（最多 2 秒），然后自动附带一次观察：上次观察以来的页面、导航、请求、请求之间的依赖。「稳定：」一行写等了多久、页面有没有安静下来。
 - 请求只列这个窗口里第一次出现的 endpoint；之前出现过的列在「重复」里（第几次、上次的编号）。折叠掉的写在「没列出」：命中广告规则的（不存响应体）、可能是埋点的（按路径、域名规则猜的，可能误判，照常存）、轮询、静态资源，全部都在 timeline.jsonl 里。
 - 请求行里「无响应体」后面的括号是原因：not-text 不是文本、event-stream 事件流、noise 命中广告规则、large-error 失败请求的大响应体、no-body 没有响应体。跨站的请求（页面 a.com 调 b.net）也录响应体。
-- 每个请求一行：编号、\`方法 路径\`（就是 @endpoint 的写法）、状态、内容类型、有没有响应体、请求文件。带非浏览器头的请求下面有一行 \`请求头\`：每个头的值在这个窗口的请求里怎么变（页面级不变 / 按 endpoint 不变 / 每次都变 / 样本太少），和它在页面里的位置（← cookie _xsrf）。这是信号：请求头 speedrun 会自动抄，你只在 spr run 被 401/403 拒时照它改。
+- 每个请求一行：编号、\`<METHOD> <path>\`（就是 @endpoint 的写法）、状态、内容类型、有没有响应体、请求文件。带非浏览器头的请求下面有一行 \`请求头\`：每个头的值在这个窗口的请求里怎么变（页面级不变 / 按 endpoint 不变 / 每次都变 / 样本太少），和它在页面里的位置（← cookie _xsrf）。这是信号：请求头 speedrun 会自动抄，你只在 spr run 被 401/403 拒时照它改。
 - 请求晚到（懒加载、防抖、新标签页加载）：\`${cmd} computer wait 2\`，等完附带一次观察，只给上次之后的新东西，不漏不重。
 - find、read_page、get_page_text、点击和输入都只在标签页的主文档里：iframe 里的内容看不到、点不到（iframe 里的请求照样录）。要操作 iframe 里的东西，用 \`${cmd} navigate <iframe 的地址>\` 直接打开它。
 
@@ -100,8 +100,8 @@ run 输出最后的「已发出的非 GET 请求」列出实际发出的（只�
  * @description 一句话：做什么（业务动作）
  * @status draft
  * @write（这个 action 会改东西才写，如点赞、提交、删除）
- * @endpoint 方法 路径
- * @param 参数名 说明（可选写成 参数名?；不是字符串的写类型：参数名:number、参数名?:boolean、参数名:json）
+ * @endpoint <METHOD> <path>
+ * @param <name> 说明（<name> 只用英文字母、数字、下划线；可选写成 <name>?；不是字符串的写类型：<name>:number、<name>?:boolean、<name>:json）
  * @returns 返回什么（可选）
  * @note 不在第 1 层的：按层写上面每一层试了什么、为什么不行；经验：签名、风控、必须先做的步骤、踩过的坑（一行一条）
  */
@@ -112,7 +112,7 @@ run 输出最后的「已发出的非 GET 请求」列出实际发出的（只�
 6. 写不出来：把 action 文件头改成 \`@status blocked\`，\`@note\` 写原因和证据，最终回复说明卡在哪。verified 的坏了：改回 \`@status draft\`，\`@note\` 写原因，修好后 run 通过再变成 verified。
 
 ## 写 action 的规则
-- SDK：\`import { navigate, request, waitRequest, click, hover, key, scroll, scroll_to, form_input, waitFor, get_page_text, query, evaluate, sleep } from "spr"\`，入口 \`export default async ({ 参数 }) => { ... }\`，返回值就是结果。函数都不用传 page：\`navigate(url)\`、\`click(定位)\`、\`request({…})\`。名字和 debug 的工具对齐，区别只有一个：debug 用 ref（或坐标），action 用持久定位（action 要在别的窗口重放）。操作输出的「定位：…」原样放进去：\`computer left_click --ref …\` → \`click(定位)\`（右键、双击：\`click(定位, { button: "right" })\`、\`{ count: 2 }\`）；\`computer hover\` → \`hover(定位)\`；\`form_input ref_9 值\` → \`form_input(定位, 值)\`；\`computer key "cmd+a"\` → \`key("cmd+a", { loc })\`；\`computer scroll … down 3\` → \`scroll({ direction: "down", amount: 3, loc })\`；\`computer scroll_to\` → \`scroll_to(定位)\`；\`get_page_text\` → \`get_page_text({ max })\`。输入和 debug 走同一条路径（CDP 真实输入），debug 里点得动的，回放也点得动。
+- SDK：\`import { navigate, request, waitRequest, click, hover, key, scroll, scroll_to, form_input, waitFor, get_page_text, query, evaluate, sleep } from "spr"\`，入口 \`export default async ({ ...params }) => { ... }\`，返回值就是结果。函数都不用传 page：\`navigate(url)\`、\`click(<locator>)\`、\`request({…})\`。名字和 debug 的工具对齐，区别只有一个：debug 用 ref（或坐标），action 用持久定位（action 要在别的窗口重放）。操作输出的「定位：…」原样放进去：\`computer left_click --ref …\` → \`click(<locator>)\`（右键、双击：\`click(<locator>, { button: "right" })\`、\`{ count: 2 }\`）；\`computer hover\` → \`hover(<locator>)\`；\`form_input ref_9 <value>\` → \`form_input(<locator>, <value>)\`；\`computer key "cmd+a"\` → \`key("cmd+a", { loc })\`；\`computer scroll … down 3\` → \`scroll({ direction: "down", amount: 3, loc })\`；\`computer scroll_to\` → \`scroll_to(<locator>)\`；\`get_page_text\` → \`get_page_text({ max })\`。输入和 debug 走同一条路径（CDP 真实输入），debug 里点得动的，回放也点得动。
 - **请求头**：speedrun 按顺序凑齐，你一般什么都不用写：
   1. 浏览器自己带的（cookie）；
   2. 从这次窗口里页面发过的请求抄：页面发过同一个 endpoint 就整组抄它的（签名和 endpoint 绑定的站点靠这个），否则只抄值都一样的头，每次都变的不跨 endpoint 抄。所以 action 先 \`navigate\` 打开会发这些请求的页面；
@@ -122,9 +122,9 @@ run 输出最后的「已发出的非 GET 请求」列出实际发出的（只�
   6. 被拒（401/403）：失败输出写了抄了什么、没抄什么、从页面现读了什么；每次都变的头被拒的，改用 \`waitRequest\` 或 DOM。
   接口在另一个子域（页面是 a.com，接口是 api.a.com）不用另写，speedrun 在当前页面上发。
 - run 窗口每次从空白开始，不沿用 debug 窗口的页面状态：action 第一步自己 \`navigate\` 到要用的页面，不依赖前一个 action 留下的页面（\`spr resume\` 时前面的 action 不会再执行；\`request\` 从这个页面发过的请求抄头，DOM 在它上面操作）。action 里不能调用别的 action，要串起来写 compose。
-- 参数是函数参数，默认值写在解构里（\`async ({ q, n = 30 }) =>\`），按 @param 的类型转好（没写类型是字符串）；变化的值（id、关键词、页码）都做成参数；返回字段用页面上的词命名。
+- 参数是函数参数，默认值写在解构里（\`async ({ q, n = 30 }) =>\`），按 @param 的类型转好（没写类型是字符串）；变化的值（id、关键词、页码）都做成参数；代码里的名字（变量、函数、参数、返回字段）一律用英文 camelCase，返回字段取页面上对应概念的英文（如 \`author\`、\`text\`、\`likeCount\`）；中文只用在注释、\`@description\`、\`@note\` 和给人看的字符串里。
 - **小函数放进 ${info.helpersDir}/**：写 action 前先 \`ls ${info.helpersDir}\` 看有什么；同一个小函数（去 HTML 标签、格式化时间、拼 URL）第二次出现就挪进去，按用途分文件（如 text.js、time.js），action 里 \`import { stripHtml } from "../../helpers/text.js"\`。只放纯函数：要发请求或操作页面的写成 action。
-- **等待**：等渲染完用 \`navigate(url, { settle: true })\`、操作带 \`{ settle: true }\`（等页面安静，最多 2 秒），或 \`waitFor(定位)\` 等具体元素；等页面自己发的请求用 \`waitRequest\`。不要用 \`sleep\` 等页面：快的页面白等、慢的不够。\`sleep\` 只用在轮询后台状态（隔一秒查一次建好了没有）。
+- **等待**：等渲染完用 \`navigate(url, { settle: true })\`、操作带 \`{ settle: true }\`（等页面安静，最多 2 秒），或 \`waitFor(<locator>)\` 等具体元素；等页面自己发的请求用 \`waitRequest\`。不要用 \`sleep\` 等页面：快的页面白等、慢的不够。\`sleep\` 只用在轮询后台状态（隔一秒查一次建好了没有）。
 - 成功判断：action 自己判断任务有没有正确完成，不看最后停在什么页面。检查 HTTP 状态码和业务码；读页面内容的要检查拿到的确实是目标内容（标题、关键元素），停在登录页、错误页就抛错，不能把登录页的文字当结果返回；拿不到要的数据时抛错，不返回空值（run 没报错，draft 就会变成 verified）；结果必须对应本次参数；会改东西的先读状态，已满足返回 already，并在文件头写 @write；返回被操作对象的稳定 id。
 - 定位用 \`{role,name}\` 或 CSS（\`{role,name}\` 就是 find / read_page 显示的 \`role "name"\`）；读正文用 \`get_page_text({ max })\`（返回 url、title、text），按结构取数用 \`query({css, fields})\`；\`evaluate\` 是兜底，只在这两个都不够时用。
 - 一次调用只做这一个业务动作：翻页、批量、多个对象都做成参数，由 compose 循环调用。

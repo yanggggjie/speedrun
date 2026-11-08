@@ -1,6 +1,6 @@
 // action 和 compose 的 SDK：脚本跑在 daemon 的 worker 线程里，每个函数都是向 daemon 发一个操作，daemon 在 speedrun agent 窗口的标签页里执行。
 // 这个目录由 daemon 启动时同步到 ~/.speedrun/lib（整个覆盖，别在那里改），~/.speedrun/node_modules/spr 链到它：脚本里写 `import { ... } from "spr"`。
-// agent 自己抽出来的纯函数放 ~/.speedrun/helpers/，`import { ... } from "../../helpers/<文件>.js"`，不会被覆盖。
+// agent 自己抽出来的纯函数放 ~/.speedrun/helpers/，`import { ... } from "../../helpers/<file>.js"`，不会被覆盖。
 import { parentPort } from "node:worker_threads";
 
 let nextId = 1;
@@ -28,10 +28,10 @@ function call(op, args = {}) {
 const toLog = (...a) => parentPort?.postMessage({ type: "log", text: a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ") });
 console.log = console.info = console.warn = console.error = toLog;
 
-/** ask(问题, 数据)：只能用在 compose 里。compose 在这里停下，spr run 结束（退出码 2），把问题和数据交给 agent；agent 自己判断或转问用户后 spr resume <编号> --answer …，compose 从头重新执行（已完成的 action 直接返回记录的结果），这次的 ask 返回这个回答。 */
+/** ask(question, data)：只能用在 compose 里。compose 在这里停下，spr run 结束（退出码 2），把问题和数据交给 agent；agent 自己判断或转问用户后 spr resume <编号> --answer …，compose 从头重新执行（已完成的 action 直接返回记录的结果），这次的 ask 返回这个回答。 */
 export const ask = (question, data) => call("ask", { question, data });
 
-/** compose 里调用一个 action：action(名字, 参数)，返回它的 result，失败时抛错。action 里不能用，compose 不能调用 compose。 */
+/** compose 里调用一个 action：action(name, params)，返回它的 result，失败时抛错。action 里不能用，compose 不能调用 compose。 */
 export const action = (name, params = {}) => call("action", { name, params });
 
 /** navigate(url | "back" | "forward", { settle?, timeout? })：和 debug 的 navigate 一样，打开网址或后退、前进，等到页面可用（文档不再是 loading）；settle: true 再等页面安静（没有在途请求、DOM 一小段时间没变，最多 2 秒），等渲染完用它，不要 sleep。 */
@@ -52,8 +52,8 @@ const withJson = (res) => ({
  * 1. 浏览器自己带的（cookie）。
  * 2. 从这次窗口里页面发过的请求抄：页面发过同一个 endpoint 就整组抄它的；否则抄这次窗口里值都一样的头（token、xsrf），每次都变的（签名、nonce）不跨 endpoint 抄。
  *    所以先 navigate 打开会发这些请求的页面。
- * 3. auth：{ 头: 来源 }，页面这次没发带这个头的请求时用，发送时在页面里现读；来源 cookie:名字、local:key[.JSON 路径]、session:key[.路径]、meta:名字，前面加 "Bearer " 会拼上前缀。来源看 debug 窗口观察里的「请求头」。
- *    authQuery：{ 查询参数: 来源 }，来源写法一样，发送时在页面里现读，拼进地址（key、签名放在地址里的站点用）。来源看观察里的「查询参数」。
+ * 3. auth：{ <header>: <source> }，页面这次没发带这个头的请求时用，发送时在页面里现读；来源 cookie:<name>、local:<key>[.<json.path>]、session:<key>[.<path>]、meta:<name>，前面加 "Bearer " 会拼上前缀。来源看 debug 窗口观察里的「请求头」。
+ *    authQuery：{ <param>: <source> }，来源写法一样，发送时在页面里现读，拼进地址（key、签名放在地址里的站点用）。来源看观察里的「查询参数」。
  *    auth、authQuery 读到的值写盘前一律换成别名，不管名字像不像秘密。
  * 4. 前序请求：先 request 拿到 token，再 headers: { "x-token": r.json().token }（照观察里的「依赖」核对后写）。
  * headers 显式写的最后覆盖。被 401/403 拒时，失败输出里会写抄了什么、没抄什么、下一步；每次都变的头被拒，改用 waitRequest 或 DOM。
@@ -97,16 +97,16 @@ async function act(t, args) {
 }
 
 const CLICKS = { 1: "left_click", 2: "double_click", 3: "triple_click" };
-/** click(元素, { button?: "left" | "right", count?: 1 | 2 | 3, modifiers?: "cmd+shift", settle?, timeout? })：和 computer left_click / right_click / double_click / triple_click 一样。 */
+/** click(target, { button?: "left" | "right", count?: 1 | 2 | 3, modifiers?: "cmd+shift", settle?, timeout? })：和 computer left_click / right_click / double_click / triple_click 一样。 */
 export const click = (t, options = {}) => {
   const { button = "left", count = 1, modifiers, ...rest } = options;
   const action = button === "right" ? "right_click" : CLICKS[count];
   if (!action) throw new Error("click 的 count 是 1、2 或 3，button 是 left 或 right");
   return act(t, { action, ...(modifiers ? { mods: modsOf(modifiers) } : {}), ...rest });
 };
-/** hover(元素, options?)：鼠标移到元素上（悬停菜单、提示）。 */
+/** hover(target, options?)：鼠标移到元素上（悬停菜单、提示）。 */
 export const hover = (t, options = {}) => act(t, { action: "hover", ...options });
-/** drag(起点元素, 终点元素, { modifiers? })：和 computer left_click_drag 一样，拖滑块、排序、框选。 */
+/** drag(from, to, { modifiers? })：和 computer left_click_drag 一样，拖滑块、排序、框选。 */
 export const drag = (from, to, options = {}) => {
   const { modifiers, ...rest } = options;
   const start = place(from), end = place(to);
@@ -116,7 +116,7 @@ export const drag = (from, to, options = {}) => {
     ...(end.x !== undefined ? { x: end.x, y: end.y } : end.ref ? { toRef: end.ref } : { toLoc: end.loc }),
   });
 };
-/** type(文字, { loc? })：和 computer type 一样，输入到当前焦点，页面收到按键事件；中文只插入文字。给了 loc 先让它获得焦点。普通输入框用 form_input。 */
+/** type(text, { loc? })：和 computer type 一样，输入到当前焦点，页面收到按键事件；中文只插入文字。给了 loc 先让它获得焦点。普通输入框用 form_input。 */
 export const type = (text, options = {}) => {
   const { loc, ...rest } = options;
   return loc === undefined ? call("input", { action: "type", text: String(text), ...rest }) : act(loc, { action: "type", text: String(text), ...rest });
@@ -131,9 +131,9 @@ export const scroll = (options = {}) => {
   const { loc, ...rest } = options;
   return loc === undefined ? call("input", { action: "scroll", ...rest }) : act(loc, { action: "scroll", ...rest });
 };
-/** scroll_to(元素)：把元素滚到视口中央。 */
+/** scroll_to(target)：把元素滚到视口中央。 */
 export const scroll_to = (t, options = {}) => act(t, { action: "scroll_to", ...options });
-/** form_input(元素, 值)：和 debug 的 form_input 一样：文本框填文字（先清空），下拉框写选项文字或值，复选框写 true / false。填完核对值，不对就报错。 */
+/** form_input(target, value)：和 debug 的 form_input 一样：文本框填文字（先清空），下拉框写选项文字或值，复选框写 true / false。填完核对值，不对就报错。 */
 export const form_input = (t, value, options = {}) => act(t, { action: "form_input", value, ...options });
 /** waitFor(loc, { timeout?, gone? })：等元素出现（gone: true 等它消失）。 */
 export const waitFor = (loc, options = {}) => call("waitFor", { loc, ...options });
