@@ -41,7 +41,7 @@ Find → Write → Run ⇄ Debug
 | **run 窗口** | 每次 `spr run` 新开的标签组，从空白页开始，结束就关。日志在 `~/.speedrun/run-windows/<名字>/`，只给排查用 |
 | **draft / verified / blocked** | 文件头 `@status`：还没在 `spr run` 里运行过 / 在 `spr run` 里运行没有报错过（不代表返回的数据正确）/ 四层实现方式都不行 |
 | **`ask`** | `ask(<question>, <data>)`：compose 在这里停下，`spr run` 结束（退出码 2），把问题和数据交给你。你自己判断，或转问用户后，用 `spr resume <编号> --answer '<json>'` 给出一个值；compose 从头重新执行，已完成的 action 直接返回记录的结果，这次的 `ask` 返回这个值，然后接着往下执行 |
-| **`spr resume`** | 从停下的地方继续：已完成的 action 直接返回上次记录的结果，不再执行 |
+| **`spr resume`** | 从停下的地方继续：名字和参数都和上次一样的 action 调用直接返回记录的结果，不再执行；参数变了的照常执行 |
 | **`@write`** | 文件头标记：这个 action 会改变网站上的数据（点赞、提交、删除）。只是提示，speedrun 不拦 |
 
 ## 2. 原则
@@ -83,7 +83,7 @@ Find → Write → Run ⇄ Debug
     * @status draft
     * @param q 搜索词
     * @param n?:number 看前几条，默认 30
-    * @timeout 300（要超过 115 秒才写）
+    * @timeout 300（要超过 115 秒才写；超过 2 分钟的用 Bash 的 run_in_background 跑）
     */
    import { action, ask } from "spr";
    export default async ({ q, n = 30 }) => {
@@ -121,7 +121,7 @@ Find → Write → Run ⇄ Debug
    - 五层都不行：文件头写 `@status blocked` 和 `@note`，向用户说明卡在哪。
    - 遇到登录页：点一下就能登录的你自己点（点前点后各 find / read_page 确认）；要账号密码、二维码、验证码的停下来请用户在 Chrome 里登录。
 
-5. **失败后**：run 窗口已关，日志还在。输出里有出错的 action、`页面`、`截图`、`说明`、`run 窗口目录` 和 `下一步`。先看截图判断页面停在哪（401/403 可能是登录失效，也可能是限流、没权限）；用 `rg` 读日志，需要页面就在 debug 窗口里复现。只修出错的 action，不重写 compose。修好后用输出里的 `spr resume <编号>` 接着跑，已完成的 action 不重跑；没有编号就重新 `spr run`，它会从头执行所有 action，包括写操作。
+5. **失败后**：run 窗口已关，日志还在。输出里有出错的 action、`位置`（用户文件的行）、`页面`、`截图`、`说明`、`完整报错`（`error.txt`，含完整 stack）、`run 窗口目录` 和 `下一步`。action 没打开过页面（只发请求）时没有截图，`说明` 里给出最后一个出错的请求文件，先看它的响应。打开过页面的先看截图判断页面停在哪（401/403 可能是登录失效，也可能是限流、没权限）；用 `rg` 读日志，需要页面就在 debug 窗口里复现。只修出错的 action，不重写 compose。修好后用输出里的 `spr resume <编号>` 接着跑，已完成的 action 不重跑；没有编号就重新 `spr run`，它会从头执行所有 action，包括写操作。
 
 **示范和专题**（遇到时再读）：`~/.speedrun/topics/example-zhihu.md`（完整走一遍）、`~/.speedrun/topics/canvas-and-page-functions.md`（canvas、在线文档、没有请求的页面）。
 
@@ -145,14 +145,15 @@ Find → Write → Run ⇄ Debug
 
 **只读的**：`tabs`、`status`、`doctor`、`debug list`、`find`、`read_page`、`get_page_text`、`inspect`、`computer screenshot` / `zoom` / `wait`。**会改变页面或真的发请求的**：debug 里其它的 `computer` 操作、`form_input`、`navigate`、`run`、`resume`。
 
-**写代码**：action 和 compose 都写 `export default async ({ ...params }) => { … return result; }`，默认值写在解构里，`import { … } from "spr"`。SDK 的函数不用传 page（`navigate(url)`、`click(<locator>)`、`hover(<locator>)`、`drag(<from>, <to>)`、`form_input(<locator>, <value>)`、`type("<text>")`、`key("cmd+a")`、`scroll({ direction })`、`find("<query>")`、`read_page()`、`get_page_text()`、`screenshot()`、`request({…})`、`waitMessage(<url>, <trigger>)`），debug 的页面操作在这里都有。元素写操作输出的持久定位，或这次运行 `find` 现查的结果（ref 不写死在文件里），canvas 这类没有 DOM 元素的页面才用 `{ x, y }` 坐标；输入和 debug 走同一条路径（CDP 真实输入）；不是字符串的参数在文件头写类型（`@param offset?:number`，也有 `boolean`、`json`），run 时转好；可以用 `@returns` 写返回什么；代码里的名字（变量、函数、参数、返回字段）一律用英文 camelCase，返回字段取页面上对应概念的英文（如 `author`、`text`、`likeCount`）；中文只用在注释、`@description`、`@note` 和给人看的字符串里；action 第一步自己 `navigate` 到要用的页面，不依赖前一个 action 留下的页面（run 窗口每次从空白开始，`spr resume` 时前面的 action 也不会再执行）：`request` 从这个页面发过的请求抄头，DOM 在它上面操作。action 拿不到要的数据时抛错，不返回空值（run 没报错，draft 就会变成 verified）。action 里不能调用别的 action，要串起来就写 compose；compose 只能调用 action，不调用别的 compose（改一个 compose 会影响调用它的 compose，不好维护），几个 compose 共用的数据处理写成纯函数放进 `~/.speedrun/helpers/`，compose 里 `import`。compose 里 `action()` 的名字最好写成字面量，执行前检查才能报缺。会改东西（点赞、提交、删除）的 action 文件头写 `@write`（只是提示，不拦）。重复的小函数挪进 `~/.speedrun/helpers/`，action 和 compose 里 `import`。`ask` 只能写在 compose 里。compose 里不用时间、随机数决定调用哪个 action、传什么参数（`spr resume` 按调用顺序对照记录，不同就失败）。重新 `spr run` 会从头执行所有 action，包括写操作；恢复编号失效时，先确认哪些写操作已经做过，在 compose 里跳过再 run。`help` 不能当参数名，`list` 不能当 compose 名。时间上限写在文件头 `@timeout <秒>`，没写是 115 秒。密码、token 不要当参数传，也不要用 `ask` 要（参数和 `--answer` 都会留在命令行和对话里），请用户先在 Chrome 里登录。批量读同一站点时，action 里用 `Promise.all` 发多个 `request`（只用一个标签页），先看站点有没有频率限制。key、签名放在地址查询参数里的，用 `request` 的 `authQuery: { <param>: <source> }`（和 `auth` 一样在页面里现读，来源看观察里的「查询参数」）。`request`、`waitRequest`、`auth`、`authQuery` 等的用法见 `~/.speedrun/lib/index.js` 的注释和 debug 指引。
+**写代码**：action 和 compose 都写 `export default async ({ ...params }) => { … return result; }`，默认值写在解构里，`import { … } from "spr"`。SDK 的函数不用传 page（`navigate(url)`、`click(<locator>)`、`hover(<locator>)`、`drag(<from>, <to>)`、`form_input(<locator>, <value>)`、`type("<text>")`、`key("cmd+a")`、`scroll({ direction })`、`find("<query>")`、`read_page()`、`get_page_text()`、`screenshot()`、`request({…})`、`waitMessage(<url>, <trigger>)`），debug 的页面操作在这里都有。元素写操作输出的持久定位，或这次运行 `find` 现查的结果（ref 不写死在文件里），canvas 这类没有 DOM 元素的页面才用 `{ x, y }` 坐标；输入和 debug 走同一条路径（CDP 真实输入）；不是字符串的参数在文件头写类型（`@param offset?:number`，也有 `boolean`、`json`），run 时转好；可以用 `@returns` 写返回什么；代码里的名字（变量、函数、参数、返回字段）一律用英文 camelCase，返回字段取页面上对应概念的英文（如 `author`、`text`、`likeCount`）；中文只用在注释、`@description`、`@note` 和给人看的字符串里；action 第一步自己 `navigate` 到要用的页面，不依赖前一个 action 留下的页面（run 窗口每次从空白开始，`spr resume` 时前面的 action 也不会再执行）：`request` 从这个页面发过的请求抄头，DOM 在它上面操作。action 拿不到要的数据时抛错，不返回空值（run 没报错，draft 就会变成 verified）。action 里不能调用别的 action，要串起来就写 compose；compose 只能调用 action，不调用别的 compose（改一个 compose 会影响调用它的 compose，不好维护），几个 compose 共用的数据处理写成纯函数放进 `~/.speedrun/helpers/`，compose 里 `import`。compose 里 `action()` 的名字最好写成字面量，执行前检查才能报缺。会改东西（点赞、提交、删除）的 action 文件头写 `@write`（只是提示，不拦）。重复的小函数挪进 `~/.speedrun/helpers/`，action 和 compose 里 `import`。`ask` 只能写在 compose 里。`spr resume` 按「名字 + 参数」复用上次成功的调用（同样的调用出现多次按顺序取），参数变了就重新执行：所以修 action 时改参数没关系，但 compose 里不要用时间、随机数拼参数，否则每次都对不上、都会重新执行。重新 `spr run` 会从头执行所有 action，包括写操作；恢复编号失效时，先确认哪些写操作已经做过，在 compose 里跳过再 run。`help` 不能当参数名，`list` 不能当 compose 名。时间上限写在文件头 `@timeout <秒>`，没写是 115 秒。要等某个状态（构建完成、二维码生成）时，在 compose 里循环：`for (…) { const r = await action(…); if (r.ready) return r; await sleep(20_000); }`，调大 `@timeout`，用 Bash 的 `run_in_background` 跑 `spr run`，结束时会收到通知；不要在外面隔一会儿就 `spr run` 一次。`spr` 进程被停止或被杀（Ctrl+C、停止后台任务、Bash 超时），这次 run 就中止，不会在后台接着跑。密码、token 不要当参数传，也不要用 `ask` 要（参数和 `--answer` 都会留在命令行和对话里），请用户先在 Chrome 里登录。批量读同一站点时，action 里用 `Promise.all` 发多个 `request`（只用一个标签页），先看站点有没有频率限制。key、签名放在地址查询参数里的，用 `request` 的 `authQuery: { <param>: <source> }`（和 `auth` 一样在页面里现读，来源看观察里的「查询参数」）。`request`、`waitRequest`、`auth`、`authQuery` 等的用法见 `~/.speedrun/lib/index.js` 的注释和 debug 指引。
 
 ## 5. 数据
 
 ```
 ~/.speedrun/
 ├── debug-windows/<id>/      meta.json、timeline.jsonl、requests/、pages/、screenshots/
-├── run-windows/<名字>/      同样的结构；meta.json 里有参数和结果
+├── run-windows/<名字>/      同样的结构；meta.json 里有参数、状态和失败原因，result.json 是完整结果，error.txt 是完整报错
+├── session/invocations.jsonl  每条 spr 命令一行（含没开窗口就失败的、被取消的）：命令、参数、耗时、退出码、错误类别、每次 action 调用；用 jq / rg 查
 ├── action/<站点>/            endpoints.json（只由 debug 窗口累积）、<名字>.js（action）
 ├── compose/                 compose（你写的 <名字>.js，一直留着）
 ├── lib/                     SDK（daemon 每次启动整个覆盖，别在这里改；node_modules/spr 链到这里）

@@ -130,7 +130,7 @@ export class WindowLog {
     return undefined;
   }
 
-  /** 窗口目录的绝对路径；没登记过的窗口算 debug 窗口。 */
+  /** 窗口目录的绝对路径；没登记过的窗口算 debug 窗口（只用来拼路径：写入只认登记过的窗口，见 known）。 */
   winDir(win: string): string { return path.join(this.root, KIND_DIR[this.kindOf(win) ?? "debug"], win); }
 
   readMeta(win: string): WindowMeta | undefined {
@@ -138,6 +138,7 @@ export class WindowLog {
   }
 
   writeMeta(win: string, meta: WindowMeta): void {
+    if (!this.known(win)) return;
     const file = path.join(this.winDir(win), "meta.json");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
@@ -172,8 +173,15 @@ export class WindowLog {
     }
   }
 
+  /**
+   * 只有 openWindow 登记过、还没被淘汰的窗口能写：窗口关掉很久以后才到的事件（标签页关掉时没发 close 的 websocket 摘要这类）
+   * 对应的目录可能已经淘汰，不能因为它凭空建出一个没有 meta 的目录。不认识的窗口，写入直接忽略。
+   */
+  private known(win: string): boolean { return this.kindOf(win) !== undefined; }
+
   /** 往 <窗口>/timeline.jsonl 追加一行（seq 已经用 reserve() 拿好）。 */
   append(row: Row): void {
+    if (!this.known(row.win)) return;
     const file = path.join(this.winDir(row.win), "timeline.jsonl");
     const line = `${JSON.stringify(row)}\n`;
     const u = this.wins.get(row.win);
@@ -184,6 +192,7 @@ export class WindowLog {
 
   /** 写一个文件进窗口目录，返回窗口内的相对路径。 */
   putFile(win: string, rel: string, content: string | Buffer): string {
+    if (!this.known(win)) return rel;
     const abs = this.abs(win, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     const existed = fs.existsSync(abs) ? fs.statSync(abs).size : 0;
@@ -196,6 +205,7 @@ export class WindowLog {
 
   /** 往窗口目录里的文件追加内容（sockets/ 的消息），返回窗口内的相对路径。 */
   appendFile(win: string, rel: string, content: string): string {
+    if (!this.known(win)) return rel;
     const abs = this.abs(win, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.appendFileSync(abs, content, { mode: 0o600 });

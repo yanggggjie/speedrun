@@ -156,8 +156,14 @@ export class AgentWindows {
     await this.link.request("closeTab", { tabId: tab }).catch(() => {});
   }
 
+  private readonly closedListeners = new Set<(key: string) => void>();
+  /** 一个 key 的窗口关了（dispose，或 forget 忘掉全部）：同步通知，用来收尾挂在这个窗口下的状态。 */
+  onClosed(fn: (key: string) => void): void { this.closedListeners.add(fn); }
+  private closed(key: string): void { for (const fn of this.closedListeners) { try { fn(key); } catch { /* 收尾出错不影响关窗口 */ } } }
+
   /** 关掉一个 key 的整个组（run 跑完、debug 窗口 close 或空闲太久）。 */
   async dispose(key: string): Promise<void> {
+    this.closed(key);
     const group = this.groups.get(key);
     this.groups.delete(key);
     this.activity.delete(key);
@@ -189,5 +195,5 @@ export class AgentWindows {
   }
 
   /** 链路断开或 daemon 退出时调用。 */
-  forget(): void { this.owned.clear(); this.adopted.clear(); this.groups.clear(); this.keyOfGroup.clear(); this.activity.clear(); this.cleaned = false; }
+  forget(): void { for (const key of new Set([...this.groups.keys(), ...[...this.owned.values()].map((e) => e.key), ...this.adopted.values()])) this.closed(key); this.owned.clear(); this.adopted.clear(); this.groups.clear(); this.keyOfGroup.clear(); this.activity.clear(); this.cleaned = false; }
 }

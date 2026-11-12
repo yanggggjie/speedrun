@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import type { JournalEntry } from "./runner.ts";
+import type { Answer, JournalEntry } from "./runner.ts";
 
 /** 可以接着跑的 run：停在 ask 的，或失败了的（failed）。name：run 的 compose；code：ask 停下那一刻的 compose 代码，失败后恢复没有，读当前文件。drafts：之前已经成功的 draft 文件（恢复时不会再执行，最终成功时一起变成 verified）。 */
-export type PendingAsk = { t: number; question: string; failed?: boolean; name: string; code?: string; params: Record<string, string>; journal: JournalEntry[]; answers: unknown[]; drafts: string[] };
+export type PendingAsk = { t: number; question: string; failed?: boolean; name: string; code?: string; params: Record<string, string>; journal: JournalEntry[]; answers: Answer[]; drafts: string[] };
 
 const ASK_KEEP = 20;
 export const ASK_TTL_MS = 30 * 60_000;

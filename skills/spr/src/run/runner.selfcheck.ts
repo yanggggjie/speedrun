@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ActionRunner, type Outcome, type RunWindows } from "./runner.ts";
+import { ActionRunner, trimError, type Outcome, type RunWindows } from "./runner.ts";
 import { syncActionLib } from "./actions.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "speedrun-runner-"));
@@ -28,7 +28,7 @@ const opened: string[] = [], closed: string[] = [];
 let n = 0;
 const windows: RunWindows = { open: (label) => { const key = `${label}-${++n}`; opened.push(key); return key; }, close: async (key) => { closed.push(key); }, shotFile: (key) => path.join(root, `${key}-shot`), failureFile: (key) => path.join(root, key) };
 const runner = new ActionRunner(host as never, { actionDir, composeDir }, windows);
-const plain = (o: Outcome) => { const { runWindow: _w, drafts: _d, sent: _x, dialogs: _g, ...rest } = o; return rest; };
+const plain = (o: Outcome) => { const { runWindow: _w, drafts: _d, sent: _x, dialogs: _g, calls: _c, ...rest } = o; return rest; };
 
 // 每次 run 新开一个窗口，跑完就关；嵌套调用共用这次的窗口
 const a = await runner.runAction("echo", { v: "1" });
@@ -96,7 +96,7 @@ if (asked.status !== "ask") throw new Error(`应该停在 ask：${JSON.stringify
 assert.equal(asked.question, "挑一个");
 assert.equal(asked.code, fs.readFileSync(askFile, "utf8"), "交回停下那一刻的代码");
 compose("asker", `return "改过了";`);
-const resumed = await runner.runAction("asker", {}, undefined, { askState: { journal: asked.journal, answers: ["ok"] }, code: asked.code });
+const resumed = await runner.runAction("asker", {}, undefined, { askState: { journal: asked.journal, answers: [{ question: "挑一个", answer: "ok" }] }, code: asked.code });
 assert.deepEqual(plain(resumed), { status: "success", result: { a: 1, pick: "ok", b: 2 } }, "用停下时的代码重放");
 assert.equal(fs.readFileSync(counter, "utf8"), "xx", "恢复时 ask 之前的 action 没有重跑");
 
@@ -118,6 +118,35 @@ fs.writeFileSync(brokenFile, `/**\n * @status draft\n */\nexport default async (
 const fixed = await runner.runAction("fix", {}, undefined, { askState: { journal: failed.journal!, answers: failed.answers ?? [] } });
 assert.deepEqual(plain(fixed), { status: "success", result: { a: 1, b: 2 } }, "失败的 action 读当前文件重新执行");
 assert.equal(fs.readFileSync(path.join(root, "count2.txt"), "utf8"), "x", "已完成的 action 没有重跑");
+// 恢复按内容复用：修 action 时改了调用参数，只有这一次重新执行，其余的照样复用，不因为「和上次不同」整个失败；
+// 同样的调用出现多次（循环轮询）按顺序取记下的结果，用完了再真执行
+fs.writeFileSync(path.join(root, "count3.txt"), "");
+fs.writeFileSync(path.join(dir, "tick.js"), `/**\n * @status verified\n * @param k? 键\n * @param extra? 新加的参数\n */\nimport * as fs from "node:fs";\nexport default async (p) => { fs.appendFileSync(${JSON.stringify(path.join(root, "count3.txt"))}, "x"); return fs.readFileSync(${JSON.stringify(path.join(root, "count3.txt"))}, "utf8").length; };\n`);
+fs.writeFileSync(brokenFile, `/**\n * @status draft\n */\nexport default async () => { throw new Error("坏了"); };\n`);
+compose("loop", `const a = await action("tick", { k: "a" }); const b = await action("tick", { k: "a" }); const c = await action("tick", { k: "b" }); await action("broken", {}); return { a, b, c };`);
+const looped = await runner.runAction("loop", {});
+if (looped.status !== "failure") throw new Error(`应该失败：${JSON.stringify(looped)}`);
+assert.equal(looped.code, "action-throw", "失败带类别");
+fs.writeFileSync(brokenFile, `/**\n * @status draft\n */\nexport default async () => 0;\n`);
+compose("loop", `const a = await action("tick", { k: "a" }); const b = await action("tick", { k: "a" }); const c = await action("tick", { k: "b", extra: "1" }); await action("broken", {}); return { a, b, c };`);
+const relooped = await runner.runAction("loop", {}, undefined, { askState: { journal: looped.journal!, answers: [] } });
+assert.deepEqual(plain(relooped).status, "success", "参数变了的那次重新执行，不报和上次不同");
+assert.deepEqual((relooped as { result: unknown }).result, { a: 1, b: 2, c: 4 }, "同样的调用按顺序复用，变了的才重跑");
+assert.deepEqual(relooped.calls?.map((c) => c.cached ?? false), [true, true, false, false], "每次调用记下是不是复用的");
+
+// 取消：调用 spr 的进程退出（signal）就中止，不在后台接着跑
+compose("forever", `await new Promise((r) => setTimeout(r, 5000)); return 1;`);
+const ac = new AbortController();
+setTimeout(() => ac.abort(), 100);
+const t1 = Date.now();
+const cancelled = await runner.runAction("forever", {}, undefined, { signal: ac.signal });
+assert.ok(cancelled.status === "failure" && cancelled.code === "cancelled" && Date.now() - t1 < 2000, "取消后立刻结束");
+
+// 报错只留用户文件的帧，第一个用户文件的位置单独给出
+const t = trimError("Error: 坏了", "Error: 坏了\n    at Module.default (file:///u/action/x.com/a.js:7:3)\n    at async file:///u/src/run/worker.ts:9:18\n    at MessagePort.<anonymous> (file:///u/lib/index.js:14:29)", ["/u/action/"]);
+assert.equal(t.text, "Error: 坏了\nat Module.default (file:///u/action/x.com/a.js:7:3)");
+assert.equal(t.at, "/u/action/x.com/a.js:7");
+
 const gone = await runner.runAction("nobody", {});
 assert.ok(gone.status === "failure" && /nobody is not defined/.test(gone.error), "运行时也报 is not defined");
 

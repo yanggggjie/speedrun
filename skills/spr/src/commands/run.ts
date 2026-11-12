@@ -1,5 +1,6 @@
 import { EXIT } from "../protocol.ts";
 import type { Outcome, AskState } from "../run/runner.ts";
+import type { Row } from "../record/types.ts";
 import { findAction, isCompose, promoteAction, actionSummary } from "../run/actions.ts";
 import { checkCompose, missingText } from "../run/link.ts";
 import { parseArgs } from "./args.ts";
@@ -68,7 +69,7 @@ export async function resumeCommand(argv: string[], ctx: Ctx, out: Output): Prom
   if (!rec.failed && !answers.length) return out.usage(`要带 --answer '<json>'，回答：${rec.question}。用法：${RESUME_USAGE}`);
   if (rec.failed && !linked(rec.name, ctx, out)) return;
   await ctx.ensureExtension();
-  const askState: AskState = { journal: rec.journal, answers: [...rec.answers, ...answers.map(parseAnswer)] };
+  const askState: AskState = { journal: rec.journal, answers: [...rec.answers, ...answers.map((x) => ({ question: rec.question, answer: parseAnswer(x) }))] };
   return runNamed(ctx, out, { name: rec.name, params: rec.params, askState, code: rec.code, resumed: id, priorDrafts: rec.drafts, ...(rec.failed ? { failedResume: true } : {}) });
 }
 
@@ -106,7 +107,8 @@ function outcomeLines(name: string, outcome: Outcome, saveFull?: (json: string) 
     lines.push(`fail ${name}：${head}`);
     if (more.length) lines.push(`错误：\n${indent(more.join("\n"))}`);
     if (outcome.failedAction) lines.push(`出错的 action：${outcome.failedAction}`);
-    if (outcome.page) lines.push(`页面：${outcome.page.url} "${outcome.page.title}"`, ...(outcome.page.screenshot ? [`截图：${outcome.page.screenshot}`] : []));
+    if (outcome.at) lines.push(`位置：${outcome.at}`);
+    if (outcome.page && !isWarm(outcome.page.url)) lines.push(`页面：${outcome.page.url} "${outcome.page.title}"`, ...(outcome.page.screenshot ? [`截图：${outcome.page.screenshot}`] : []));
     if (outcome.hint) lines.push(`说明：\n${indent(outcome.hint)}`);
   }
   if (outcome.dialogs?.length) lines.push(`被拦下的系统弹窗（alert 放过，confirm、prompt 选取消，离开确认直接离开，有没保存的改动要核对）：\n${indent(outcome.dialogs.join("\n"))}`);
@@ -143,7 +145,7 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts, resumeId: string | un
   const win = outcome.runWindow;
   if (win) {
     const old = ctx.log.readMeta(win);
-    if (old) ctx.log.writeMeta(win, { ...old, ...(o.resumed ? { resumed: o.resumed } : {}), status: outcome.status, ...(outcome.sent?.length ? { sent: outcome.sent } : {}), endedAt: Date.now() });
+    if (old) ctx.log.writeMeta(win, { ...old, ...(o.resumed ? { resumed: o.resumed } : {}), status: outcome.status, ...(outcome.status === "failure" ? { error: errorOf(outcome) } : {}), ...(outcome.sent?.length ? { sent: outcome.sent } : {}), endedAt: Date.now() });
     lines.push(`run 窗口目录：${ctx.log.winDir(win)}（窗口已关，日志留着）`);
   }
   // 跑成功就是事实：执行过的 draft 都变成 verified（action 自己检查状态码和返回值）
@@ -157,7 +159,8 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts, resumeId: string | un
     if (!win) lines.push(`下一步：改好参数后重新 spr run ${o.name}`);
     else {
       const fix = outcome.failedAction ? `修好 ${outcome.failedAction} 后` : "修好后";
-      lines.push(`下一步：spr debug ${o.name} navigate ${outcome.page?.url || "<网址>"}，${fix} ${resumeId ? `spr resume ${resumeId}（已完成的 action 不重跑；30 分钟内有效）` : `spr run ${o.name}`}`);
+      const at = outcome.page?.url && !isWarm(outcome.page.url) ? outcome.page.url : "<网址>";
+      lines.push(`下一步：spr debug ${o.name} navigate ${at}，${fix} ${resumeId ? `spr resume ${resumeId}（已完成的 action 不重跑；30 分钟内有效）` : `spr run ${o.name}`}`);
       if (!resumeId && outcome.sent?.length) lines.push(`这次已经发出上面「已发出的非 GET 请求」；没有恢复编号，重新 spr run 会从头执行`);
     }
   }
@@ -165,10 +168,55 @@ function finishRun(ctx: Ctx, outcome: Outcome, o: RunOpts, resumeId: string | un
 }
 
 async function runNamed(ctx: Ctx, out: Output, o: RunOpts): Promise<void> {
-  const outcome = await ctx.runner.runAction(o.name, o.params, undefined, { askState: o.askState, ...(o.code !== undefined ? { code: o.code } : {}) });
+  const outcome = await ctx.runner.runAction(o.name, o.params, undefined, { askState: o.askState, ...(o.code !== undefined ? { code: o.code } : {}), ...(out.signal ? { signal: out.signal } : {}) });
+  record(ctx, out, outcome, o);
   if (handleAsk(ctx, out, outcome, o)) return;
   if (outcome.status !== "success") out.code = EXIT.fail;
   const resumeId = keepForResume(ctx, outcome, o);
-  const saveFull = outcome.runWindow ? (json: string): string => ctx.log.abs(outcome.runWindow!, ctx.log.putFile(outcome.runWindow!, "result.json", json)) : undefined;
-  for (const line of [...outcomeLines(o.name, outcome, saveFull), ...finishRun(ctx, outcome, o, resumeId)]) out.line(line);
+  const win = outcome.runWindow;
+  // 结果、完整报错都存进 run 窗口目录：输出里裁掉的，在这里找得到
+  const full = win && outcome.status === "success" ? ctx.log.abs(win, ctx.log.putFile(win, "result.json", JSON.stringify(outcome.result ?? null, null, 2))) : undefined;
+  if (win && outcome.status === "failure") {
+    ctx.log.putFile(win, "error.txt", [outcome.error, outcome.stack ? `\n--- 完整 stack ---\n${outcome.stack}` : ""].join(""));
+    const evidence = requestEvidence(ctx, win, outcome);
+    if (evidence) outcome.hint = outcome.hint ? `${evidence}\n${outcome.hint}` : evidence;
+  }
+  const lines = [...outcomeLines(o.name, outcome, () => full ?? ""), ...finishRun(ctx, outcome, o, resumeId)];
+  if (win && outcome.status === "failure") lines.splice(lines.findIndex((l) => l.startsWith("run 窗口目录")), 0, `完整报错：${ctx.log.abs(win, "error.txt")}`);
+  for (const line of lines) out.line(line);
+}
+
+/** 暖页面：只发请求的 action 用的落脚页（origin/robots.txt，见 browser/window.ts 的 acquire）。停在这里说明 action 没打开过页面，截图和页面地址没用。 */
+const isWarm = (url: string): boolean => /^https?:\/\/[^/]+\/robots\.txt$/.test(url);
+
+/** 停在暖页面的失败：证据是这个窗口里最后一个出错的请求（状态码 ≥ 400 或没发出去），给出它的请求文件。 */
+function requestEvidence(ctx: Ctx, win: string, outcome: Extract<Outcome, { status: "failure" }>): string | undefined {
+  if (!outcome.page?.url || !isWarm(outcome.page.url)) return undefined;
+  const bad = ctx.log.readRows(win, { limit: 2000 }).filter((r: Row & { status?: number; error?: string; file?: string }) => r.type === "request" && r.src === "agent" && ((r.status ?? 0) >= 400 || r.error)).at(-1) as (Row & { status?: number; method?: string; url?: string; file?: string }) | undefined;
+  const lead = "这次 run 没打开过页面（停在暖页面 robots.txt，没有截图）";
+  if (!bad) return `${lead}；窗口里没有出错的请求，看完整报错`;
+  return `${lead}；最后一个出错的请求：${bad.method ?? ""} ${bad.url ?? ""} → ${bad.status ?? "没发出去"}，请求和响应在 ${bad.file ? ctx.log.abs(win, bad.file) : ctx.log.winDir(win)}`;
+}
+
+/** 失败写进 meta 和调用记录的部分：类别、第一行原文、出错的 action、位置。 */
+function errorOf(outcome: Extract<Outcome, { status: "failure" }>): Record<string, unknown> {
+  return { code: outcome.code ?? "internal", message: outcome.error.split("\n", 1)[0]!.slice(0, 500), ...(outcome.failedAction ? { action: outcome.failedAction } : {}), ...(outcome.at ? { at: outcome.at } : {}) };
+}
+
+/** 调用记录的补充字段：参数、窗口、结果的大小和条数、失败的类别、每次 action() 调用、发出的非 GET 请求、从哪次恢复。 */
+function record(ctx: Ctx, out: Output, outcome: Outcome, o: RunOpts): void {
+  const r = out.rec;
+  // 参数和请求头一样按名字、值判断秘密（token、cookie 这类换成别名）；太长的（SQL 这类）截到 500 字
+  r.params = Object.fromEntries(Object.entries(ctx.ingest.sanitizer.headers(o.params)).map(([k, v]) => [k, v.length > 500 ? `${v.slice(0, 500)}…（共 ${v.length} 字）` : v]));
+  if (outcome.runWindow) r.window = outcome.runWindow;
+  if (o.resumed) r.resumedFrom = o.resumed;
+  if (outcome.status === "success") {
+    const json = JSON.stringify(outcome.result ?? null);
+    const v = outcome.result;
+    r.result = { bytes: json.length, ...(Array.isArray(v) ? { count: v.length } : {}), empty: v == null || (Array.isArray(v) && !v.length) || (typeof v === "object" && !Object.keys(v as object).length) || v === "" };
+  }
+  if (outcome.status === "failure") r.error = errorOf(outcome);
+  if (outcome.status === "ask") r.question = outcome.question.slice(0, 200);
+  if (outcome.calls?.length) r.calls = outcome.calls;
+  if (outcome.sent?.length) r.sent = outcome.sent;
 }

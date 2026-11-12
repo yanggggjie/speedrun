@@ -181,4 +181,23 @@ ingest.flush();
   off();
 }
 
+// 窗口关了（标签页被直接关掉，websocket 没发 close）：closeWindow 写出最后一行、丢掉状态；窗口目录被淘汰后，
+// 再 flushSockets 或有迟到的事件，都不会凭空建出没有 meta 的目录（以前会建在 debug-windows/ 下）
+{
+  const R2 = "poll-20261101-130000";
+  log.openWindow(R2, "run");
+  let owner = R2;
+  const ingest2 = new Ingestor(log, { aliasKey: "k", winOf: () => owner });
+  ingest2.handleBatch([{ k: "socket", t: T, tab: 11, page, channel: "ws", id: "w2", ev: "frame", dir: "received", size: 3, url: "wss://www.example.com/live", data: "hi" } as PageMsg]);
+  ingest2.closeWindow(R2);
+  assert.equal(rows(R2).filter((r) => r.type === "socket").length, 1, "关窗口时写出最后一行摘要");
+  log.removeWindow(R2);
+  owner = "user";
+  ingest2.flushSockets();
+  ingest2.handleBatch([{ k: "socket", t: T, tab: 11, page, channel: "ws", id: "w2", ev: "frame", dir: "received", size: 3, url: "wss://www.example.com/live", data: "hi" } as PageMsg]);
+  ingest2.flush();
+  log.append({ seq: log.reserve(), t: T, win: R2, src: "agent", tab: 11, type: "socket" } as Row);
+  assert.ok(!fs.existsSync(path.join(dir, "debug-windows", R2)) && !fs.existsSync(path.join(dir, "run-windows", R2)), "淘汰掉的窗口不会被迟到的写入建回来");
+}
+
 console.log("ingest.selfcheck ok");

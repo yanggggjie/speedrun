@@ -23,6 +23,7 @@ import { ALIAS_SALT_FILE, DAEMON_IDLE_EXIT_MS, DAEMON_READY_MS, SESSION_DIR, DAT
 import { GROUP_TITLE } from "./browser/window.ts";
 import { OWNER_CHECK_MS, listenOwned, routeByRole, type Owned } from "./session/server.ts";
 import { createLogger, setLogFile } from "./utils/logger.ts";
+import { InvocationLog } from "./record/invocations.ts";
 
 /**
  * daemon：本机常驻 daemon，唯一的大脑。收扩展推来的页面消息写日志，执行命令行发来的命令（agent 窗口、action 运行、查询都在这里）。
@@ -67,6 +68,7 @@ function build() {
   const index = new EndpointIndex({ coverage: (site) => coveredEndpoints(log.dir, site) });
   let adblock: FiltersEngine | undefined;
   const ingest = new Ingestor(log, { engine: () => adblock, aliasKey: aliasSalt(), raw, winOf: (tab) => win.winOf(tab), index });
+  win.onClosed((key) => ingest.closeWindow(key));
   const host = new RunHost({ link, win, ingest, raw });
   const runner = new ActionRunner(host, {}, runWindowsOf(log, win));
   drainRuns = () => runner.drain();
@@ -75,6 +77,7 @@ function build() {
     ensureExtension,
     tabs: async () => ((await link.request("tabs")) as { tabs: TabInfo[] }).tabs,
     host, runner, win, debug, log, index, ingest, raw,
+    invocations: new InvocationLog(),
     daemon: () => ({ extension: extSocket !== null, pid: process.pid }),
   };
   return { ctx, setAdblock: (engine: FiltersEngine) => { adblock = engine; } };
@@ -115,14 +118,15 @@ async function ensureExtension(): Promise<void> {
   if (!link.compatible()) throw new Error(`Chrome 里的 speedrun 扩展是旧版本（ABI ${link.abi ?? "无"}，需要 ${ABI}）：请在 chrome://extensions 里刷新 speedrun 扩展`);
 }
 
-async function dispatch(req: JsonRpcRequest): Promise<unknown> {
+async function dispatch(req: JsonRpcRequest, signal?: AbortSignal): Promise<unknown> {
   lastActivity = Date.now();
   if (req.method === "ping") return pingBody();
   if (req.method === "run") {
     const argv = req.params?.argv;
     if (!Array.isArray(argv) || !argv.every((x) => typeof x === "string")) throw Object.assign(new Error("run 需要字符串数组 argv"), { code: RPC_ERRORS.INVALID_PARAMS });
     ingest.flush();
-    return runCommand(argv as string[], ctx);
+    const cwd = typeof req.params?.cwd === "string" ? req.params.cwd : undefined;
+    return runCommand(argv as string[], ctx, { ...(signal ? { signal } : {}), ...(cwd ? { cwd } : {}) });
   }
   throw Object.assign(new Error(`未知 method：${String(req.method)}`), { code: RPC_ERRORS.METHOD_NOT_FOUND });
 }
@@ -143,6 +147,9 @@ function onConnection(socket: net.Socket): void {
 function onCli(socket: net.Socket, rest: Buffer): void {
   const decoder = new StringDecoder("utf8"); // 一个汉字的字节可能被拆在两个数据块里，按字节拼接会变成替换字符
   let buffer = "";
+  // 调用 spr 的进程退出了（被 Ctrl+C、被停止、超时被杀）：连接断开，正在跑的 run 跟着中止，不在后台接着跑
+  const gone = new AbortController();
+  socket.on("close", () => gone.abort());
   const write = (message: JsonRpcResponse): void => {
     const line = `${JSON.stringify(message)}\n`;
     if (Buffer.byteLength(line) > MAX_MESSAGE_BYTES) { write({ jsonrpc: "2.0", id: message.id, error: { code: RPC_ERRORS.INTERNAL, message: "应答超过上限，缩小查询范围" } }); return; }
@@ -158,7 +165,7 @@ function onCli(socket: net.Socket, rest: Buffer): void {
       let req: JsonRpcRequest;
       try { req = JSON.parse(line) as JsonRpcRequest; } catch { write({ jsonrpc: "2.0", id: "", error: { code: RPC_ERRORS.PARSE, message: "Parse error" } }); continue; }
       if (req.jsonrpc !== "2.0" || typeof req.id !== "string" || typeof req.method !== "string") { write({ jsonrpc: "2.0", id: typeof req.id === "string" ? req.id : "", error: { code: RPC_ERRORS.INVALID_REQUEST, message: "Invalid Request" } }); continue; }
-      void dispatch(req).then((result) => write({ jsonrpc: "2.0", id: req.id, result }), (error) => write(responseError(req.id, error)));
+      void dispatch(req, gone.signal).then((result) => write({ jsonrpc: "2.0", id: req.id, result }), (error) => write(responseError(req.id, error)));
     }
   };
   socket.on("data", feed);

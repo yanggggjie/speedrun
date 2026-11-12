@@ -12,6 +12,9 @@ export const SESSION_SOCK = SESSION_SOCK_IS_FILE
   : `\\\\.\\pipe\\speedrun-${createHash("sha256").update(os.homedir()).digest("hex").slice(0, 12)}`;
 export const SESSION_LOG = path.join(SESSION_DIR, "log.jsonl");
 export const SESSION_LOG_MAX_BYTES = 20 * 1024 * 1024;
+/** 每条 spr 命令一行的调用记录（invocations.jsonl）：不跟 run 窗口的条数上限走，超过大小丢掉最旧的。 */
+export const INVOCATIONS_LOG = path.join(SESSION_DIR, "invocations.jsonl");
+export const INVOCATIONS_MAX_BYTES = 20 * 1024 * 1024;
 
 /** 等 daemon 起来、扩展连上的最长时间。 */
 export const DAEMON_READY_MS = 8_000;

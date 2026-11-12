@@ -214,6 +214,9 @@ export class Ingestor {
     const id = `${msg.tab}:${str(msg.id) ?? ""}`, rawUrl = str(msg.url) ?? "", ev = str(msg.ev);
     const win = this.winOf(msg.tab);
     let s = this.sockets.get(id);
+    // 标签页已经不属于原来的窗口（窗口关了）：旧连接的状态作废
+    if (s && s.win !== win) { this.sockets.delete(id); s = undefined; }
+    if (win === USER_WIN) return;
     if (!s) {
       const seq = this.log.reserve();
       const safe = this.sanitizer.url(rawUrl);
@@ -242,6 +245,16 @@ export class Ingestor {
     s.dirty = false;
     s.lastRow = t;
     this.log.append({ seq: this.log.reserve(), t, win: s.win, site: s.site, src: "agent", tab: s.tab, ...(s.frame ? { frame: s.frame } : {}), type: "socket", channel: s.channel, url: s.url, sent: s.sent, received: s.received, bytes: s.bytes, file: s.file } as Row);
+  }
+
+  /**
+   * 窗口关了（run 结束、debug close、扩展重连忘掉所有组）：把这个窗口还开着的连接写出最后一行摘要，再丢掉它们的状态。
+   * 标签页被直接关掉时 websocket 不会发 close，不在这里收尾，状态会一直留在内存里，下一次 flushSockets 又把它们写出来。
+   */
+  closeWindow(win: string): void {
+    this.flush();
+    this.log.batch(() => { for (const [id, s] of this.sockets) if (s.win === win) { this.socketRow(s, Date.now()); this.sockets.delete(id); } });
+    this.lastCmdOfWin.delete(win);
   }
 
   /** 观察前把攒着的连接摘要写出来。 */

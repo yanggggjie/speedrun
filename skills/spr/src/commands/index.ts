@@ -11,14 +11,30 @@ import { EXIT_TABLE, USAGE, handshakeStatusFromError, formatHandshakeStdout } fr
 import { LOG_LIMITS, MB } from "../utils/constants.ts";
 import { draftActions } from "../run/actions.ts";
 import { Output, composeDirOf, type Ctx } from "./context.ts";
+import { InvocationLog } from "../record/invocations.ts";
 import { debugCommand } from "./debug.ts";
 import { RESUME_USAGE, RUN_USAGE, resumeCommand, runCommand as runRun } from "./run.ts";
 
 export type { Ctx } from "./context.ts";
 
-/** 执行一条命令。argv 是 `spr` 后面的全部参数。 */
-export async function runCommand(argv: string[], ctx: Ctx): Promise<{ stdout: string; code: number }> {
-  const out = new Output();
+/** 退出码 → 调用记录里的 status。 */
+const STATUS_OF: Record<number, string> = { 0: "ok", 1: "fail", 2: "wait", 3: "usage" };
+
+/** 执行一条命令。argv 是 `spr` 后面的全部参数；signal：调用 spr 的进程退出了；cwd：调用方所在目录（只进调用记录）。 */
+export async function runCommand(argv: string[], ctx: Ctx, opts: { signal?: AbortSignal; cwd?: string } = {}): Promise<{ stdout: string; code: number }> {
+  const out = new Output(opts.signal);
+  const id = InvocationLog.newId(), ts = Date.now();
+  const res = await execute(argv, ctx, out);
+  if (ctx.invocations) {
+    const [cmd, name] = argv;
+    const head = res.stdout.split("\n", 1)[0] ?? "";
+    const status = opts.signal?.aborted ? "cancelled" : res.code === 2 && head.startsWith("ask ") ? "ask" : STATUS_OF[res.code] ?? String(res.code);
+    ctx.invocations.write({ id, ts, ms: Date.now() - ts, cmd, ...(name && !name.startsWith("-") ? { name } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}), exit: res.code, status, head: head.slice(0, 500), ...out.rec });
+  }
+  return res;
+}
+
+async function execute(argv: string[], ctx: Ctx, out: Output): Promise<{ stdout: string; code: number }> {
   const [cmd, ...args] = argv;
   try {
     switch (cmd) {

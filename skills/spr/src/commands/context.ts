@@ -9,6 +9,7 @@ import type { EndpointIndex } from "../record/endpoints.ts";
 import type { Ingestor } from "../record/ingest.ts";
 import type { RawStore } from "../record/raw.ts";
 import type { WindowLog } from "../record/windowlog.ts";
+import type { InvocationLog } from "../record/invocations.ts";
 
 /** daemon 提供给命令的能力。命令本身不持有状态。 */
 export interface Ctx {
@@ -27,12 +28,19 @@ export interface Ctx {
   daemon(): { extension: boolean; pid: number };
   /** compose 存放的目录（不给就是 ~/.speedrun/compose）。 */
   composeDir?: string;
+  /** 调用记录（每条命令一行）；不给就不记。 */
+  invocations?: InvocationLog;
 }
 
 /** 一条命令的输出：按行攒起来；handshake 整个替换成握手输出；fail 把错误放第一行，已攒的行保留在后面（比如已发出的非 GET 请求，不能因为后面出错就丢掉）。 */
 export class Output {
   private readonly lines: string[] = [];
   code: number = EXIT.ok;
+  /** 调用 spr 的进程退出了：正在跑的 run 收到它就中止。 */
+  readonly signal: AbortSignal | undefined;
+  /** 写进调用记录的补充字段（不进输出）。 */
+  readonly rec: Record<string, unknown> = {};
+  constructor(signal?: AbortSignal) { this.signal = signal; }
   private override: string | undefined;
   line(text: string): void { this.lines.push(text); }
   fail(error: string): void { this.override = formatErrorStdout(error); this.code = EXIT.fail; }

@@ -102,7 +102,8 @@ export async function ping(ms = 2_000): Promise<PingResult | null> {
 
 /** 把命令行参数原样交给 daemon 执行（daemon 不在就拉起），返回要打印的文本和退出码。 */
 export async function runOnDaemon(argv: string[]): Promise<{ stdout: string; code: number }> {
-  return (await rpc("run", { argv }, 10 * 60_000)) as { stdout: string; code: number };
+  // 不在这里限时：run 的时长由文件头的 @timeout 管，放到后台跑的可以很久。这个进程退出（被停止、被杀）时连接断开，daemon 就中止这次 run
+  return (await rpc("run", { argv, cwd: process.cwd() }, 24 * 3600_000)) as { stdout: string; code: number };
 }
 
 export type StopResult = "none" | "stopped" | "timeout";
