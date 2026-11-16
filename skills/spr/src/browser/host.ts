@@ -17,8 +17,8 @@ export class Session {
   lastUsed = Date.now();
   /** 所在的 agent 窗口：debug 窗口的 id，或 run 窗口的名字。 */
   readonly key: string;
-  /** compose（~/.speedrun/compose/ 下的文件）：只许调用 action，任何页面操作都拒绝。 */
-  composeOnly = false;
+  /** spr run -e 的顶层代码：只许调用 action() 和 sleep()，不能直接操作页面或发 request。 */
+  inlineOnly = false;
   /** 刚 goto 过、还没等过页面安静：request 抄头时这个窗口里还没有同站请求，就先等一次安静。 */
   fresh = false;
   /** 这次 run 里真跑成功的 draft（action 文件路径），run 结束后由命令层判断变成 verified。嵌套调用并进父 session。 */
@@ -44,6 +44,9 @@ function rejectHint(endpoint: string, status: number, src: RequestSource): strin
 
 /** run 失败时的页面现场。 */
 export type FailurePage = { url: string; title: string; screenshot?: string };
+/** 一次 run 的分段耗时（毫秒）与操作计数，用于定位慢在开窗、加载、请求还是 DOM。 */
+export type RunPerf = { openMs: number; navMs: number; reqMs: number; domMs: number };
+export type RunOps = { nav: number; req: number; dom: number; eval: number };
 
 type Wait = { key: string; method: string; path: string; pattern: RegExp; others: string[]; hit?: SeenRequest; resolve?: (r: SeenRequest | undefined) => void };
 type MessageWait = { key: string; url: string; match?: string; hit?: SeenMessage; resolve?: (m: SeenMessage | undefined) => void };
@@ -75,8 +78,10 @@ export class RunHost {
   private readonly dialogs = new Map<string, string[]>();
   /** waitMessage 登记的等待：只收登记之后、这个窗口收到的 WebSocket 和事件流消息。 */
   private readonly messageWaits = new Map<number, MessageWait>();
-  /** 正在统计非 GET 请求的窗口（run 窗口的名字）：endpoint → 次数。 */
-  private readonly sent = new Map<string, Map<string, number>>();
+  /** 正在统计非 GET 请求的窗口（run 窗口的名字）：direct 是 request() 主动发的，page 是页面加载或交互自发触发的。 */
+  private readonly sent = new Map<string, { direct: Map<string, number>; page: Map<string, number> }>();
+  /** 正在统计分段耗时与操作数的 run 窗口。 */
+  private readonly stats = new Map<string, { perf: RunPerf; ops: RunOps }>();
   /** 每个窗口最近一次被 401/403 拒的说明。 */
   private readonly rejected = new Map<string, string>();
   constructor(deps: HostDeps) {
@@ -87,25 +92,48 @@ export class RunHost {
   }
 
   /**
-   * 从现在起统计这个窗口发出的非 GET 请求（request() 发的，和页面自己发的）。只看方法、不判断有没有副作用：
-   * 那是 agent 的判断，speedrun 只列出实际发了什么，让 agent 核对有没有意料之外的、并告诉用户。
+   * 从现在起统计这个窗口发出的非 GET 请求（拆开 request() 主动发的与页面自发触发的）以及分段耗时。
    */
-  watchSent(key: string): void { this.sent.set(key, new Map()); }
-  /** 停止统计，返回 `POST /api/x ×2` 这样的几行；没有就是空。 */
-  takeSent(key: string): string[] {
-    if (this.sent.has(key)) this.d.ingest.flush(); // 页面自己发的请求可能还在收录队列里
-    const m = this.sent.get(key);
-    this.sent.delete(key);
-    return m ? [...m].map(([ep, n]) => `${ep} ×${n}`) : [];
+  watchSent(key: string): void {
+    this.sent.set(key, { direct: new Map(), page: new Map() });
+    this.stats.set(key, { perf: { openMs: 0, navMs: 0, reqMs: 0, domMs: 0 }, ops: { nav: 0, req: 0, dom: 0, eval: 0 } });
   }
-  private noteSent(key: string, method: string, endpoint: string): void {
-    const m = this.sent.get(key);
-    if (!m || READ_METHODS.has(method.toUpperCase())) return;
+  /** 停止统计并返回 request() 主动发出的非 GET 请求（`POST /api/x ×2`）；页面触发的由 takePageSent 取走。 */
+  takeSent(key: string): string[] {
+    if (this.sent.has(key)) this.d.ingest.flush();
+    const entry = this.sent.get(key);
+    this.sent.delete(key);
+    if (entry) this.pageSentCache.set(key, [...entry.page].map(([ep, n]) => `${ep} ×${n}`));
+    return entry ? [...entry.direct].map(([ep, n]) => `${ep} ×${n}`) : [];
+  }
+  private readonly pageSentCache = new Map<string, string[]>();
+  /** 取走页面加载或交互自发触发的非 GET 请求（紧跟 takeSent 之后调）。 */
+  takePageSent(key: string): string[] {
+    const v = this.pageSentCache.get(key) ?? [];
+    this.pageSentCache.delete(key);
+    return v;
+  }
+  /** 取走这个 run 窗口的分段耗时与操作数统计。 */
+  takeStats(key: string): { perf: RunPerf; ops: RunOps } | undefined {
+    const st = this.stats.get(key);
+    this.stats.delete(key);
+    return st;
+  }
+  private noteSent(key: string, method: string, endpoint: string, kind: "direct" | "page"): void {
+    const entry = this.sent.get(key);
+    if (!entry || READ_METHODS.has(method.toUpperCase())) return;
+    const m = entry[kind];
     m.set(endpoint, (m.get(endpoint) ?? 0) + 1);
+  }
+  private addStat(key: string, bucket: keyof RunPerf, ms: number, op?: keyof RunOps): void {
+    const st = this.stats.get(key);
+    if (!st) return;
+    st.perf[bucket] += Math.max(0, Math.round(ms));
+    if (op) st.ops[op]++;
   }
 
   private seen(r: SeenRequest): void {
-    if (!r.noise) this.noteSent(r.win, r.method, r.endpoint);
+    if (!r.noise) this.noteSent(r.win, r.method, r.endpoint, "page");
     for (const w of this.waits.values()) {
       if (w.key !== r.win) continue;
       if (!r.noise) w.others.push(r.endpoint); // 超时时列给 agent 看的，命中广告规则的不列
@@ -159,7 +187,9 @@ export class RunHost {
     // 不再每次列标签页确认还在：标签页被关了，callTab 会发现并重新拿
     if (s.tab !== undefined && s.origin === origin) return s.tab;
     if (s.tab !== undefined) this.d.win.release(s.tab);
+    const t0 = Date.now();
     s.tab = await this.d.win.acquire(origin, s.key);
+    this.addStat(s.key, "openMs", Date.now() - t0);
     s.origin = origin;
     this.byTab.set(s.tab, s);
     return s.tab;
@@ -195,7 +225,7 @@ export class RunHost {
   }
 
   private page(s: Session): number {
-    if (s.tab === undefined) throw new Error("还没有打开页面：action 第一步先 navigate(url)；debug 窗口里用 spr debug <compose> navigate <网址>");
+    if (s.tab === undefined) throw new Error("还没有打开页面：action 第一步先 navigate(url)；debug 窗口里用 spr debug <名> navigate <网址>");
     s.lastUsed = Date.now();
     return s.tab;
   }
@@ -229,28 +259,30 @@ export class RunHost {
   }
 
   async op(s: Session, name: string, a: any): Promise<unknown> {
-    if (s.composeOnly) throw new Error(`compose 代码里只能调用 action（action("名字", 参数)），不能操作页面：缺的 action 用 spr debug 写好`);
+    if (s.inlineOnly) throw new Error(`spr run -e 里只能调用 action("名字", 参数) 和 sleep(ms)，不能直接操作页面或发 request：页面与请求逻辑写成 ~/.speedrun/action/<站点>/<名字>.js`);
+    const t0 = Date.now();
+    const timed = <T>(p: Promise<T>, bucket: keyof RunPerf, opName: keyof RunOps): Promise<T> => p.finally(() => this.addStat(s.key, bucket, Date.now() - t0, opName));
     switch (name) {
-      case "navigate": return this.navigate(s, a);
-      case "request": return this.request(s, a);
-      case "input": return this.input(s, a);
-      case "screenshot": return this.screenshot(s, a);
-      case "waitFor": return this.waitFor(s, a);
-      case "read_page": { const tab = this.page(s); return this.callTab(tab, "readPage", [a]); }
-      case "find": { const tab = this.page(s); return this.callTab(tab, "findElements", [a]); }
-      case "get_page_text": { const tab = this.page(s); return this.callTab(tab, "pageText", [{ max: a.max ?? 20_000 }]); }
-      case "query": { const tab = this.page(s); return this.callTab(tab, "query", [a]); }
+      case "navigate": return timed(this.navigate(s, a), "navMs", "nav");
+      case "request": return timed(this.request(s, a), "reqMs", "req");
+      case "input": return timed(this.input(s, a), "domMs", "dom");
+      case "screenshot": return timed(this.screenshot(s, a), "domMs", "dom");
+      case "waitFor": return timed(this.waitFor(s, a), "domMs", "dom");
+      case "read_page": { const tab = this.page(s); return timed(this.callTab(tab, "readPage", [a]), "domMs", "dom"); }
+      case "find": { const tab = this.page(s); return timed(this.callTab(tab, "findElements", [a]), "domMs", "dom"); }
+      case "get_page_text": { const tab = this.page(s); return timed(this.callTab(tab, "pageText", [{ max: a.max ?? 20_000 }]), "domMs", "dom"); }
+      case "query": { const tab = this.page(s); return timed(this.callTab(tab, "query", [a]), "domMs", "dom"); }
       case "waitStart": return this.waitStart(s, a);
-      case "waitEnd": return this.waitEnd(s, a);
+      case "waitEnd": return timed(this.waitEnd(s, a), "reqMs", "req");
       case "waitCancel": { this.waits.delete(Number(a.id)); return {}; }
       case "messageStart": { const id = this.nextWait++; this.messageWaits.set(id, { key: s.key, url: String(a.url), ...(a.match !== undefined ? { match: String(a.match) } : {}) }); return { id }; }
-      case "messageEnd": return this.messageEnd(a);
+      case "messageEnd": return timed(this.messageEnd(a), "reqMs", "req");
       case "messageCancel": { this.messageWaits.delete(Number(a.id)); return {}; }
       case "eval": {
         const tab = this.page(s);
-        return this.log(tab, "eval", String(a.src).slice(0, 60), { src: String(a.src).slice(0, 2000) }, async () => {
+        return timed(this.log(tab, "eval", String(a.src).slice(0, 60), { src: String(a.src).slice(0, 2000) }, async () => {
           return ((await withTimeout(this.d.link.request("evaluate", { tabId: tab, src: a.src, args: a.args ?? [] }), STEP_TIMEOUT_MS, "evaluate")) as { v: unknown }).v;
-        });
+        }), "domMs", "eval");
       }
       default: throw new Error(`未知操作 ${name}`);
     }
@@ -360,7 +392,7 @@ export class RunHost {
     const source = { from: copy.from, copied: Object.keys(copy.headers), skipped: copy.skipped, auth: Object.keys(auth), authQuery: Object.keys(authQuery) };
     const safe = this.d.ingest.sanitizer.url(target.href);
     const detail = { method, endpoint, bareUrl: safe.bareUrl, query: safe.query, ...(a.json !== undefined ? { reqBody: JSON.stringify(this.d.ingest.sanitizer.body(a.json)).slice(0, 4000) } : {}), headersFrom: source.from, copied: source.copied, ...(source.skipped.length ? { skipped: source.skipped } : {}) };
-    this.noteSent(s.key, method, endpoint);
+    this.noteSent(s.key, method, endpoint, "direct");
     const res = await this.log(tab, "request", `${method} ${safe.bareUrl}`, detail, async () => {
       const r = await withTimeout(this.callTab(tab, "fetch", [{ method, url: target.href, headers, body, timeout: a.timeout ?? STEP_TIMEOUT_MS }]), (a.timeout ?? STEP_TIMEOUT_MS) + 3000, "请求");
       if (r.ok === false) throw new Error(`请求失败：${r.error}`);

@@ -2,5 +2,8 @@
   "name": "spr",
   "private": true,
   "type": "module",
-  "exports": "./index.js"
+  "exports": {
+    ".": "./index.js",
+    "./helpers/*": "./helpers/*"
+  }
 }

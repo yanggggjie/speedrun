@@ -98,7 +98,7 @@ export class Ingestor {
   push(msg: PageMsg): void {
     this.noteDelivered(msg);
     this.queue.push(msg);
-    // 定时写盘出错（磁盘满、没权限）只记下来：抛到定时器外面会让 daemon 退出，内存里的原始请求、ask 恢复记录、debug 窗口的页面全丢
+    // 定时写盘出错（磁盘满、没权限）只记下来：抛到定时器外面会让 daemon 退出，内存里的原始请求、debug 窗口的页面全丢
     this.timer ??= setTimeout(() => { try { this.flush(); } catch (error) { logger.warn("写日志失败", { err: error instanceof Error ? error.message : String(error) }); } }, FLUSH_MS);
   }
 

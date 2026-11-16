@@ -29,8 +29,10 @@ export const ACTION_DIR = path.join(DATA_HOME, "action");
 export const RUN_WINDOWS_KEEP = 100;
 /** action 的 SDK（由 daemon 启动时从 src/action-lib 同步）；脚本里 import … from "spr"，~/.speedrun/node_modules/spr 链到它。 */
 export const LIB_DIR = path.join(DATA_HOME, "lib");
-/** agent 自己抽出来的纯函数，action 用 ../../helpers/<文件>.js 引用；daemon 和升级都不覆盖。 */
+/** agent 自己抽出来的纯函数，统一用 spr/helpers/<文件>.js 引用；daemon 和升级都不覆盖。 */
 export const HELPERS_DIR = path.join(DATA_HOME, "helpers");
+/** 沉淀 subagent 的提示词文件（随 payload 镜像到 ~/.speedrun/agents/distiller.md）。 */
+export const DISTILLER_FILE = path.join(DATA_HOME, "agents", "distiller.md");
 /** 别名的盐：别名是"盐 + 真值"的哈希，同一个秘密永远是同一个别名（重启 daemon 也是），但不能由别名还原真值。 */
 export const ALIAS_SALT_FILE = path.join(DATA_HOME, "alias-salt");
 
@@ -45,9 +47,7 @@ export const LOG_LIMITS = {
 /** endpoints.json 脏了之后最多隔这么久写一次。 */
 export const ENDPOINTS_FLUSH_MS = 2_000;
 
-/** compose：agent 写的 <名>.js，一直保留。 */
-export const COMPOSE_DIR = path.join(DATA_HOME, "compose");
-/** 整个 action 默认最长运行时间；文件头 `@timeout <秒>` 可改。 */
+/** 整个 action 默认最长运行时间；文件头 `@timeout <秒>` 或 `spr run -e --timeout <秒>` 可改。 */
 export const ACTION_TIMEOUT_MS = 115_000;
 /** action 里单个步骤（goto、request、等元素）的上限。 */
 export const STEP_TIMEOUT_MS = 60_000;

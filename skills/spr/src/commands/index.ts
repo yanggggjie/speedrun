@@ -1,35 +1,51 @@
 /**
  * 命令行的全部命令：spr <argv> 原样发给 daemon，daemon 调 runCommand，返回文本和退出码，CLI 只负责打印。
- * 输出约定见 protocol.ts：第一行 ok / fail / ask，后面是「标题：内容」的几段。
- *
- * 只保留必须由 speedrun 做的事：控制浏览器（debug / run）、持有不能落盘的原始请求、运维。两种窗口：
- * debug 窗口（spr debug，debug.ts）按 compose 查找，run 之后也开着，关掉后只剩日志；run 窗口（spr run，run.ts）每次新开，跑完就关。
- * 读日志不是命令：日志是窗口目录里的文件（debug-windows/<id>/、run-windows/<名字>/），action 和 endpoints.json 在 action/<站点>/，用 rg / node / Python 读，见 SKILL.md。
+ * 输出约定见 protocol.ts：第一行 ok / fail，后面是「标题：内容」的几段。
  */
 import * as path from "node:path";
 import { EXIT_TABLE, USAGE, handshakeStatusFromError, formatHandshakeStdout } from "../protocol.ts";
 import { LOG_LIMITS, MB } from "../utils/constants.ts";
 import { draftActions } from "../run/actions.ts";
-import { Output, composeDirOf, type Ctx } from "./context.ts";
+import { Output, type CallerInfo, type Ctx } from "./context.ts";
 import { InvocationLog } from "../record/invocations.ts";
 import { debugCommand } from "./debug.ts";
-import { RESUME_USAGE, RUN_USAGE, resumeCommand, runCommand as runRun } from "./run.ts";
+import { RUN_USAGE, runCommand as runRun } from "./run.ts";
 
-export type { Ctx } from "./context.ts";
+export type { Ctx, CallerInfo } from "./context.ts";
 
 /** 退出码 → 调用记录里的 status。 */
 const STATUS_OF: Record<number, string> = { 0: "ok", 1: "fail", 2: "wait", 3: "usage" };
 
-/** 执行一条命令。argv 是 `spr` 后面的全部参数；signal：调用 spr 的进程退出了；cwd：调用方所在目录（只进调用记录）。 */
-export async function runCommand(argv: string[], ctx: Ctx, opts: { signal?: AbortSignal; cwd?: string } = {}): Promise<{ stdout: string; code: number }> {
-  const out = new Output(opts.signal);
+function loggedName(argv: string[]): string | undefined {
+  const [cmd, arg1] = argv;
+  if (!arg1) return undefined;
+  if (cmd === "debug" && arg1 === "list") return undefined;
+  if (cmd === "run" && (arg1 === "-e" || arg1.startsWith("-e=") || arg1 === "--eval" || arg1.startsWith("--eval="))) return "-e";
+  return arg1.startsWith("-") ? undefined : arg1;
+}
+
+/** 执行一条命令。argv 是 `spr` 后面的全部参数；signal：调用 spr 的进程退出了；cwd / caller：写入调用记录。 */
+export async function runCommand(
+  argv: string[],
+  ctx: Ctx,
+  opts: { signal?: AbortSignal; cwd?: string; caller?: CallerInfo } = {},
+): Promise<{ stdout: string; code: number }> {
+  const out = new Output(opts.signal, opts.caller);
   const id = InvocationLog.newId(), ts = Date.now();
   const res = await execute(argv, ctx, out);
   if (ctx.invocations) {
-    const [cmd, name] = argv;
+    const [cmd] = argv;
+    const name = loggedName(argv);
     const head = res.stdout.split("\n", 1)[0] ?? "";
-    const status = opts.signal?.aborted ? "cancelled" : res.code === 2 && head.startsWith("ask ") ? "ask" : STATUS_OF[res.code] ?? String(res.code);
-    ctx.invocations.write({ id, ts, ms: Date.now() - ts, cmd, ...(name && !name.startsWith("-") ? { name } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}), exit: res.code, status, head: head.slice(0, 500), ...out.rec });
+    const status = opts.signal?.aborted ? "cancelled" : STATUS_OF[res.code] ?? String(res.code);
+    ctx.invocations.write({
+      id, ts, ms: Date.now() - ts, cmd,
+      ...(name ? { name } : {}),
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+      ...(opts.caller ? { caller: opts.caller } : {}),
+      exit: res.code, status, head: head.slice(0, 500),
+      ...out.rec,
+    });
   }
   return res;
 }
@@ -41,7 +57,6 @@ async function execute(argv: string[], ctx: Ctx, out: Output): Promise<{ stdout:
       case "tabs": if (args.length) out.usage(`spr tabs 不接受参数，收到：${args.join(" ")}`); else await tabsCommand(ctx, out); break;
       case "status": if (args.length) out.usage(`spr status 不接受参数，收到：${args.join(" ")}`); else statusCommand(ctx, out); break;
       case "run": await runRun(args, ctx, out); break;
-      case "resume": await resumeCommand(args, ctx, out); break;
       case "debug": await debugCommand(args, ctx, out); break;
       case "--help": case "-h": case "help": out.line(`ok ${HELP}`); break;
       default: out.usage(cmd ? `不认识的命令 ${cmd}。${USAGE}` : USAGE);
@@ -55,14 +70,13 @@ async function execute(argv: string[], ctx: Ctx, out: Output): Promise<{ stdout:
 }
 
 /** spr --help：全部命令、退出码。和 SKILL.md 的命令表一致。 */
-const HELP = `speedrun 的命令（输出第一行是 ok / fail / ask）
+const HELP = `speedrun 的命令（输出第一行是 ok / fail）
   运行：
     ${RUN_USAGE}
-    ${RESUME_USAGE}
-  写 action：
-    spr debug <compose> navigate <网址|tab 号|back|forward>
-    spr debug <compose> read_page | find "<查询>" | get_page_text | computer <action> … | form_input <ref> <值> | inspect … | trace …
-    spr debug <compose> close；spr debug list
+  探索与调试：
+    spr debug <名> navigate <网址|tab 号|back|forward>
+    spr debug <名> read_page | find "<查询>" | get_page_text | computer <action> … | form_input <ref> <值> | inspect … | trace …
+    spr debug <名> close；spr debug list
   其它：spr status | tabs | doctor [--json]；spr daemon restart
   细节：spr debug --help；spr run --help
 ${EXIT_TABLE}`;
@@ -84,8 +98,8 @@ function statusCommand(ctx: Ctx, out: Output): void {
   const d = ctx.daemon();
   out.line(`ok daemon 在运行（pid ${d.pid}），扩展${d.extension ? "已连接" : "未连接"}`);
   out.line(`日志：debug 窗口 ${ctx.log.listWindows("debug").length} 个窗口，时间线和请求文件 ${mb(u.debug.light)}MB / ${LOG_LIMITS.totalLight / MB}MB，响应体、页面和截图 ${mb(u.debug.heavy)}MB / ${LOG_LIMITS.totalHeavy / MB}MB；run 窗口日志 ${ctx.log.listWindows("run").length} 个；最新编号 #${ctx.log.lastSeq()}`);
-  const drafts = draftActions(ctx.log.dir, composeDirOf(ctx));
-  if (drafts.length) out.line(`还没跑通的 draft（@status draft）：${drafts.map((t) => `${t.name}（${t.site ?? "compose"}${t.write ? "，@write" : ""}）`).join("、")}；调用它们的 compose 真跑成功就变成 verified；带 @write 的等用户真要做这件事时再跑，不用为了变成 verified 去真发`);
+  const drafts = draftActions(ctx.log.dir);
+  if (drafts.length) out.line(`还没跑通的 draft（@status draft）：${drafts.map((t) => `${t.name}（${t.site ?? "unknown"}${t.write ? "，@write" : ""}）`).join("、")}；真跑成功一次就变成 verified；带 @write 的等用户真要做这件事时再跑，不用为了变成 verified 去真发`);
   out.line(`debug 窗口：spr debug list`);
-  out.line(`目录：debug 窗口 ${path.join(ctx.log.root, "debug-windows")}，run 窗口 ${path.join(ctx.log.root, "run-windows")}，站点目录 ${ctx.log.dir}（每个站点：endpoints.json 和 action 文件），compose ${composeDirOf(ctx)}`);
+  out.line(`目录：debug 窗口 ${path.join(ctx.log.root, "debug-windows")}，run 窗口 ${path.join(ctx.log.root, "run-windows")}，站点目录 ${ctx.log.dir}（每个站点：endpoints.json 和 action 文件），helpers ${path.join(ctx.log.root, "helpers")}`);
 }

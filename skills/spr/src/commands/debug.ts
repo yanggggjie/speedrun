@@ -1,51 +1,49 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { EXIT } from "../protocol.ts";
+import { DISTILLER_FILE } from "../utils/constants.ts";
 import { notOpen, type DebugWindow } from "../debug/windows.ts";
 import { makeDebugGuide } from "../debug/guide.ts";
 import { observe } from "../debug/observe.ts";
+import { shownRequests } from "../debug/explore.ts";
 import { clues, mergeCalls, mergeScan, scanPage, traceEnd, traceStart, type PageScan, type TraceCall } from "../debug/page-api.ts";
-import { findAction, isCompose } from "../run/actions.ts";
-import { checkCompose, missingText } from "../run/link.ts";
+import { ACTION_NAME, coveredEndpoints, listActions } from "../run/actions.ts";
 import { normalizeSite } from "../record/digest.ts";
 import { siteOfUrl } from "../utils/url.ts";
 import { parseArgs, valueOf, type ArgSpec } from "./args.ts";
-import { composeDirOf, idleMin, pageContent, type Ctx, type Output } from "./context.ts";
+import { idleMin, pageContent, type Ctx, type Output } from "./context.ts";
 import type { Session } from "../browser/host.ts";
 import type { Row } from "../record/types.ts";
 
-
-/** debug 窗口里的工具：和 Claude in Chrome 同名、同参数、同语义（read_page、find、get_page_text、computer、form_input、navigate），加 inspect、trace。 */
 const TOOLS = new Set(["read_page", "find", "get_page_text", "computer", "form_input", "navigate", "inspect", "trace"]);
-/** 只看不动的工具（不计次数、不附带观察）。 */
 const LOOK_TOOLS = new Set(["read_page", "find", "get_page_text", "inspect", "trace"]);
-/** computer 里只看不动的（不计次数）：screenshot、zoom 不附带观察；wait 等完附带一次观察（等晚到的请求就用它）。 */
 const LOOK_ONLY = new Set(["screenshot", "zoom", "wait"]);
-const DEBUG_USAGE = 'spr debug <compose> navigate <网址|tab 号|back|forward>（窗口没开就打开）；spr debug <compose> read_page | find "<查询>" | get_page_text | computer <action> … | form_input <ref_N> <值> | inspect --path <对象> | trace <函数路径…>；spr debug <compose> close；spr debug list';
+const DEBUG_USAGE = 'spr debug <名> navigate <网址|tab 号|back|forward>（窗口没开就打开）；spr debug <名> read_page | find "<查询>" | get_page_text | computer <action> … | form_input <ref_N> <值> | inspect --path <对象> | trace <函数路径…>；spr debug <名> close；spr debug list';
 export const DEBUG_HELP = `${DEBUG_USAGE}
-  <compose> 是要用 spr run 运行的 compose，文件要先写好；一个窗口可以处理它缺的多个 action。
+  <名> 是窗口标识（小写字母、数字和 -，如 site-task），无需预先创建文件；同站已有 action 时打开窗口会自动列出。
   只看不动（不计次数）：read_page [--filter interactive|all] [--depth 15] [--ref ref_N] [--max-chars 50000]、find "<查询>"、get_page_text [--max 20000]、computer screenshot | zoom <x0> <y0> <x1> <y1> | wait <秒>、inspect --path <对象>、trace <函数路径…> [--seconds 10] | trace --stop。
   会改变页面：computer left_click | right_click | double_click | triple_click | hover | left_click_drag | scroll | scroll_to | type | key …（坐标或 --ref ref_N）、form_input <ref_N> <值>、navigate <网址|tab 号|back|forward>。
-  同一个 compose 上一次只能有一条命令：上一条还没返回时，后到的直接报错。`;
+  同一个窗口一次只能有一条命令：上一条还没返回时，后到的直接报错。`;
 
-/** spr debug <compose> <工具>：在这个 compose 的 debug 窗口里操作；spr debug <compose> close：关掉；spr debug list：列出。写 action 都在这里，每一步都进日志，改变页面的操作后附带一次观察。 */
+/** spr debug <名> <工具> | spr debug <名> close | spr debug list */
 export async function debugCommand(args: string[], ctx: Ctx, out: Output): Promise<void> {
   const [first, ...rest] = args;
   if (first === "list") {
+    out.rec.tool = "list";
     if (rest.length) return out.usage(`spr debug list 不接受参数，收到：${rest.join(" ")}`);
     return listDebug(ctx, out);
   }
   if (first === "--help" || first === "-h") { out.line(`ok ${DEBUG_HELP}`); return; }
-  if (!first || first.startsWith("--")) return out.usage(`用法：${DEBUG_USAGE}`);
-  const found = findAction(ctx.log.dir, first, composeDirOf(ctx));
-  if (!found) return out.usage(`没有 compose ${first}：先写 ${composeDirOf(ctx)}/${first}.js，调用要用的 action，缺的也先写上`);
-  if (!isCompose(found)) return out.usage(`${first} 是 action：spr debug 后面写 compose 的名字（调用它的那个 compose）`);
+  if (!first || first.startsWith("-")) return out.usage(`用法：${DEBUG_USAGE}`);
+  if (!ACTION_NAME.test(first)) return out.usage(`窗口名「${first}」只用小写英文字母、数字和 -（如 zhihu-search）`);
   const [sub, ...more] = rest;
   if (sub === "close") {
+    out.rec.tool = "close";
     if (more.length) return out.usage(`用法：spr debug ${first} close`);
     return closeDebug(first, ctx, out);
   }
   if (!sub || !TOOLS.has(sub)) return out.usage(`不认识的操作「${sub ?? ""}」。用法：${DEBUG_USAGE}`);
+  out.rec.tool = sub;
   return windowCommand(first, sub, more, ctx, out);
 }
 
@@ -57,7 +55,6 @@ function listDebug(ctx: Ctx, out: Output): void {
   for (const w of all.slice(0, 10)) out.line(`  ${w.compose} ${w.url} 操作 ${w.ops} 次，空闲 ${idleMin(w)} 分钟`);
 }
 
-/** navigate 的目标：http(s) 链接原样用；`tab123` 或 `123` 是用户的标签页号（spr tabs 列出的），只取它的地址，不碰那个标签页。 */
 async function resolveStartUrl(ctx: Ctx, given: string): Promise<{ url: string } | { error: string }> {
   const m = /^(?:tab)?(\d+)$/i.exec(given.trim());
   if (!m) return siteOfUrl(given) ? { url: given.trim() } : { error: `要是 http(s) 链接，或 spr tabs 列出的标签页号（如 tab123），收到：${given}` };
@@ -67,35 +64,40 @@ async function resolveStartUrl(ctx: Ctx, given: string): Promise<{ url: string }
   return siteOfUrl(tab.url) ? { url: tab.url } : { error: `标签页 ${given} 不是 http(s) 页面：${tab.url}` };
 }
 
-/**
- * 这个 compose 还没有窗口时的 navigate：打开一个 debug 窗口，返回窗口目录、debug 指引和起点的观察。
- * debug 指引写在 ~/.speedrun/debug-guide.md：内容变了（第一次、或升级后）才在输出里给全文，其余时候只给路径。
- */
-async function openWindow(compose: string, url: string, ctx: Ctx, out: Output): Promise<void> {
+async function openWindow(name: string, url: string, ctx: Ctx, out: Output): Promise<void> {
   await ctx.ensureExtension();
-  const w = ctx.debug.create({ compose, site: normalizeSite(siteOfUrl(url)), url });
+  const initialSite = normalizeSite(siteOfUrl(url));
+  const w = ctx.debug.create({ compose: name, site: initialSite, url });
+  out.rec.window = w.id;
+  out.rec.ops = w.ops;
   const { sess, opened } = await ctx.debug.page(w);
-  await ctx.host.quiet(sess); // 起点加载期的请求都到了再观察
+  await ctx.host.quiet(sess);
   await snapshotPage(ctx, w, sess);
   const obs = await observe(ctx, w, sess);
   ctx.debug.save(w);
+  const site = normalizeSite(siteOfUrl(opened?.url ?? url)) || initialSite;
+  const sameSite = site ? listActions(ctx.log.dir, site) : [];
+  out.rec.site = site;
+  out.rec.siteActions = sameSite.length;
   const guideFile = path.join(ctx.log.root, "debug-guide.md");
-  const guide = makeDebugGuide({ debugDir: path.join(ctx.log.root, "debug-windows"), actionDir: ctx.log.dir, composeDir: composeDirOf(ctx), libDir: path.join(ctx.log.root, "lib"), helpersDir: path.join(ctx.log.root, "helpers") });
+  const guide = makeDebugGuide({ debugDir: path.join(ctx.log.root, "debug-windows"), actionDir: ctx.log.dir, libDir: path.join(ctx.log.root, "lib"), helpersDir: path.join(ctx.log.root, "helpers") });
   let fresh = true;
   try { fresh = fs.readFileSync(guideFile, "utf8") !== guide; } catch { /* 第一次 */ }
   if (fresh) fs.writeFileSync(guideFile, guide);
+  const existingLine = sameSite.length
+    ? `同站已有 action（${site}）：${sameSite.slice(0, 8).map((a) => `${a.name}${a.params.length ? `(${a.params.map((p) => p.split(/[:?\s]/)[0]).join(", ")})` : ""}`).join("、")}${sameSite.length > 8 ? ` 等 ${sameSite.length} 个` : ""}（能直接复用就用 spr run，需要扩展可给已有 action 加可选参数）`
+    : undefined;
   out.line([
-    `ok debug 窗口已打开：${compose}`,
+    `ok debug 窗口已打开：${name}`,
     `窗口目录：${ctx.log.winDir(w.id)}`,
-    `debug 指引：${guideFile}${fresh ? "（第一次给出或有更新，全文在最后）" : "（开始前先读一遍）"}`,
-    "注意：这里的工具只用来触发页面行为、写 action；用户要的结果只能来自 spr run，不要把在这里看到的直接交给用户",
+    `debug 指引：${guideFile}${fresh ? "（第一次给出或有更新，全文在最后）" : "（写 action 前可查阅）"}`,
+    ...(existingLine ? [existingLine] : []),
     ...(opened ? [`起点：${opened.url} "${opened.title}"`] : []),
     obs,
     ...(fresh ? ["", guide] : []),
   ].join("\n"));
 }
 
-/** 快照页面函数落盘：窗口里 page-api/，站点累积 page-api.json；只把线索留给观察。失败不影响操作。 */
 async function snapshotPage(ctx: Ctx, w: DebugWindow, sess: Session): Promise<void> {
   try {
     const scan = await ctx.host.peek(sess, scanPage, [{}]) as PageScan | undefined;
@@ -116,10 +118,8 @@ const SPECS: Record<string, ArgSpec> = {
   trace: { values: ["seconds"], switches: ["stop"] },
 };
 
-/** trace 默认录多久。 */
 const TRACE_SECONDS = 10;
 
-/** 写窗口里的快照文件并进站点文件，返回窗口的 page-api 目录。 */
 function writeScan(ctx: Ctx, w: DebugWindow, scan: PageScan, kind: string): string {
   const site = normalizeSite(siteOfUrl(scan.url)) || w.site;
   const seq = String(ctx.log.reserve()).padStart(6, "0");
@@ -128,7 +128,6 @@ function writeScan(ctx: Ctx, w: DebugWindow, scan: PageScan, kind: string): stri
   return ctx.log.abs(w.id, "page-api");
 }
 
-/** 取 trace 的记录：恢复页面函数，详情（脱敏）写进 calls/，结构并进站点文件，返回摘要。 */
 async function collectTrace(ctx: Ctx, w: DebugWindow, sess: Session): Promise<string[]> {
   const paths = w.trace?.paths ?? [];
   w.trace = undefined;
@@ -142,43 +141,65 @@ async function collectTrace(ctx: Ctx, w: DebugWindow, sess: Session): Promise<st
   return [`trace：${calls.length} 次调用${r.dropped ? `（另有 ${r.dropped} 次超过上限没记）` : ""}，详情：${ctx.log.abs(w.id, rel)}`, ...sum.slice(0, 10).map((c) => `  ${c.path} ×${c.count} 参数 (${c.args.join(", ")})`)];
 }
 
-async function closeDebug(compose: string, ctx: Ctx, out: Output): Promise<void> {
-  const w = ctx.debug.of(compose);
-  if (!w) return out.line(`ok ${compose} 没有开着的 debug 窗口`);
-  if (w.trace && w.open) { try { await collectTrace(ctx, w, (await ctx.debug.page(w)).sess); } catch { /* 页面没了，函数已经跟着没了 */ } }
-  await ctx.debug.close(w);
-  out.line([`ok 已关掉 ${compose} 的 debug 窗口`, `窗口目录：${ctx.log.winDir(w.id)}（日志留着）`].join("\n"));
+/** 判断这个 debug 窗口是否产生了尚未沉淀为 action 的有效请求或交互操作。 */
+function hasUnprecipitatedWork(ctx: Ctx, w: DebugWindow): boolean {
+  const allActions = listActions(ctx.log.dir);
+  if (allActions.some((a) => a.fromWindow === w.id)) return false;
+  const rows = ctx.log.readRows(w.id, { limit: 50_000 });
+  const sites = new Set(rows.map((r) => r.site ?? w.site).filter(Boolean));
+  const covered = new Set<string>();
+  for (const s of sites) for (const ep of coveredEndpoints(ctx.log.dir, s).keys()) covered.add(ep);
+  const { shown } = shownRequests(rows, new Map());
+  if (shown.some((r) => r.endpoint && !covered.has(r.endpoint))) return true;
+  return w.ops > 0;
 }
 
-/** 输出末行：这个窗口要达成的目标。只列事实：缺哪些 action、compose 里怎么调用它们（参数源码），由 compose 文件算出来。 */
-function targetLine(compose: string, ctx: Ctx): string {
-  const { missing } = checkCompose(compose, { actionDir: ctx.log.dir, composeDir: composeDirOf(ctx) });
-  return `目标：spr run ${compose}${missing.length ? `（还缺 ${missingText(missing)}）` : ""}`;
+function distillPromptLine(ctx: Ctx, w: DebugWindow, out: Output): string | undefined {
+  if (out.caller?.role === "distiller") return undefined;
+  if (!hasUnprecipitatedWork(ctx, w)) return undefined;
+  out.rec.promptedDistill = true;
+  return `未沉淀窗口：${ctx.log.winDir(w.id)} —— 完成本次用户任务后，启动一个后台 subagent（不支持后台则普通 subagent）读取 ${DISTILLER_FILE} 并处理该窗口目录`;
 }
 
-/**
- * 同一个 compose 一次只跑一条命令：几条同时到（agent 并行发了几个 Bash 调用）时，后到的直接报错，不排队，
- * 否则操作在同一个页面上交错，观察的游标也会把一条命令引发的请求算到另一条头上。
- */
-async function windowCommand(compose: string, sub: string, argv: string[], ctx: Ctx, out: Output): Promise<void> {
-  if (!ctx.debug.claim(compose)) return out.fail(`${compose} 的 debug 窗口上一条命令还没结束：等它返回后再发（同一个 compose 上的命令要一条一条发，不要并行）`);
+async function closeDebug(name: string, ctx: Ctx, out: Output): Promise<void> {
+  const w = ctx.debug.of(name);
+  if (!w) return out.line(`ok ${name} 没有开着的 debug 窗口`);
+  out.rec.window = w.id;
+  out.rec.ops = w.ops;
+  if (w.trace && w.open) { try { await collectTrace(ctx, w, (await ctx.debug.page(w)).sess); } catch { /* 页面没了 */ } }
+  const prompt = distillPromptLine(ctx, w, out);
+  await ctx.debug.close(w, "cmd");
+  out.line([`ok 已关掉 ${name} 的 debug 窗口`, `窗口目录：${ctx.log.winDir(w.id)}（日志留着）`, ...(prompt ? [prompt] : [])].join("\n"));
+}
+
+async function windowCommand(name: string, sub: string, argv: string[], ctx: Ctx, out: Output): Promise<void> {
+  if (!ctx.debug.claim(name)) return out.fail(`${name} 的 debug 窗口上一条命令还没结束：等它返回后再发（同一个窗口上的命令要一条一条发，不要并行）`);
   try {
-    await windowCommandInner(compose, sub, argv, ctx, out);
-    if (out.code === EXIT.ok) out.line(targetLine(compose, ctx));
+    await windowCommandInner(name, sub, argv, ctx, out);
+    const w = ctx.debug.of(name);
+    if (w) {
+      out.rec.window = w.id;
+      out.rec.ops = w.ops;
+      if (out.code === EXIT.ok) {
+        const prompt = distillPromptLine(ctx, w, out);
+        if (prompt) out.line(prompt);
+      }
+    }
   } finally {
-    ctx.debug.release(compose);
+    ctx.debug.release(name);
   }
 }
 
-async function windowCommandInner(compose: string, sub: string, argv: string[], ctx: Ctx, out: Output): Promise<void> {
+async function windowCommandInner(name: string, sub: string, argv: string[], ctx: Ctx, out: Output): Promise<void> {
   const a = parseArgs(argv, SPECS[sub] ?? {});
   if ("error" in a) return out.usage(a.error);
-  // 先检查参数，再碰浏览器
   let computer: ComputerCmd | undefined;
   if (sub === "computer") {
+    if (a.rest[0]) out.rec.sub = a.rest[0];
     const parsed = parseComputer(a.rest, { scale: valueOf(a, "scale"), modifiers: valueOf(a, "modifiers"), repeat: valueOf(a, "repeat"), ref: valueOf(a, "ref"), to: valueOf(a, "to") });
     if ("error" in parsed) return out.usage(parsed.error);
     computer = parsed.cmd;
+    out.rec.sub = computer.action;
   }
   let look: Record<string, unknown> | undefined;
   if (sub === "read_page") {
@@ -188,50 +209,50 @@ async function windowCommandInner(compose: string, sub: string, argv: string[], 
     if (!(depth >= 1 && depth <= 100) || !(maxChars >= 1000)) return out.usage("--depth 是 1 到 100，--max-chars 至少 1000");
     const ref = valueOf(a, "ref");
     if (ref !== undefined && !REF.test(ref)) return out.usage(`--ref 要写成 ref_数字（read_page、find 给出的），收到：${ref}`);
-    if (a.rest.length) return out.usage(`多余的参数：${a.rest.join(" ")}。用法：spr debug ${compose} read_page [--filter interactive|all] [--depth 15] [--ref ref_N] [--max-chars 50000]`);
+    if (a.rest.length) return out.usage(`多余的参数：${a.rest.join(" ")}。用法：spr debug ${name} read_page [--filter interactive|all] [--depth 15] [--ref ref_N] [--max-chars 50000]`);
     look = { filter, depth, maxChars, ...(ref ? { ref } : {}) };
   } else if (sub === "find") {
-    if (!a.rest.length) return out.usage(`用法：spr debug ${compose} find "<查询>"（按目的或文字找，如 "搜索框"、"评论"）`);
+    if (!a.rest.length) return out.usage(`用法：spr debug ${name} find "<查询>"（按目的或文字找，如 "搜索框"、"评论"）`);
     look = { query: a.rest.join(" ") };
   } else if (sub === "get_page_text") {
     const max = Number(valueOf(a, "max") ?? 20_000);
     if (!(max >= 100)) return out.usage("--max 至少 100");
-    if (a.rest.length) return out.usage(`多余的参数：${a.rest.join(" ")}。用法：spr debug ${compose} get_page_text [--max 20000]`);
+    if (a.rest.length) return out.usage(`多余的参数：${a.rest.join(" ")}。用法：spr debug ${name} get_page_text [--max 20000]`);
     look = { max };
   } else if (sub === "inspect") {
     const at = valueOf(a, "path");
-    if (!at || a.rest.length) return out.usage(`用法：spr debug ${compose} inspect --path <对象路径>（如 SpreadsheetApp.behaviorApi；页面接口的快照先看窗口目录的 page-api/）`);
+    if (!at || a.rest.length) return out.usage(`用法：spr debug ${name} inspect --path <对象路径>（如 SpreadsheetApp.behaviorApi；页面接口的快照先看窗口目录的 page-api/）`);
     look = { path: at };
   } else if (sub === "trace") {
     const seconds = Number(valueOf(a, "seconds") ?? TRACE_SECONDS);
     const stop = a.switches?.has("stop") === true;
     if (!(seconds >= 1 && seconds <= 120)) return out.usage("--seconds 是 1 到 120");
-    if (stop ? a.rest.length : !a.rest.length) return out.usage(`用法：spr debug ${compose} trace <函数路径…> [--seconds ${TRACE_SECONDS}]，或 trace --stop 提前取记录`);
+    if (stop ? a.rest.length : !a.rest.length) return out.usage(`用法：spr debug ${name} trace <函数路径…> [--seconds ${TRACE_SECONDS}]，或 trace --stop 提前取记录`);
     look = { paths: a.rest, seconds, stop };
   }
   let form: { ref: string; value: string } | undefined;
   if (sub === "form_input") {
     const [ref, ...value] = a.rest;
-    if (!ref || !REF.test(ref) || !value.length) return out.usage(`用法：spr debug ${compose} form_input <ref_N> <值>（文本框写文字，下拉框写选项文字或值，复选框写 true / false）`);
+    if (!ref || !REF.test(ref) || !value.length) return out.usage(`用法：spr debug ${name} form_input <ref_N> <值>（文本框写文字，下拉框写选项文字或值，复选框写 true / false）`);
     form = { ref, value: value.join(" ") };
   }
   let goTo: string | undefined;
   if (sub === "navigate") {
     const given = a.rest[0];
-    if (!given || a.rest.length > 1) return out.usage(`用法：spr debug ${compose} navigate <网址|tab 号|back|forward>`);
+    if (!given || a.rest.length > 1) return out.usage(`用法：spr debug ${name} navigate <网址|tab 号|back|forward>`);
     if (given === "back" || given === "forward") {
-      if (!ctx.debug.of(compose)) return out.usage(notOpen(compose));
+      if (!ctx.debug.of(name)) return out.usage(notOpen(name));
       goTo = given;
     } else {
       const start = await resolveStartUrl(ctx, given);
       if ("error" in start) return out.usage(`navigate ${start.error}`);
       goTo = start.url;
-      if (!ctx.debug.of(compose)) return openWindow(compose, goTo, ctx, out);
+      if (!ctx.debug.of(name)) return openWindow(name, goTo, ctx, out);
     }
   }
   const lookOnly = LOOK_TOOLS.has(sub) || (computer !== undefined && LOOK_ONLY.has(computer.action));
   const counted = !lookOnly;
-  const found = ctx.debug.forOp(compose, counted);
+  const found = ctx.debug.forOp(name, counted);
   if ("error" in found) return found.usage ? out.usage(found.error) : out.fail(found.error);
   const w: DebugWindow = found;
   const id = w.id;
@@ -240,7 +261,6 @@ async function windowCommandInner(compose: string, sub: string, argv: string[], 
   const head: string[] = [];
   const { sess } = await ctx.debug.page(w);
   w.lastActive = Date.now();
-  // 录制时间到了：先取记录（函数在页面里已经恢复），放在这条命令的输出前面
   if (w.trace && sub !== "trace" && Date.now() >= w.trace.until) head.push(...await collectTrace(ctx, w, sess));
   const shotFile = async (kind: string, args: { region?: number[]; scale?: number } = {}): Promise<{ file: string; w: number; h: number; vw: number; vh: number }> => {
     const shot = (await ctx.host.op(sess, "screenshot", args)) as { data: string; mime: string; w: number; h: number; vw: number; vh: number };
@@ -271,7 +291,7 @@ async function windowCommandInner(compose: string, sub: string, argv: string[], 
     const res = (await ctx.host.op(sess, "navigate", { url: goTo })) as { url: string; title: string };
     first = `ok 已打开 ${res.url} "${res.title}"`;
   } else if (computer?.action === "wait") {
-    const done = sess.tab !== undefined ? ctx.win.busy(sess.tab) : () => {}; // 等的时候页面要一直在渲染（组不算闲置）
+    const done = sess.tab !== undefined ? ctx.win.busy(sess.tab) : () => {};
     try { await new Promise((r) => setTimeout(r, computer!.seconds! * 1000)); } finally { done(); }
     first = `ok wait ${computer.seconds}s`;
   } else {
@@ -281,9 +301,7 @@ async function windowCommandInner(compose: string, sub: string, argv: string[], 
     body.push(...inputLines(res, action));
   }
   if (counted) w.ops++;
-  // 等页面安静、这一步引发的记录都到 daemon，再观察
   const q = await ctx.host.quiet(sess);
-  // 页面函数的快照：打开新页面、第一次操作之后（单页应用的对象可能晚点才出现）
   if (counted && (sub === "navigate" || w.ops === 1 || navigated)) await snapshotPage(ctx, w, sess);
   body.push(q.settled ? `稳定：页面已安静，等了 ${(q.waitedMs / 1000).toFixed(1)}s` : `稳定：等了 ${(q.waitedMs / 1000).toFixed(1)}s 页面还在变化（晚到的请求用 computer wait 等一会儿再看）`);
   if (computer?.action === "scroll") body.push(`截图：${(await shotFile("scroll")).file}（滚动之后的样子）`);
@@ -294,7 +312,6 @@ async function windowCommandInner(compose: string, sub: string, argv: string[], 
 
 const REF = /^ref_\d+$/;
 
-/** inspect --path：快照没覆盖到的对象，规则和快照相同（路径上的属性可以是 getter），结果并进站点文件，输出只给摘要。 */
 async function inspectTool(ctx: Ctx, w: DebugWindow, sess: Session, at: string): Promise<string[]> {
   const scan = await ctx.host.peek(sess, scanPage, [{ path: at }]) as PageScan | undefined;
   if (!scan) return ["fail 这个窗口还没有页面"];
@@ -311,7 +328,6 @@ async function inspectTool(ctx: Ctx, w: DebugWindow, sess: Session, at: string):
   ];
 }
 
-/** trace：包住函数后立刻返回（录制期间要用别的命令操作页面）；--stop 提前取记录。 */
 async function traceTool(ctx: Ctx, w: DebugWindow, sess: Session, a: Record<string, unknown>): Promise<string[]> {
   if (a.stop) {
     if (!w.trace) return ["ok 没有在录的 trace"];
@@ -329,7 +345,6 @@ async function traceTool(ctx: Ctx, w: DebugWindow, sess: Session, a: Record<stri
   ];
 }
 
-/** 只看不动的工具：read_page（全文存进 pages/，时间线记一行 snap a11y）、find、get_page_text。 */
 async function lookTool(ctx: Ctx, w: DebugWindow, sess: Session, tool: string, args: Record<string, unknown>): Promise<string[]> {
   if (tool === "read_page") {
     const r = (await ctx.host.op(sess, "read_page", args)) as { url: string; title: string; text: string; count: number; truncated: boolean; viewport: number[] };
@@ -357,7 +372,6 @@ async function lookTool(ctx: Ctx, w: DebugWindow, sess: Session, tool: string, a
   return [`ok get_page_text ${r.total} 字（取自 ${r.source}${r.total > r.text.length ? `，截断了，只列前 ${r.text.length} 字：要更多用 --max 调大` : ""}）`, `页面：${r.url} "${r.title}"`, ...pageContent([r.text])];
 }
 
-/** 输入的结果（host 的 input）。 */
 type InputResult = { target?: Target; loc?: unknown; warning?: string; covered?: string; scrolled?: boolean; dropTarget?: Target; scrollY?: number; navigated?: boolean; url?: string; title?: string; value?: string; checked?: boolean; password?: boolean; chars?: number };
 
 function inputLines(res: InputResult, action: string): string[] {
@@ -374,15 +388,12 @@ function inputLines(res: InputResult, action: string): string[] {
   return out;
 }
 
-/** 页面脚本描述的元素（common.js 的 T.desc）。 */
 type Target = { tag: string; role?: string | null; type?: string | null; text?: string } | string;
 const describeTarget = (t: Target): string => (typeof t === "string" ? t : `<${t.tag}${t.role ? ` role=${t.role}` : ""}${t.type && t.tag === "input" ? ` type=${t.type}` : ""}>${t.text ? ` "${t.text}"` : ""}`);
 
-/** computer 的一个动作，参数照工具的 schema：坐标是截图上的 CSS 像素。 */
 export type ComputerCmd = {
   action: string;
   x?: number; y?: number; sx?: number; sy?: number;
-  /** --ref ref_N：read_page / find 给出的元素，代替坐标；--to ref_N：拖拽的终点。 */
   ref?: string; toRef?: string;
   text?: string; keys?: string; repeat?: number;
   direction?: string; amount?: number;
@@ -394,15 +405,9 @@ const NUM = /^-?\d+(\.\d+)?$/;
 export const ACTIONS = ["screenshot", "zoom", "left_click", "right_click", "double_click", "triple_click", "hover", "left_click_drag", "type", "key", "scroll", "scroll_to", "wait"];
 const MOD_NAMES: Record<string, string> = { cmd: "cmd", command: "cmd", meta: "cmd", ctrl: "ctrl", control: "ctrl", alt: "alt", option: "alt", shift: "shift" };
 
-/**
- * 解析 computer <action> …（和 computer 工具一一对应）：
- * screenshot [--scale s] | zoom <x0> <y0> <x1> <y1> [--scale s] | left_click|right_click|double_click|triple_click|hover (<x> <y> | --ref ref_N) [--modifiers cmd+shift]
- * | left_click_drag (<sx> <sy> <x> <y> | --ref ref_A --to ref_B) | type "文字" | key "<键 键…>" [--repeat n] | scroll (<x> <y> | --ref ref_N) <up|down|left|right> [格数]
- * | scroll_to (<x> <y> | --ref ref_N) | wait <秒>
- */
 export function parseComputer(args: string[], opts: { scale?: string; modifiers?: string; repeat?: string; ref?: string; to?: string } = {}): { cmd: ComputerCmd } | { error: string } {
   const [action, ...rest] = args;
-  const usage = (u: string): { error: string } => ({ error: `用法：spr debug <compose> computer ${u}（坐标取自截图，CSS 像素，左上角 (0,0)；或用 --ref ref_N 指 read_page / find 给出的元素）` });
+  const usage = (u: string): { error: string } => ({ error: `用法：spr debug <名> computer ${u}（坐标取自截图，CSS 像素，左上角 (0,0)；或用 --ref ref_N 指 read_page / find 给出的元素）` });
   for (const [flag, v] of [["ref", opts.ref], ["to", opts.to]] as const) if (v !== undefined && !/^ref_\d+$/.test(v)) return { error: `--${flag} 要写成 ref_数字（read_page、find 给出的），收到：${v}` };
   const ref = opts.ref;
   if (!action || !ACTIONS.includes(action)) return { error: `computer 的 action 是 ${ACTIONS.join("、")} 之一，收到：${action ?? "（空）"}` };

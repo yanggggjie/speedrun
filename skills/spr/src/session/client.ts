@@ -5,8 +5,10 @@
  * - 这里从不删 socket 文件：超时只说明 daemon 忙，不说明它死了；残留文件由新 daemon 自己判断、自己删。
  * - 停 daemon 只发 SIGTERM，然后等到 connect 不上为止；新的由下一个连接的人拉起。
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as net from "node:net";
+import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { sleep, timeoutReject } from "../utils/async.ts";
@@ -100,10 +102,47 @@ export async function ping(ms = 2_000): Promise<PingResult | null> {
   }
 }
 
+const SHELL_WRAPPER = /^-?(?:sh|zsh|bash|dash|fish|env)$/i;
+
+function ancestorPid(): number {
+  let cur = process.ppid;
+  if (process.platform === "win32" || cur <= 1) return cur;
+  try {
+    const out = execFileSync("ps", ["-axo", "pid=,ppid=,comm="], { encoding: "utf8", timeout: 200, stdio: ["ignore", "pipe", "ignore"] });
+    const table = new Map<number, { ppid: number; comm: string }>();
+    for (const line of out.split("\n")) {
+      const m = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+      if (m) table.set(Number(m[1]), { ppid: Number(m[2]), comm: path.basename(m[3]!) });
+    }
+    for (let hop = 0; hop < 6; hop++) {
+      const row = table.get(cur);
+      if (!row || row.ppid <= 1 || !SHELL_WRAPPER.test(row.comm)) break;
+      cur = row.ppid;
+    }
+  } catch { /* ps 不可用时退回直接父进程 */ }
+  return cur;
+}
+
+/** 识别调用方宿主、会话锚点与角色（不含秘密，只用于统计 turns 与沉淀漏斗）。 */
+export function detectCaller(): Record<string, unknown> {
+  const host = process.env.ANTIGRAVITY_AGENT || process.env.ANTIGRAVITY_CONVERSATION_ID ? "antigravity"
+    : process.env.CLAUDECODE || process.env.CLAUDE_CODE_ENTRYPOINT ? "claude"
+    : process.env.OPENCODE ? "opencode"
+    : process.env.CURSOR_TRACE_ID || process.env.CURSOR_AGENT ? "cursor"
+    : process.env.CODEX_CI || process.env.CODEX_SANDBOX ? "codex"
+    : undefined;
+  const rawSession = process.env.SPR_SESSION || process.env.ANTIGRAVITY_CONVERSATION_ID || process.env.CLAUDE_SESSION_ID || process.env.OPENCODE_SESSION_ID || process.env.CURSOR_TRACE_ID;
+  const ppid = ancestorPid();
+  const session = rawSession ? `s-${createHash("sha256").update(rawSession).digest("hex").slice(0, 12)}` : `p-${ppid}`;
+  const role: "main" | "distiller" = process.env.SPR_ROLE === "distiller" ? "distiller" : "main";
+  const fromWindow = process.env.SPR_FROM?.trim() || undefined;
+  return { ...(host ? { host } : {}), session, ppid, role, ...(fromWindow ? { fromWindow } : {}) };
+}
+
 /** 把命令行参数原样交给 daemon 执行（daemon 不在就拉起），返回要打印的文本和退出码。 */
 export async function runOnDaemon(argv: string[]): Promise<{ stdout: string; code: number }> {
-  // 不在这里限时：run 的时长由文件头的 @timeout 管，放到后台跑的可以很久。这个进程退出（被停止、被杀）时连接断开，daemon 就中止这次 run
-  return (await rpc("run", { argv, cwd: process.cwd() }, 24 * 3600_000)) as { stdout: string; code: number };
+  // 不在这里限时：run 的时长由文件头的 @timeout（或 -e 的 --timeout）管，放到后台跑的可以很久。这个进程退出时连接断开，daemon 就中止这次 run
+  return (await rpc("run", { argv, cwd: process.cwd(), caller: detectCaller() }, 24 * 3600_000)) as { stdout: string; code: number };
 }
 
 export type StopResult = "none" | "stopped" | "timeout";

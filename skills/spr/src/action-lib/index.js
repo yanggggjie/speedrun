@@ -1,6 +1,6 @@
-// action 和 compose 的 SDK：脚本跑在 daemon 的 worker 线程里，每个函数都是向 daemon 发一个操作，daemon 在 speedrun agent 窗口的标签页里执行。
+// action 的 SDK：脚本跑在 daemon 的 worker 线程里，每个函数都是向 daemon 发一个操作，daemon 在 speedrun agent 窗口的标签页里执行。
 // 这个目录由 daemon 启动时同步到 ~/.speedrun/lib（整个覆盖，别在那里改），~/.speedrun/node_modules/spr 链到它：脚本里写 `import { ... } from "spr"`。
-// agent 自己抽出来的纯函数放 ~/.speedrun/helpers/，`import { ... } from "../../helpers/<file>.js"`，不会被覆盖。
+// agent 自己抽出来的纯函数放 ~/.speedrun/helpers/，`import { ... } from "spr/helpers/<file>.js"`，不会被覆盖。
 import { parentPort } from "node:worker_threads";
 
 let nextId = 1;
@@ -28,10 +28,7 @@ function call(op, args = {}) {
 const toLog = (...a) => parentPort?.postMessage({ type: "log", text: a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ") });
 console.log = console.info = console.warn = console.error = toLog;
 
-/** ask(question, data)：只能用在 compose 里。compose 在这里停下，spr run 结束（退出码 2），把问题和数据交给 agent；agent 自己判断或转问用户后 spr resume <编号> --answer …，compose 从头重新执行（已完成的 action 直接返回记录的结果），这次的 ask 返回这个回答。 */
-export const ask = (question, data) => call("ask", { question, data });
-
-/** compose 里调用一个 action：action(name, params)，返回它的 result，失败时抛错。action 里不能用，compose 不能调用 compose。 */
+/** 调用另一个 action：action(name, params)，返回它的 result，共用同一次 run 窗口（action 嵌套最多 2 层；spr run -e 里也用它组合批量调用）。 */
 export const action = (name, params = {}) => call("action", { name, params });
 
 /** navigate(url | "back" | "forward", { settle?, timeout? })：和 debug 的 navigate 一样，打开网址或后退、前进，等到页面可用（文档不再是 loading）；settle: true 再等页面安静（没有在途请求、DOM 一小段时间没变，最多 2 秒），等渲染完用它，不要 sleep。 */

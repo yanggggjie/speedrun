@@ -1,20 +1,28 @@
 /** 一条命令的参数：values 是 speedrun 自己的参数（可重复，如 --answer），switches 是不带值的开关，params 是交给 action 的 `--<name> <value>`，rest 是不以 -- 开头的。 */
 export type Args = { values: Map<string, string[]>; switches: Set<string>; params: Record<string, string>; rest: string[] };
 
-/** values：认识的带值参数；switches：认识的开关；params 为真时，其余的 `--<name> <value>` 是 action 参数，否则报错。 */
-export type ArgSpec = { values?: string[]; switches?: string[]; params?: boolean };
+/** values：认识的带值参数；switches：认识的开关；short：短参数映射（如 `{ e: "eval" }`）；params 为真时，其余的 `--<name> <value>` 是 action 参数，否则报错。 */
+export type ArgSpec = { values?: string[]; switches?: string[]; short?: Record<string, string>; params?: boolean };
 
 const PARAM_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** 解析 `--<name> <value>` 和 `--<name>=<value>`。值不能以 `--` 开头（多半是漏写了上一个参数的值）；确实要以 `--` 开头时写成 `--<name>=<value>`。 */
+/** 解析 `--<name> <value>`、`--<name>=<value>` 和声明在 short 里的 `-<k> <value>`。值不能以 `--` 开头（多半是漏写了上一个参数的值）；确实要以 `--` 开头时写成 `--<name>=<value>`。 */
 export function parseArgs(args: string[], spec: ArgSpec): Args | { error: string } {
   const values = new Map<string, string[]>();
   const switches = new Set<string>();
   const params: Record<string, string> = {};
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (!arg.startsWith("--")) { rest.push(arg); continue; }
+    let arg = args[i]!;
+    if (!arg.startsWith("--")) {
+      if (arg.startsWith("-") && arg.length >= 2 && spec.short) {
+        const eqs = arg.indexOf("=");
+        const k = eqs < 0 ? arg.slice(1) : arg.slice(1, eqs);
+        const mapped = spec.short[k];
+        if (mapped) arg = eqs < 0 ? `--${mapped}` : `--${mapped}=${arg.slice(eqs + 1)}`;
+      }
+      if (!arg.startsWith("--")) { rest.push(arg); continue; }
+    }
     const eq = arg.indexOf("=");
     const name = eq < 0 ? arg.slice(2) : arg.slice(2, eq);
     if (spec.switches?.includes(name)) {

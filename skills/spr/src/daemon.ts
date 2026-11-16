@@ -126,7 +126,8 @@ async function dispatch(req: JsonRpcRequest, signal?: AbortSignal): Promise<unkn
     if (!Array.isArray(argv) || !argv.every((x) => typeof x === "string")) throw Object.assign(new Error("run 需要字符串数组 argv"), { code: RPC_ERRORS.INVALID_PARAMS });
     ingest.flush();
     const cwd = typeof req.params?.cwd === "string" ? req.params.cwd : undefined;
-    return runCommand(argv as string[], ctx, { ...(signal ? { signal } : {}), ...(cwd ? { cwd } : {}) });
+    const caller = req.params?.caller && typeof req.params.caller === "object" ? (req.params.caller as Record<string, unknown>) : undefined;
+    return runCommand(argv as string[], ctx, { ...(signal ? { signal } : {}), ...(cwd ? { cwd } : {}), ...(caller ? { caller } : {}) });
   }
   throw Object.assign(new Error(`未知 method：${String(req.method)}`), { code: RPC_ERRORS.METHOD_NOT_FOUND });
 }
@@ -221,6 +222,7 @@ function onRelay(sock: net.Socket, rest: Buffer): void {
     extSocket = null;
     link.detach();
     win.forget();
+    debug.forgetAll("restart");
     lastActivity = Date.now();
     logger.info("extension link closed");
   });
@@ -236,6 +238,7 @@ export async function runDaemon(): Promise<void> {
   // socket 文件没了或被换掉：出现了另一个 daemon（或被手动删了），本进程退出（plan 第 5 条）
   owned.watch(() => { logger.warn("socket 文件不是自己的了，退出"); void shutdown(0); });
   log.open();
+  try { debug.closeStaleMeta(); } catch (error) { warnCatch("close stale debug meta")(error); }
   try { syncActionLib(); } catch (error) { warnCatch("sync action lib")(error); }
   loadAdblockEngine().then(setAdblock).catch(warnCatch("adblock engine"));
   // 没有扩展连接、也没有命令请求超过 DAEMON_IDLE_EXIT_MS 就退出；下次需要时由 relay 或 CLI 重新拉起
@@ -247,8 +250,8 @@ export async function runDaemon(): Promise<void> {
     if (!owned?.stillMine()) return;
     retain();
     setInterval(retain, 10_000).unref();
-    // 空闲太久的 debug 窗口关掉 Chrome 窗口（目录保留）
-    setInterval(() => { for (const w of debug.idle()) void debug.close(w).catch(warnCatch("close debug window")); }, 60_000).unref();
+    // 空闲太久的 debug 窗口关掉 Chrome 窗口（目录保留，meta.json 记 closedBy: idle）
+    setInterval(() => { for (const w of debug.idle()) void debug.close(w, "idle").catch(warnCatch("close debug window")); }, 60_000).unref();
   }, OWNER_CHECK_MS + 100).unref();
   setInterval(() => { if (!extSocket && Date.now() - lastActivity > DAEMON_IDLE_EXIT_MS) void shutdown(0); }, 60_000).unref();
   process.on("SIGINT", () => void shutdown(0));

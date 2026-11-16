@@ -63,6 +63,9 @@ await host.op(s2, "request", { url: "https://api.example.com/v1/save", method: "
 await host.op(s2, "request", { url: "https://api.example.com/v1/save", method: "POST", json: { text: "again" } });
 await host.op(s2, "request", { url: "https://api.example.com/v1/z" });
 assert.deepEqual(host.takeSent(s2.key), ["POST /v1/listItems ×1", "POST /v1/save ×2"], "只看方法：查询用的 POST 也列，GET 不列");
+assert.deepEqual(host.takePageSent(s2.key), [], "request() 主动发的不混入 pageSent");
+const st2 = host.takeStats(s2.key)!;
+assert.equal(st2.ops.req, 4, "记录 request 次数");
 assert.deepEqual(host.takeSent(s2.key), [], "取过就停止统计");
 
 // quiet：页面安静、记录都到了就立刻返回；到不齐也不超过上限（每步之后都等它，卡住就拖慢每一步）

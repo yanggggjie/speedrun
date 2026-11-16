@@ -7,8 +7,8 @@
 ## 找函数
 
 1. debug 窗口自动做快照：窗口目录的 `page-api/`，站点累积在 `~/.speedrun/action/<站点>/page-api.json`。用 `rg` 搜方法名，比如 `rg -i "setvalue|delete" <目录>`。只有名字和结构，没有值。
-2. 快照没覆盖到的：`spr debug <compose> inspect --path SpreadsheetApp.behaviorApi.cellApi`。
-3. 要参数：`spr debug <compose> trace <函数路径…>`，再操作一次页面（`computer double_click`、`computer type`），`trace --stop` 取记录，详情在 `calls/`。手动操作走的函数不一定是你猜的那个，都包上再看。
+2. 快照没覆盖到的：`spr debug <名> inspect --path SpreadsheetApp.behaviorApi.cellApi`。
+3. 要参数：`spr debug <名> trace <函数路径…>`，再操作一次页面（`computer double_click`、`computer type`），`trace --stop` 取记录，详情在 `calls/`。手动操作走的函数不一定是你猜的那个，都包上再看。
 
 页面没有暴露接口时，退回 `type`、`click({ x, y })`、`screenshot()`。
 

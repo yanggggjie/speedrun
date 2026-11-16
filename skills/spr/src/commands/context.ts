@@ -1,5 +1,4 @@
 import { EXIT, formatErrorStdout } from "../protocol.ts";
-import { COMPOSE_DIR } from "../utils/constants.ts";
 import type { TabInfo } from "../browser/extension.ts";
 import type { RunHost } from "../browser/host.ts";
 import type { AgentWindows } from "../browser/window.ts";
@@ -10,6 +9,15 @@ import type { Ingestor } from "../record/ingest.ts";
 import type { RawStore } from "../record/raw.ts";
 import type { WindowLog } from "../record/windowlog.ts";
 import type { InvocationLog } from "../record/invocations.ts";
+
+/** 调用方会话信息（由 CLI 自动探测上报，用于按会话切分 turns 与追踪 distiller 沉淀漏斗）。 */
+export type CallerInfo = {
+  host?: string;
+  session?: string;
+  ppid?: number;
+  role?: "main" | "distiller";
+  fromWindow?: string;
+};
 
 /** daemon 提供给命令的能力。命令本身不持有状态。 */
 export interface Ctx {
@@ -26,8 +34,6 @@ export interface Ctx {
   log: WindowLog;
   index: EndpointIndex;
   daemon(): { extension: boolean; pid: number };
-  /** compose 存放的目录（不给就是 ~/.speedrun/compose）。 */
-  composeDir?: string;
   /** 调用记录（每条命令一行）；不给就不记。 */
   invocations?: InvocationLog;
 }
@@ -38,9 +44,11 @@ export class Output {
   code: number = EXIT.ok;
   /** 调用 spr 的进程退出了：正在跑的 run 收到它就中止。 */
   readonly signal: AbortSignal | undefined;
+  /** 本次调用的会话上下文（区分 main 与 distiller）。 */
+  readonly caller: CallerInfo | undefined;
   /** 写进调用记录的补充字段（不进输出）。 */
   readonly rec: Record<string, unknown> = {};
-  constructor(signal?: AbortSignal) { this.signal = signal; }
+  constructor(signal?: AbortSignal, caller?: CallerInfo) { this.signal = signal; this.caller = caller; }
   private override: string | undefined;
   line(text: string): void { this.lines.push(text); }
   fail(error: string): void { this.override = formatErrorStdout(error); this.code = EXIT.fail; }
@@ -54,7 +62,6 @@ export class Output {
   }
 }
 
-export const composeDirOf = (ctx: Pick<Ctx, "composeDir">): string => ctx.composeDir ?? COMPOSE_DIR;
 export const idleMin = (w: DebugWindow): number => Math.round((Date.now() - w.lastActive) / 60_000);
 export const indent = (text: string): string => text.split("\n").map((l) => `  ${l}`).join("\n");
 

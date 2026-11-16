@@ -1,232 +1,157 @@
-# 日志与运行机制改进计划
+# 机制收归与双 Agent 调优计划（2026-11-16）
 
-依据：2026-11-12 对最近 100 条 run 窗口、62 个 debug 窗口目录、约 120 次 `spr` 调用（Claude Code transcript）的分析。
+依据：对 2026-11-12 至 2026-11-16 期间 `/Users/youshiyitian/.speedrun/session/invocations.jsonl`（275 条调用、11 段任务）、`/Users/youshiyitian/.speedrun/compose`（88 个文件）、`/Users/youshiyitian/.speedrun/action`（41 个站点、78 个文件），以及同期 Claude Code 与 Antigravity 会话 transcript 的实测分析。
 
-源码路径都相对于 `/Users/youshiyitian/Code/x/speedrun/skills/spr/`。
+## 实现状态（2026-11-16，分支 `feat/action-only-distill`）
 
-## 实现状态（2026-11-12，分支 `feat/logging-run-records`）
-
-- 已完成：机制 A、C1、机制 B（B1～B4）、C2（只写进 SKILL.md）、C3；selfcheck 已补，`SKILL.md`、`ARCHITECTURE.md` 已同步；本机已重装，并在真实 Chrome 里验证了失败、成功、用法错误、取消四种情况。
-- 已清理：`~/.speedrun/debug-windows/` 下 50 个只有 `timeline.jsonl` 的孤儿目录。
-- 和下文设计不同的地方：
-  - 机制 A 更简单：不加「已关闭」状态，只要「写入只认登记过、没被淘汰的窗口」加上「关窗口时收尾 socket 状态」就够了；关窗口之后、目录还在时到达的事件照常写进这个窗口。
-  - 错误码比 B2 的表少：只放 speedrun 确定知道的类别（`not-defined` `blocked` `param` `usage` `timeout` `cancelled` `action-throw` `internal`）。`http`、`rate-limit`、`login` 要靠规则猜，按原则 7 不做成类别，只在「说明」里给事实。用法错误（开窗口前就失败）由退出码 3 体现，调用记录里 `status` 是 `usage`。
-  - 「下一步」提示没有改成按错误码生成，保留原来的写法。
-- 没做：C1 的「边跑边输出」。
-
-## 设计原则
-
-1. **简单**：机制少、规则少、实现小，能用一条通用规则就不写多个特例。
-2. **靠近 Claude Code 的机制**：已写入 `skills/spr/ARCHITECTURE.md` 第 1 节设计原则第 8 条。
-   - 融入：speedrun 不重复实现 Claude Code 已经有的能力（后台运行、结束通知、取消、等待条件、读大文件），而是让 `spr` 在这些机制下表现正确。
-   - 借鉴：输出格式、截断方式、错误写法尽量照 Claude Code 自己的样子，模型不用额外学习。
-
-### Claude Code 的机制与 speedrun 的对应
-
-| Claude Code 的机制 | 模型已经熟悉的用法 | speedrun 要做到的 |
-|---|---|---|
-| Bash `run_in_background` + 结束时通知 | 长命令放后台，结束后自动收到结果 | `spr run` 就是一个普通的阻塞命令，放后台就是后台任务；不另做 `--bg` |
-| 停止后台任务（TaskStop）、Bash 超时 | 杀掉进程就是取消 | **CLI 进程退出 = 取消这次 run**：daemon 发现 CLI 断开就终止 worker、关窗口、记 `cancelled` |
-| Monitor（用 until 循环等条件） | 等某个状态，不用固定间隔反复跑 | 轮询写在 compose 的循环里（`sleep` 已有），一个窗口跑完；长的放后台 |
-| 输出过大时「Full output saved to: <路径>」加预览 | 看到路径就用 Read / rg 去读 | 所有裁剪都用同样的写法：预览加完整文件路径 |
-| 工具出错时只给一句短错误 | 第一行就是原因 | 第一行是错误原文，细节放文件 |
-| 退出码 | 0 成功，非 0 失败 | 保持 0 成功、1 失败、2 停在 ask |
-| transcript 是 JSONL | 用 jq / rg 查 | 日志都是 JSONL，固定字段，用 jq / rg 查，先不做专门的统计命令 |
-
-## 发现的问题
-
-| # | 问题 | 现象 |
-|---|---|---|
-| 1 | 孤儿 debug 目录 | 62 个 debug 目录里 51 个是旧 run 窗口名，没有 `meta.json`，只有 socket 行，时间戳全是 11-12 13:52:03 |
-| 2 | 失败原因没落盘 | run 的 `meta.json` 只有 `status`；`result.json` 只在结果过大时写（100 条里 3 条有） |
-| 3 | 开窗口前失败的调用没有记录 | 把 action 当 compose 跑 ×3、参数写法错、缺参数、多余参数，只在 transcript 里能找到 |
-| 4 | 用反复 run 来轮询 | `devops-build-qr` 同参数每约 23 秒跑一次，共 18 次 |
-| 5 | 只发请求的 action 失败诊断无用 | 页面停在 `robots.txt`，截图和「下一步：navigate robots.txt」都没有参考价值 |
-| 6 | 堆栈噪音 | 「错误：」块几乎全是 `worker.ts`、`lib/index.js`、`node:internal` 帧 |
-| 7 | resume 断链 | journal 按位置严格匹配，修 action 时加了参数（`x-saved-all` 第 21 次多了 `screenName`）就整个失败 |
-
-归结为三个机制：A 窗口生命周期，B 记录与输出，C run 的执行方式。
+- 已完成全部四刀减法、双 Agent 结构（`SKILL.md` + `agents/distiller.md`）、`spr/helpers/*` 软链接导出、日志与 `meta.json` 字段增强，以及 `/Users/youshiyitian/Code/x/speedrun/tools/stats.mjs` 指标统计脚本。
+- 已完成本机迁移与实测：21 个有复用价值的带参领域脚本已迁入 `/Users/youshiyitian/.speedrun/action/<对应站点>/`，11 处相对 `helpers` 导入已更新为 `"spr/helpers/..."`，已清理 `/Users/youshiyitian/.speedrun/action/local` 与 `/Users/youshiyitian/.speedrun/compose`；`npm run check`、20 项 `npm test`、`spr doctor`、真实 Chrome `spr debug`（不抢前台）与 `spr run` / `spr run -e` 均已验证通过。
 
 ---
 
-## 机制 A：窗口只有开和关，关了就不能再写
+## 一、实测基线与问题根因
 
-解决：1。
+### 1. 调用与存量脚本实测数据
 
-### 问题 1 的根因
+- **调用分布（275 条）**：`run` 174 次（`ok` 140，耗时 p50 2.9s、p90 13.9s；`fail` 25；`usage` 8；`cancelled` 1）、`debug` 90 次（`ok` 85、`usage` 5）、其它 11 次（`status` 4、`tabs` 3、`resume` 2、`close` 1、`--help` 1）。
+- **88 个存量 `compose` 拆解**：
+  - **68 个（77%）**只调了 **1 个** `action`（纯粹因禁止直跑 `action` 而包的壳文件）；
+  - **6 个（7%）**调了 **0 个** `action`（纯本地计算或硬编码 JSON 总结，如 `/Users/youshiyitian/.speedrun/compose/harness-ux-analysis.js`）；
+  - **9 个（10%）**是单次调研的硬编码拼接或未实现的空壳；
+  - **仅 5 个（6%）**是真正有复用价值的同站两步串联（如 `devops-latest-artifacts`）；
+  - **33 个（38%）**没有任何 `@param`（单日调研新建 25+ 个写死 URL 的一次性文件，污染 `rg` 检索）；
+  - **`ask()` 触发 0 次**；`spr resume` 自 11-13 起使用 **0 次**。
 
-1. `src/record/ingest.ts` 的 `socket()` 为每条 websocket 在内存 `sockets` Map 里留一个 `SocketState`，记着所属窗口名。
-2. 正常靠 `close` 事件写最后一行并删除；但 run 结束时直接关标签页组（`src/browser/window.ts` 的 `dispose`），`close` 不会到，状态一直留在 Map 里。
-3. 任意一次 debug 观察会调用 `flushSockets()`（`src/debug/observe.ts:44`），把 Map 里所有残留连接都写一遍，包括早已被淘汰的 run 窗口。
-4. `socketRow()` 写入时不检查窗口；`src/record/windowlog.ts` 的 `winDir()` 对认不出的窗口默认归到 debug，于是凭空建目录。
+### 2. 两个根本矛盾
 
-### 设计
+1. **阻塞路径冲突导致“只 `debug` 不 `run`”（零沉淀）**：
+   - 全量日志共 6 个脚本开过 `debug` 窗口，**4 个（67%）最终停在 `debug` 未回到 `spr run`**；其中 `cloudtest-device-session` 占了全部 90 次 `debug` 里的 **56 次（62%）**，`spr run` 为 **0 次**（写空壳绕过前置检查后直接在 `debug` 点击、截屏、`get_page_text` 交付用户，单次请求耗费 30 个含 `spr` 的 `turns`）。
+   - **原因**：`debug` 一步已拿到全文/响应或已发出不可重入的写操作（如释放设备），再写两个文件新开窗口重跑一遍 `spr run` 对当前任务是纯负收益。
+2. **概念分层过多导致摩擦与垃圾文件**：
+   - 7 次 `usage` 报错是直接拿 `action` 传给 `spr run` / `spr debug`，2 次是 `compose` 调 `compose`；
+   - 为了跑批量查询，要么在外层串行调 4～9 次 `spr run` 浪费 `turns`，要么落盘一堆无参一次性 `compose`。
 
-两条规则：
+### 3. 工程踩坑点与日志瑕疵
 
-1. **关窗口时同步收尾**：`closeWindow(win)` 先写出这个窗口剩下的 socket 摘要、写 meta 的 `endedAt`、删掉它的内存状态，再标记为关闭；关浏览器标签页组照旧放在后台异步做。
-2. **只有 `openWindow` 能建目录**：所有写入（`append`、`appendFile`、`putFile`）遇到未知或已关闭的窗口，直接忽略。
-
-只要两个状态，不需要中间状态：收尾是同步的，标记关闭之后到达的事件按第 2 条忽略即可。迟到事件不计数，它们没有分析价值。
-
-这条规则是通用的：以后任何迟到事件（socket、请求、截图）都被同一处挡住，不用在每个写入点加检查。
-
-一次性清理：删掉 `debug-windows/` 下没有 `meta.json` 的目录。
-
-### 涉及文件
-
-- `src/record/windowlog.ts`：未知或已关闭的窗口不写
-- `src/record/ingest.ts`：提供 `closeWindow(win)`，收尾这个窗口的 socket 状态
-- `src/run/runner.ts`、`src/debug/windows.ts`：关窗口时先调用收尾
+1. **`helpers` 相对路径层级不一**：`action` 需写 `../../helpers/...`，原 `compose` 需写 `../helpers/...`，照抄即报模块找不到。
+2. **`debug` 参数小坑**：3 次 `--ref` 漏传值，1 次 `form_input` 参数顺序写错，1 次误敲 `spr close`。
+3. **`invocations.jsonl` 缺口**：`spr debug list` 被记成 `name: "list"`；90 条 `debug` 记录全无子工具名、窗口目录和操作计数；缺少调用方会话上下文，无法直接按会话聚合计算 `turns`。
+4. **文档漂移**：`/Users/youshiyitian/Code/x/speedrun/skills/spr/ARCHITECTURE.md` 第 4 节仍写 `ABI` 是 15，而 `/Users/youshiyitian/Code/x/speedrun/skills/spr/src/browser/extension.ts` 已是 `16`。
 
 ---
 
-## 机制 B：记录完整，输出精简，两者来自同一份结果
+## 二、核心机制设计：四刀减法 + 前后台双 Agent 拆分
 
-解决：2、3、5、6。
+原则：**概念最少（只留 `action` + `spr run`），一个 agent 只背一个目标。**
 
-原则：给 agent 的输出是记录的精简视图；凡是裁剪掉的内容，都照 Claude Code 的写法给出完整文件路径。
+### 1. 四刀减法：收归脚本与命令面
 
-### B1. 调用记录
+1. **砍掉 `compose` 概念与目录，持久化脚本只留 `action`**：
+   - 所有可复用脚本统一存放在 `/Users/youshiyitian/.speedrun/action/<site>/<name>.js`。
+   - 允许 `action` 内部调用 `action("...", params)`（最大调用深度限制为 2 防套娃，嵌套调用共用同一个 `run` 窗口与已打开的同源标签页），原同站两步工作流直接作为普通 `action` 存放。
+   - 删除 `/Users/youshiyitian/.speedrun/compose` 目录概念及代码中的 `COMPOSE_DIR`、`isCompose`、`composeDirOf`。
+2. **不单设 `eval` 子命令，收归为 `spr run -e '<js>'`**：
+   - **单步直跑**：`spr run <action> [--<param> <value>]`（跑通后 `draft` 自动升为 `verified`；结果超 2 万字照常截断并存 `result.json`）。
+   - **多步 / 批量 / 循环 / 裁剪（免落盘，共用 1 个 `run` 窗口）**：
+     ```bash
+     ~/.speedrun/bin/spr run -e 'return Promise.all(["101","102"].map(id => action("zhihu-answer", { id })))'
+     ```
+     worker 自动将 `-e` 代码包在顶层 `async` 函数中并注入 `action`、`sleep`（无需写 `import` 和 `export default`，若需纯函数仍支持动态 `await import("spr/helpers/...")`；`--timeout <秒>` 可调超时），内联模式只允许调 `action()` 与 `sleep()`，页面与请求细节始终封装在 `action` 里。
+3. **砍掉 `ask()` 与 `spr resume`**：
+   - 内容筛选与向用户确认直接走宿主 agent 自身的多轮对话（第 1 步 `spr run` 读列表，第 2 步 `spr run -e` 批量执行，仅 2 `turns`）。
+   - 删除 `spr resume` 命令、`ask()` SDK 导出、`/Users/youshiyitian/Code/x/speedrun/skills/spr/src/run/asks.ts` 及 `/Users/youshiyitian/Code/x/speedrun/skills/spr/src/run/runner.ts` 中的 `journal` / `AskState` 重放逻辑。
+   - 退出码收敛为：`0` 成功；`1` 操作失败；`2` `need-*` 需用户配合（登录、加载扩展等）；`3` 命令或参数用法错误。
+4. **删掉静态词法扫描器 `/Users/youshiyitian/Code/x/speedrun/skills/spr/src/run/link.ts`**：
+   - 取消“先盲写不存在的 `action` 名再去预检报缺”的仪式；删除 `link.ts` 与 `link.selfcheck.ts`，运行时名字不存在由 `runAction` 直接报 `not-defined`。
 
-`~/.speedrun/session/invocations.jsonl`：daemon 在每条 CLI 命令结束时写一行，包括开窗口前就失败的、被取消的。
+### 2. 前后台双 Agent 单一目标拆分（跨所有 harness 通用）
 
-- 只在结束时写一行，CLI 进程被杀时 daemon 也能写（见 C1）。
-- 不跟 run 窗口的 100 条上限绑定，单独按大小淘汰，和 `session/log.jsonl` 用同一套逻辑。
-- 输出的最后一行带上调用 id，人和 agent 都能据此在 JSONL 里找到这条记录。
+采用官方 `skill-creator` 与社区 `obra/superpowers` 验证过的标准结构，自包含在 `/Users/youshiyitian/Code/x/speedrun/skills/spr` 内（由 `/Users/youshiyitian/Code/x/speedrun/skills/spr/setup.js` 自动镜像到 `/Users/youshiyitian/.speedrun`）：
 
-字段：
-
-| 字段 | 说明 |
-|---|---|
-| `id`、`ts`、`ms` | 调用 id、开始时间、耗时 |
-| `cmd`、`name` | 子命令（run / resume / debug ……）和 compose 或 action 名 |
-| `params` | 脱敏后的参数，复用现有 sanitizer |
-| `cwd` | 调用方所在目录，区分是哪个项目在用 |
-| `window` | 对应的窗口名，没开窗口就为空 |
-| `status` | `success` / `failure` / `ask` / `cancelled` |
-| `error` | 失败时：`code`、`message`（第一行原文）、`action`、`at`（用户文件的 file:line） |
-| `result` | 成功时：`bytes`、`count`（数组长度）、`empty` |
-| `calls` | compose 调用过的 action：名字、耗时、状态、是否来自 resume 缓存 |
-| `sent` | 实际发出的非 GET 请求 |
-| `resumedFrom` | 从哪个恢复编号接着跑 |
-
-窗口目录里补全细节：
-
-- `result.json`：成功结果一律写，不再只在过大时写。
-- `error.txt`：失败时的完整报错和完整 stack。
-- `meta.json`：补上 `error.code` 和 `error.message`。
-
-### B2. 错误码只有一张表
-
-CLI 的「下一步」提示按错误码查这张表生成，调用记录里存的也是同一个 code。改一处提示，统计口径跟着一致。
-
-| code | 含义 |
-|---|---|
-| `not-defined` | 名字找不到 |
-| `run-action-directly` | 用 `spr run` 跑了 action |
-| `param` | 缺参数、多余参数、类型不对、值格式不对 |
-| `timeout` | 超过 `@timeout` |
-| `http` | 请求返回 4xx / 5xx（429 和登录单列） |
-| `rate-limit` | 429 |
-| `login` | 命中登录页规则或 401 |
-| `no-body` | 没录到响应体 |
-| `action-throw` | action 自己抛的错 |
-| `cancelled` | CLI 被杀或被中断 |
-| `internal` | speedrun 自身的错 |
-
-### B3. 失败时给什么证据：按 action 做过什么决定
-
-robots.txt 是暖页面：action 要以站点身份发 `fetch`（带 cookie、同源），需要该 origin 下的一个标签页，robots.txt 最轻（`src/browser/window.ts` 的 `acquire`）。只发请求的 action 从不导航，所以失败时页面就停在这里。
-
-一条规则：
-
-- timeline 里有导航或页面操作：给截图和页面地址，保持现状。
-- 只发过请求：不截图，不建议 navigate；给出失败那条请求的记录文件和响应体路径。
-
-### B4. 给 agent 的错误格式
-
-照 Claude Code 工具出错时的样子：
-
-```
-fail <name>：<错误原文第一行>
-位置：<用户文件>:<行>
-证据：<截图路径，或失败请求的文件路径>
-完整报错：<窗口目录>/error.txt
-下一步：<按错误码生成>
+```text
+skills/spr/
+├── SKILL.md                  # 主 agent：唯一目标是“最少 turns 完成用户任务”
+└── agents/
+    └── distiller.md          # 沉淀 subagent：唯一目标是“读窗口日志 → 写带参 action → 验证只读接口”
 ```
 
-- stack 只保留用户文件的帧（`action/`、`compose/`、`helpers/`）；完整 stack 在 `error.txt`。
-- 结果过大时的输出也统一成「预览 + 完整结果保存在 <路径>」。
+1. **主 agent（读 `/Users/youshiyitian/.speedrun/SKILL.md`）——只管最快完成任务**：
+   - `rg` 搜 `/Users/youshiyitian/.speedrun/action` → 有现成 `action` 就 `spr run <action>` 或 `spr run -e '<js>'`（1～2 `turns` 完成）。
+   - 没现成 `action`：
+     - **单次任务**：直接 `spr debug <名> navigate <网址|tab 号>`（`<名>` 仅作窗口标识，**无前置文件锁**）操作并拿到结果后**当场交付用户**（不重跑第二次，有状态写操作不会冲突）。
+     - **批量/翻页任务**：在窗口里做第 1 条看清接口后，当场写 `action` 配合 `spr run -e` 跑完（此时写脚本本身最快）。
+   - **派发沉淀 subagent**：`SKILL.md` 不写死特定宿主工具名，只用自然语言规定：收到命令输出末尾的「未沉淀窗口」提示时，在回复用户的同一轮启动一个后台 subagent（宿主不支持后台则普通 subagent；无 subagent 环境再内联处理），让它读取 `/Users/youshiyitian/.speedrun/agents/distiller.md` 并传入该窗口目录。各 harness 自动映射到自身的 `Agent` / `invoke_subagent` / `task` 工具。
+2. **`daemon` 输出提醒与触发（防漏搜、防漏调）**：
+   - `spr debug <名> navigate <网址|tab 号>` 打开窗口时，若目标站点下已有现成 `action`，在输出中顺手列出同站已有 `action` 名（防主 agent 漏搜导致重复探索）。
+   - `daemon` 检查该 `debug` 窗口是否录到了尚未被现有 `action`（`@endpoint`）覆盖的有效请求或关键页面操作：若有，在取数/操作及 `close` 输出末尾附上提示（含窗口目录绝对路径和 `/Users/youshiyitian/.speedrun/agents/distiller.md` 绝对路径）。
+3. **沉淀 subagent（读 `/Users/youshiyitian/.speedrun/agents/distiller.md`）——只管提炼与验证**：
+   - 只读传入窗口目录的 `timeline.jsonl`、`requests/`、站点 `endpoints.json`；
+   - 按五层优先级写成带 `@param` 的 `/Users/youshiyitian/.speedrun/action/<site>/<name>.js`，文件头标注 `@from <debug窗口名>`（同站已有相近 `action` 时扩充可选参数，不在第 1 层写明 `@note`）；
+   - **只读 `action`**：运行 `SPR_ROLE=distiller SPR_FROM=<debug窗口名> ~/.speedrun/bin/spr run <action> ...` 真实验证，通过即自动标为 `verified`；
+   - **写操作 `action`**：标 `@write`、保留 `@status draft`，绝不重复触发真实副作用，留待下次真实任务调用跑通后自动转 `verified`。
 
-### B5. 暂不做
+### 3. 统一 `spr/helpers/*` 导入路径
 
-- `spr stats` 统计命令：先用 jq / rg 查 `invocations.jsonl`，在 `ARCHITECTURE.md` 里给几条常用查询；真的常用再做成命令。
-- 记录 debug 改了哪些 action 文件：先靠 `invocations.jsonl` 里 debug 和 run 的先后顺序就能看出「失败 → debug → 修好」的轮数。
-
----
-
-## 机制 C：`spr run` 是一个普通的阻塞命令
-
-解决：4、7。
-
-### C1. CLI 进程退出就取消 run
-
-现状：daemon 收到 CLI 的请求后，CLI 断开不会影响正在跑的 run（`src/daemon.ts` 的 `onCli` 没有处理连接断开）。被 Bash 超时杀掉或被 TaskStop 停掉时，run 还在后台继续跑。
-
-设计：CLI 连接断开时，daemon 终止这次 run 的 worker、关窗口、写调用记录，`status` 记为 `cancelled`。
-
-有了这一条，Claude Code 的机制就能直接用：
-
-- 长任务：agent 用 Bash `run_in_background` 跑 `spr run X`，结束时 Claude Code 自动通知；不需要 `--bg`、`spr wait`、`spr status`。
-- 取消：TaskStop 或 Ctrl+C 杀掉进程，就是取消。
-- 超时：Bash 前台默认 2 分钟、`@timeout` 默认 115 秒，两者保持一致；超过 2 分钟的 compose 在 SKILL.md 里写明要放后台跑。
-
-可选：把 compose 里 `console.log` 的内容边跑边输出到 stdout（现在只在结束时附在报错里），放后台时能在输出文件里看到进度。
-
-### C2. 轮询写在 compose 的循环里
-
-不新增 API，`sleep` 已经有了：
-
-```js
-for (let i = 0; i < 45; i++) {
-  const r = await action("devops-build-qr", p);
-  if (r.qrUrl) return r;
-  await sleep(20_000);
-}
-throw new Error("15 分钟内没等到二维码");
-```
-
-- 一个窗口跑完，不会占掉 100 条 run 窗口名额。
-- 要等很久的就调大 `@timeout`，用 Bash `run_in_background` 跑。
-- SKILL.md 写一条：要等某个状态时，在 compose 里循环，不要在外面反复 `spr run`。
-
-### C3. resume：按内容复用，不按位置匹配
-
-现状：`src/run/runner.ts` 要求第 i 次调用的 name 和 params 与上次完全一致，否则整个 resume 失败。
-
-设计：一条规则。
-
-- journal 以 `name + 规范化后的 params` 作 key（深比较，忽略 `undefined` 和 key 顺序），同一个 key 下按顺序存多次结果。
-- resume 时，同一个 key 的第 k 次调用返回记下的第 k 次结果；记录用完了或没有这个 key，就照常执行。
-- 只有成功的调用才进 journal。
-- ask 的回答同理，以问题文本作 key。
-
-为什么不用额外的安全检查：只有 name 和 params 完全相同才会复用，复用时不会重复发请求；参数变了就是一次新调用，本来就该执行。按顺序存多次结果，也让 C2 那种循环在 resume 时不会一直拿到同一个旧结果。
+Node ESM 的 `package.json` `exports` 不允许 `../` 越界（实测抛 `ERR_INVALID_PACKAGE_TARGET`）。在 `/Users/youshiyitian/Code/x/speedrun/skills/spr/src/run/actions.ts` 的 `syncActionLib` 同步 `/Users/youshiyitian/.speedrun/lib` 时，建立 `lib/helpers -> ../helpers` 软链接，并在 `/Users/youshiyitian/Code/x/speedrun/skills/spr/src/action-lib/package.json` 导出 `"."` → `"./index.js"` 与 `"./helpers/*"` → `"./helpers/*"`，统一写 `import { ... } from "spr/helpers/<name>.js"`。
 
 ---
 
-## 落地顺序
+## 三、指标体系（以 `turns` 为牵引）与日志补全
 
-1. **机制 A**：改动最小，先止住孤儿目录和内存泄漏，清理现有孤儿目录。
-2. **C1**：CLI 退出就取消 run。改动小，接上 Claude Code 的后台运行和取消。
-3. **机制 B**：调用记录、错误码表、错误格式、按 action 做过什么给证据。
-4. **C3**：resume 按内容复用。
-5. **SKILL.md**：补上 C1、C2 的用法（后台跑、在 compose 里循环）。
+### 1. 四个核心指标
 
-每一步都补对应的 selfcheck，并更新 `ARCHITECTURE.md`。
+后台沉淀 subagent 带 `SPR_ROLE=distiller` 单独标记，不计入前台用户任务的 `turns`：
 
-## 待定
+| 指标 | 计算口径 | 当前基线 | 目标 |
+|---|---|---|---|
+| **前台任务 `turns`** | 单次用户请求内主会话含 `spr` 的执行轮次（同轮并行命令按时间重叠算 1 轮；离线脚本可关联宿主 transcript 算总 `turns`） | 复用 1～2；外层串行 5～9；手动点页面 14～30 | 复用 **1～2**；新任务单次 **2～4**；新任务批量 **4～5** |
+| **窗口沉淀漏斗** | 依次追踪：发出沉淀提示的窗口数 → `distiller` 接单数 → 产出带 `@from` 的 `action` 数（及只读 `verified` 率） | **33%（2/6）** | **≥ 90%** |
+| **脚本含参率与复用率** | ① 含 `@param` 的 `action` 占比；② 被跨任务段调用 ≥ 2 次的 `action` 占比；③ `debug` 时同站已有 `action` 却未复用的比例 | 存量 `compose` 含参率仅 62% | 新建 `action` 含参率 **≥ 90%** |
+| **首跑通过率与耗时结构** | ① 前台 `spr run` 首次执行即 `ok` 比例；② `openMs` / `navMs` / `reqMs` / `domMs` 分段耗时与 `request` vs DOM 占比 | 首跑通过率 80.5%（140/174），p90 13.9s | 通过率 **≥ 90%**，定位慢速 DOM 脚本升级为 `request` |
 
-- `invocations.jsonl` 的大小上限（比如 20MB）。
-- C1 的「边跑边输出」要不要做。
+### 2. `/Users/youshiyitian/.speedrun/session/invocations.jsonl` 与窗口 `meta.json` 补全
+
+不新建额外日志文件，全部收敛在现有的 `invocations.jsonl` 和窗口 `meta.json` 中：
+
+1. **`caller` 会话与沉淀溯源**（`/Users/youshiyitian/Code/x/speedrun/skills/spr/src/session/client.ts`）：
+   - `host`：识别 `claude` / `antigravity` / `opencode` / `cursor`；
+   - `session`：优先取宿主会话 ID 环境变量（如 `ANTIGRAVITY_CONVERSATION_ID`、`CURSOR_TRACE_ID`、`SPR_SESSION`）短哈希，无则回退为非 shell 祖先进程 PID；
+   - `role`：默认 `"main"`，`SPR_ROLE=distiller` 时为 `"distiller"`；
+   - `fromWindow`：当传入 `SPR_FROM=<debug窗口名>` 时记录来源窗口，与文件头 `@from <debug窗口名>` 共同闭合沉淀漏斗（即使 `@write` 脚本不跑验证也能通过 `@from` 统计到产出）。
+2. **`run` 模式、内联代码、分段耗时与真实写请求拆分**（`/Users/youshiyitian/Code/x/speedrun/skills/spr/src/commands/run.ts`、`/Users/youshiyitian/Code/x/speedrun/skills/spr/src/browser/host.ts`）：
+   - `mode`：`"action"` | `"inline"`（`-e`）；`-e` 时记录脱敏并截断（≤ 500 字）的 `code` 与内部 `calls` 序列，便于挖掘高频组合升级为正式 `action`；
+   - `perf` 与 `ops`：汇总本次 `run` 的分段耗时 `{ openMs, navMs, reqMs, domMs }` 与操作计数 `{ nav, req, dom, eval }`，直接暴露慢在开窗、页面加载还是 DOM 操作；
+   - `sent` 去噪拆分：把“脚本通过 `request()` 主动发出的非 GET 请求”与“页面加载/交互自发触发的非 GET 请求”分开记录（解决页面初始化自带几十条背景 POST 淹没真实写请求的问题）。
+3. **`debug` 行明细、漏复用探针与关窗状态闭环**（`/Users/youshiyitian/Code/x/speedrun/skills/spr/src/commands/debug.ts`、`/Users/youshiyitian/Code/x/speedrun/skills/spr/src/debug/windows.ts`）：
+   - `debug` 行写入 `tool`、`sub`（如 `left_click`、`screenshot`）、`window`、`ops`、`promptedDistill`（本次输出是否附带了未沉淀提示）；修复 `spr debug list` 误把 `"list"` 写入 `name` 的问题；
+   - `navigate` 打开窗口时额外记录 `site` 与 `siteActions`（当时该站点已有的 `action` 数量），用于离线统计“同站已有脚本却去开 `debug`”的情况；
+   - 窗口在命令 `close`、空闲超时淘汰、`daemon` 重启或扩展重连关闭时，同步将 `debug-windows/<id>/meta.json` 更新为 `open: false` 并写入 `closedBy: "cmd" | "idle" | "restart"`（修复旧窗口 `meta.json` 长期停留在 `open: true` 的问题）。
+4. **统计脚本 `/Users/youshiyitian/Code/x/speedrun/tools/stats.mjs`**：
+   - 扫描 `/Users/youshiyitian/.speedrun/session/invocations.jsonl`、`debug-windows/*/meta.json` 与 `/Users/youshiyitian/.speedrun/action/*/*.js`（可选关联本机 transcript），一键输出上述 4 项指标、沉淀漏斗、耗时拆解、高频 `run -e` 代码与未沉淀窗口。
+
+---
+
+## 四、落地顺序
+
+1. **运行时减法与底座改造**：
+   - 删除 `asks.ts`、`link.ts`、`link.selfcheck.ts`、`resume` 命令、`ask()` SDK 与 `COMPOSE_DIR` 相关分支；
+   - `spr run` 支持直跑 `action`（允许深度 ≤ 2 嵌套调 `action()`）与 `-e '<js>' [--timeout <秒>]`；
+   - `spr debug <名>` 去掉前置文件检查，增加同站已有 `action` 提示、未覆盖请求末尾沉淀提示，以及关窗 `meta.json` 状态同步；
+   - `syncActionLib` 增加 `lib/helpers -> ../helpers` 软链接与 `package.json` `exports`。
+2. **日志补全与统计脚本**：
+   - 补齐 `caller`（含 `role`、`fromWindow`）、`mode` + 脱敏 `code`、`perf` / `ops`、`sent` 拆分、`debug` 明细（含 `siteActions`、`promptedDistill`），修 `debug list` 的 `name`；
+   - 编写 `/Users/youshiyitian/Code/x/speedrun/tools/stats.mjs`。
+3. **双 Agent 文档与自检**：
+   - 新增 `/Users/youshiyitian/Code/x/speedrun/skills/spr/agents/distiller.md`；
+   - 重写精简 `/Users/youshiyitian/Code/x/speedrun/skills/spr/SKILL.md`、`/Users/youshiyitian/Code/x/speedrun/skills/spr/src/debug/guide.ts`、`/Users/youshiyitian/Code/x/speedrun/README.md` 与 `/Users/youshiyitian/Code/x/speedrun/skills/spr/ARCHITECTURE.md`（含 `ABI 16`）；
+   - 更新全部 `*.selfcheck.*`，跑通 `npm run check && npm test`。
+4. **本机存量迁移与真实 Chrome 验证**：
+   - 将 `/Users/youshiyitian/.speedrun/compose` 中那 5 个有复用价值的同站多步脚本迁入 `/Users/youshiyitian/.speedrun/action/<对应站点>/`、把存量 `../helpers/` 与 `../../helpers/` 改为 `"spr/helpers/..."`，合并 `/Users/youshiyitian/.speedrun/action/local` 重复项后删除整个 `/Users/youshiyitian/.speedrun/compose` 目录；
+   - 运行 `node /Users/youshiyitian/Code/x/speedrun/skills/spr/setup.js` 本地更新，`spr doctor` 验收，并在真实 Chrome 窗口实测 `spr run <action>`、`spr run -e` 和 `spr debug` 未沉淀提示全链路。
+
+---
+
+## 附：上一轮计划归档（2026-11-12，分支 `feat/logging-run-records`）
+
+- 已完成：窗口关闭同步收尾与未知窗口拒写、CLI 退出即取消 `run`、`invocations.jsonl` 初版与 `result.json` / `error.txt` / 暖页面请求证据 / 用户帧裁剪。
+- 留存可选项：长后台任务中 `console.log` 边跑边流式输出到 stdout。

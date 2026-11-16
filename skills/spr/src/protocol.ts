@@ -1,4 +1,4 @@
-export const USAGE = "用法：spr run <compose> [--参数 值] | resume <编号> [--answer …] | debug <compose> <工具> … | debug list | tabs | status | doctor | daemon restart；详情 spr --help";
+export const USAGE = "用法：spr run <action> [--参数 值] | spr run -e '<js>' [--timeout 秒] | spr debug <名> <工具> … | spr debug list | spr tabs | spr status | spr doctor | spr daemon restart；详情 spr --help";
 export type HandshakeStatus = "need-install" | "need-chrome" | "need-extension";
 export type RpcMethod = "ping" | "run";
 export type JsonRpcRequest = { jsonrpc: "2.0"; id: string; method: RpcMethod; params?: Record<string, unknown> };
@@ -21,12 +21,12 @@ export function handshakeStatusFromError(error: unknown): HandshakeStatus | null
   return null;
 }
 /**
- * 所有命令的输出约定：第一行是结论，以 ok、fail、ask 开头；后面是「标题：内容」的几段（多行的内容缩进两格）。
- * 退出码：ok 是 0；fail 是 1（操作失败，看原因排查或重试）；ask 和 need-* 是 2（要 agent 判断或要用户做一件事，不算失败）；
+ * 所有命令的输出约定：第一行是结论，以 ok、fail 开头；后面是「标题：内容」的几段（多行的内容缩进两格）。
+ * 退出码：ok 是 0；fail 是 1（操作失败，看原因排查或重试）；need-* 是 2（要用户做一件事，不算失败）；
  * 命令写错了是 3（第一行也是 fail：不认识的命令或参数、缺参数、值不合法），改命令再跑，不要原样重试。
  */
 export const EXIT = { ok: 0, fail: 1, wait: 2, usage: 3 } as const;
-export const EXIT_TABLE = "退出码：0 成功；1 操作失败（看原因排查或重试）；2 等用户（need-* 或 ask）；3 命令写错了（改命令再跑，不要原样重试）";
+export const EXIT_TABLE = "退出码：0 成功；1 操作失败（看原因排查或重试）；2 等用户（need-*）；3 命令写错了（改命令再跑，不要原样重试）";
 export function formatHandshakeStdout(status: HandshakeStatus): string {
   return `fail ${status}：${HANDSHAKE_GUIDES[status]}`;
 }

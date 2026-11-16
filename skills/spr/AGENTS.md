@@ -119,6 +119,7 @@ npm run verify:pack
 ```text
 skills/spr/
 ├── src/                     运行时（daemon、commands、debug、run、browser、record、cli、chrome-extension 含页面脚本）+ 自检 + package.json
+├── agents/distiller.md      沉淀 subagent 的专用提示词
 ├── setup.js  SKILL.md  install.md  LICENSE
 ├── AGENTS.md                ← 仓库根目录的 AGENTS.md 是指向它的软链接
 └── ARCHITECTURE.md          目标、角色、架构、排障

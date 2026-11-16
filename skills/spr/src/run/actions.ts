@@ -4,32 +4,32 @@ import { ACTION_TIMEOUT_MS, HELPERS_DIR, LIB_DIR } from "../utils/constants.ts";
 import { siteDirName } from "../utils/url.ts";
 
 /**
- * 两种文件，都是 ES 模块（`export default async () => result`），文件头写法一样，由放在哪里区分：
- * - action：`~/.speedrun/action/<站点>/<名>.js`，agent 写的业务动作，发请求或 DOM 兜底的页面操作（`@endpoint` 可以多行，按发送顺序）；
- * - compose：`~/.speedrun/compose/<名>.js`，agent 自己写的、用 action 串成的流程，只能 `action("<name>", params)` 调用 action，不能碰页面。
- * 两者都一直保留，名字全局唯一。`spr run` 只运行 compose，action 由 compose 调用。
+ * 可复用脚本只有一种：action（`~/.speedrun/action/<站点>/<名>.js`，ES 模块 `export default async ({ ...params }) => result`）。
+ * 名字全局唯一；单步直接 `spr run <action>`，循环/并发/多步组合或结果裁剪用免落盘的 `spr run -e '<js>'`。
  */
 
-/** action 名：小写字母数字和 -，全局唯一。 */
+/** action 与 debug 窗口名：小写字母数字和 -，全局唯一。 */
 export const ACTION_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
 export interface ActionSummary {
   name: string;
   file: string;
-  /** 所在的站点目录名；compose（~/.speedrun/compose/ 下）没有站点。 */
+  /** 所在的站点目录名。 */
   site?: string;
   /** 文件头 `@endpoint 方法 路径`：由哪些 endpoint 实现，按发送顺序。 */
   endpoints: string[];
   /** draft | verified | blocked；没写就是 verified。 */
   status: string;
   description: string;
-  /** 文件头 `@note` 的全部行：blocked 的原因、经验。 */
+  /** 文件头 `@note` 的全部行：blocked 的原因、分层说明、经验。 */
   note: string;
   params: string[];
-  /** 文件头 `@write`：这个 action 会改东西（点赞、提交、删除……），agent 写的。只是提示：找 action 时、status 里看得到，run 不拦。 */
+  /** 文件头 `@write`：这个 action 会改东西（点赞、提交、删除……），只是提示，run 不拦。 */
   write: boolean;
   /** 文件头 `@timeout <秒>` 声明的上限；未声明时不出现。 */
   timeout?: number;
+  /** 文件头 `@from <debug窗口名>`：由哪个 debug 窗口提炼而来（用于统计沉淀漏斗）。 */
+  fromWindow?: string;
 }
 
 /**
@@ -52,6 +52,7 @@ export function actionSummary(file: string, site?: string): ActionSummary {
   const tags = headerTags(fs.readFileSync(file, "utf8"));
   const first = (tag: string): string => tags.find(([key]) => key === tag)?.[1] ?? "";
   const timeout = Number(first("timeout"));
+  const fromWindow = first("from").trim();
   return {
     name: path.basename(file, ".js"),
     file,
@@ -63,11 +64,9 @@ export function actionSummary(file: string, site?: string): ActionSummary {
     params: tags.filter(([key]) => key === "param").map(([, value]) => value),
     write: tags.some(([key]) => key === "write"),
     ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
+    ...(fromWindow ? { fromWindow } : {}),
   };
 }
-
-/** findAction 找到的是不是 compose：compose 放在 ~/.speedrun/compose/，没有站点。 */
-export const isCompose = (found: { site?: string }): boolean => found.site === undefined;
 
 export type ParamType = "string" | "number" | "boolean" | "json";
 export interface ParamSpec { name: string; optional: boolean; type: ParamType; description: string }
@@ -80,7 +79,7 @@ export function paramSpecs(file: string): ParamSpec[] {
   });
 }
 
-/** 按 @param 的类型转换参数（命令行传进来的都是字符串，compose 里 action() 传的可能已经是数字、对象）；转不了返回说明。 */
+/** 按 @param 的类型转换参数（命令行传进来的都是字符串，嵌套 action() 传的可能已经是数字、对象）；转不了返回说明。 */
 export function coerceParams(file: string, params: Record<string, unknown>): { params: Record<string, unknown> } | { error: string } {
   const types = new Map(paramSpecs(file).map((spec) => [spec.name, spec.type]));
   const out: Record<string, unknown> = {};
@@ -105,10 +104,10 @@ export function coerceParams(file: string, params: Record<string, unknown>): { p
   return { params: out };
 }
 
-/** spr run 自己用的参数名，action 和 compose 不能用。 */
-const RESERVED_PARAMS = new Set(["help"]);
+/** spr run 自己用的参数名，action 不能用。 */
+const RESERVED_PARAMS = new Set(["help", "eval", "timeout"]);
 
-/** 对照文件头的 @param 检查：缺必填、传了没声明的参数都返回说明；通过返回 undefined。action 和 compose 一样。 */
+/** 对照文件头的 @param 检查：缺必填、传了没声明的参数都返回说明；通过返回 undefined。 */
 export function checkParams(file: string, params: Record<string, unknown>): string | undefined {
   const specs = paramSpecs(file);
   const reserved = specs.filter((spec) => RESERVED_PARAMS.has(spec.name));
@@ -137,42 +136,42 @@ function siteDirs(actionDir: string): string[] {
   return fs.readdirSync(actionDir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => e.name).sort();
 }
 
-/** 按名字找 action 或 compose（名字全局唯一）：先找各站点的目录，再找 compose 的目录 globalDir。 */
-export function findAction(actionDir: string, name: string, globalDir?: string): { file: string; site?: string } | undefined {
+/** 按名字在各站点目录里找 action（名字全局唯一）。 */
+export function findAction(actionDir: string, name: string): { file: string; site: string } | undefined {
   if (!ACTION_NAME.test(name)) return undefined;
   for (const site of siteDirs(actionDir)) {
     const file = path.join(siteDirOf(actionDir, site), `${name}.js`);
     if (fs.existsSync(file)) return { file, site };
   }
-  const file = globalDir ? path.join(globalDir, `${name}.js`) : undefined;
-  return file && fs.existsSync(file) ? { file } : undefined;
+  return undefined;
 }
 
-/** 列出 action；给了 site 就只列这个站点的，否则列所有站点的（再加 globalDir 里跨站点的）。 */
-export function listActions(actionDir: string, site?: string, globalDir?: string): ActionSummary[] {
+/** 列出 action；给了 site 就只列这个站点的，否则列所有站点的。 */
+export function listActions(actionDir: string, site?: string): ActionSummary[] {
   const out: ActionSummary[] = [];
-  const read = (dir: string, s?: string): void => {
+  const read = (dir: string, s: string): void => {
     if (!fs.existsSync(dir)) return;
     for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".js")).sort()) out.push(actionSummary(path.join(dir, f), s));
   };
   for (const s of site ? [siteDirName(site)] : siteDirs(actionDir)) read(siteDirOf(actionDir, s), s);
-  if (!site && globalDir) read(globalDir);
   return out;
 }
 
 /**
- * 把 src/action-lib 同步到 ~/.speedrun/lib，再把 ~/.speedrun/node_modules/spr 链到它：脚本 `import … from "spr"`。daemon 每次启动都整个覆盖，保证 SDK 和 daemon 是同一个版本。
- * agent 自己的函数在 ~/.speedrun/helpers/，这里只在它不存在时建好目录，从不覆盖、不删除。
+ * 把 src/action-lib 同步到 ~/.speedrun/lib，把 lib/helpers 软链到 ../helpers，再把 ~/.speedrun/node_modules/spr 链到 lib：
+ * 脚本统一写 `import … from "spr"` 和 `import … from "spr/helpers/<file>.js"`。daemon 每次启动覆盖 lib，从不覆盖或删除 helpers。
  */
 export function syncActionLib(libDir = LIB_DIR, from = path.join(import.meta.dirname, "..", "action-lib")): void {
-  fs.mkdirSync(path.dirname(libDir), { recursive: true });
+  const rootDir = path.dirname(libDir);
+  const helpersDir = libDir === LIB_DIR ? HELPERS_DIR : path.join(rootDir, "helpers");
+  fs.mkdirSync(helpersDir, { recursive: true });
   fs.rmSync(libDir, { recursive: true, force: true });
   fs.cpSync(from, libDir, { recursive: true });
-  const link = path.join(path.dirname(libDir), "node_modules", "spr");
+  fs.symlinkSync("../helpers", path.join(libDir, "helpers"), "dir");
+  const link = path.join(rootDir, "node_modules", "spr");
   fs.mkdirSync(path.dirname(link), { recursive: true });
   fs.rmSync(link, { recursive: true, force: true });
   fs.symlinkSync(libDir, link, "dir");
-  if (libDir === LIB_DIR) fs.mkdirSync(HELPERS_DIR, { recursive: true });
 }
 
 const STATUS_LINE = /^(\s*\*?\s*@status)\s+(\w+)\b/m;
@@ -199,7 +198,6 @@ export function coveredEndpoints(actionDir: string, site: string): Map<string, s
 }
 
 /** 还没验证的 draft（@status draft）。 */
-export function draftActions(actionDir: string, composeDir?: string): ActionSummary[] {
-  return listActions(actionDir, undefined, composeDir).filter((t) => t.status === "draft");
+export function draftActions(actionDir: string): ActionSummary[] {
+  return listActions(actionDir).filter((t) => t.status === "draft");
 }
-

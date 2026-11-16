@@ -4,15 +4,15 @@ speedrun 的目标、设计原则和运行时实现：每一部分是谁实现�
 
 ## 1. 目标与原则
 
-一句话：**超快的、用已登录 Chrome 的 skill；agent 写 compose 脚本完成任务，缺的 action 在 debug 窗口里写好，只用 run 窗口运行和交付。**
+一句话：**超快的、用已登录 Chrome 的 skill；主 agent 以最少轮次完成任务，已有 `action` 直接 `spr run`（或 `spr run -e` 批量组合），没现成脚本时直接开 `debug` 窗口完成交付，并由后台 `distiller` subagent 从窗口日志异步提炼验证可复用 `action`。**
 
-- **用户只做两件事**：说要做什么，以及要输入账号密码、扫码的登录。其余全靠 agent 自己写脚本，没有用户示范。
-- **录制的用途**：① 拿到 endpoint，用请求代替页面操作大幅提速；② endpoint 没法直接发时，给 DOM 操作提供依据（持久定位、该步之后出现了哪个请求）；③ 作为请求头的来源（`request` 继承 agent 窗口里同站点页面最近的请求头）；④ run 出问题时反查。
+- **用户只做两件事**：说要做什么，以及要输入账号密码、扫码的登录。其余全靠 agent 自己完成与沉淀，没有用户示范。
+- **录制的用途**：① 拿到 endpoint，用请求代替页面操作大幅提速；② endpoint 没法直接发时，给 DOM 操作提供依据（持久定位、该步之后出现了哪个请求）；③ 作为请求头的来源（`request` 继承 agent 窗口里同站点页面最近的请求头）；④ 给后台 `distiller` subagent 离线提炼 `action` 及 `run` 出问题时反查。
 
-**action** 是 speedrun 的基本单位：agent 写的、带参数、能复用的业务动作，由一个或几个 endpoint（录到的一个请求，写成 `<METHOD> <path>`）实现，或用 DOM 实现。**compose** 是任务脚本：调用 action 和 `ask`，处理 action 返回的数据，返回回答用户要的结果；不能碰页面，不调用别的 compose（只有两层，改一个 compose 不影响别的 compose）。它是 action 的使用者，不是 action 的一种。任务永远走 `Find → Write → Run ⇄ Debug`：找已有脚本，写 compose，用 `spr run` 运行；报 `is not defined` 或运行失败时在 debug 窗口里写好或修好对应的 action，再 `spr run`。
+**action**（`~/.speedrun/action/<站点>/<名>.js`）是 speedrun 唯一的持久化脚本单位：带参数、能复用的站点业务动作，由一个或几个 endpoint（`<METHOD> <path>`）实现，或用页面函数 / DOM 实现，也允许最多两层同窗嵌套调用 `action()`。一次性批量循环、并发、串联或结果裁剪直接用免落盘的 `spr run -e '<js>'`（共用同一个 `run` 窗口）。
 
-设计原则（agent 的使用原则在 `SKILL.md` 第 2 节）：
-1. **唯一目标：用 compose 完成眼前的任务。** 结果只来自 `spr run`：用请求代替页面操作，比点页面快一个量级。action 和 compose 是 agent 写的文件，一直留着，下次换参数直接用。`spr run` 只接受 compose、`spr debug` 要求 compose 已存在，用流程保证先写脚本；"结果只来自 run" 本身没有强制检查。
+设计原则（agent 的使用原则在 `SKILL.md`）：
+1. **一个 agent 只背一个目标：主 agent 最快完成当前任务，沉淀交给后台 `distiller` subagent。** 有现成 `action` 时 `spr run` 比点页面快一个量级；没现成 `action` 时主 agent 直接在 `debug` 窗口办完事当场交付（不阻塞用户、不重复触发不可重入的写操作），`daemon` 检测到窗口有未覆盖请求时在输出末尾提示派发后台 subagent 读取 `~/.speedrun/agents/distiller.md` 异步提炼并验证只读 `action`。
 2. **只录 agent 的窗口。** 归属按标签组认：speedrun 组里的标签页是 agent 的（用户自己拖进 speedrun 组的也算，拖出去就收回），其余用户的窗口和标签页不录、不碰，只读标签页列表（地址、标题）；要看用户手上的页面，就在 debug 窗口里重新打开它，从加载开始录。用户很久以前做的操作，agent 不知道请求的来源和意图；只用 agent 自己做出来的请求才准。
 3. **秘密不落盘、不进上下文。** 原始请求（含 token 真值）只在 daemon 内存里；日志、请求文件、观察输出里是别名。这不是对 agent 的隔离：action 和页面脚本与用户同权限（`evaluate` 能读页面的 cookie、localStorage，action 的 worker 有完整的 Node 权限），保证的只是真值不写盘、不出现在 agent 读到的文字里。原始请求按窗口存，窗口关掉（debug `close`、run 结束）就清掉。
 4. **日志和 action 都是文件。** 能读文件的不做命令，agent 用 `rg`、`node`、Python 直接读；speedrun 的命令只做必须由它做的事（控制浏览器、持有不能落盘的原始请求）。
@@ -21,34 +21,30 @@ speedrun 的目标、设计原则和运行时实现：每一部分是谁实现�
 7. **错误的信号不如原始数据。** speedrun 能准确算出来的，给结论；算不准的（靠规则猜的：登录页、依赖、重复、noise），只给原始事实和数据在哪，由 agent 判断。过滤或省略时，写明省略了什么、原始数据在哪。不写替 agent 下的结论（"你做错了"、"像是登录失效"）。用在录制上就是**录和存要宽，展示时再筛**：只有判断很准的规则（命中公开的广告和追踪规则列表）才能决定不存；靠猜的规则（埋点的路径、域名规则）只打标签，数据照常存；跨站请求和同站一样录、一样存；展示时筛掉的写明数量、原因和原始数据在哪。
 8. **靠近 agent 宿主（Claude Code）的机制：能被它直接用，也让模型觉得熟悉。** 一是融入：宿主已有的能力（后台运行和结束通知、杀进程即取消、等某个条件、读大文件），speedrun 不再做一套，而是保证 `spr` 在这些机制下行为正确，例如 `spr run` 就是普通的阻塞命令，放到后台就是后台任务，CLI 进程退出就取消这次 run。二是借鉴：输出、截断、报错、退出码照宿主自己的样子写，例如第一行就是错误原文、裁掉的内容写成「预览 + 完整内容在 <路径>」、日志用 JSONL，模型不用另学一套用法。加新机制前先问：宿主有没有现成的做法可以直接用，或者照着做。
 
-## 2. 两种窗口，以及 action 和 compose 的运行
+## 2. 两种窗口，以及 action 与 `spr run -e` 的运行
 
 ### 2.1 两种窗口
 
 | 窗口 | 用途 | 录不录 |
 |---|---|---|
 | 用户的窗口 | 用户自己浏览 | 不录；只读标签页列表 |
-| debug 窗口（按 compose 查找，id 是 `<compose>-<时间>`） | agent 观察请求、写 action；run 之后也保留 | 录，日志在 `debug-windows/<id>/`，进 `endpoints.json` |
-| run 窗口（`<名字>-<时间>`） | 执行 compose；每次 run 新开，结束就关 | 录，日志在 `run-windows/<名字>/`，只给反查，不进 `endpoints.json` |
+| debug 窗口（按 `<名>` 查找，id 是 `<名>-<时间>`） | 新任务探索完成、观察请求、复现修 `action`；run 之后也保留 | 录，日志在 `debug-windows/<id>/`，进 `endpoints.json` |
+| run 窗口（`<名字>-<时间>`） | 执行 `action` 或 `spr run -e`；每次 run 新开，结束就关 | 录，日志在 `run-windows/<名字>/`，只给反查，不进 `endpoints.json` |
 
 为什么这样分：debug 需要页面状态接得上（点到某个状态，接着观察下一步），run 需要每次一样（不因上次留下的页面而不同）；试错、响应原文、截图都留在窗口目录里，不占 agent 的上下文；两种窗口的每个操作和请求都在各自的时间线里，run 出问题时对照着看。
 
-- **debug 窗口**（`debug/windows.ts`）：`spr debug <compose> navigate <网址|tab 号>` 在窗口没开时打开它，compose 文件必须已存在；第一次输出 debug 指引（`debug/guide.ts`，存在 `~/.speedrun/debug-guide.md`，内容变了才给全文）。窗口按 compose 名查找，内部 id 是 `<compose>-<时间>`（同一秒重名加 `-2`），`debug-windows/<id>/meta.json` 存 compose、当前 URL、标题、观察游标、操作次数，只给看日志用。一个窗口可以处理 compose 缺的多个 action，也可以跨站点。`spr run` 成功或失败都不关它。窗口关掉的情况：`spr debug <compose> close`、空闲 30 分钟、daemon 重启、扩展重连（daemon 忘掉所有组）、用户关了组；关掉后 `navigate` 以外的工具是用法错误（退出码 3），提示重新 navigate、在新窗口里复现，不会悄悄回到上次的 URL 接着用。操作上限 200 次（只有成功的页面操作计数，不清零）：到了多半是在原地打转，报错让 agent 先停下看卡在哪。同一个 compose 一次只跑一条命令（`DebugWindows.claim`），后到的直接 `fail`。每条成功输出的末行由 `run/link.ts` 算出目标和还缺的 action。
-- **run 窗口**：每次 `spr run` 新开一个，整个 run（含 compose 调用的 action）共用，结束就关；失败时先截图（`screenshots/failure.*`）再关。关掉后日志留在 `run-windows/<名字>/`，要看页面就在 debug 窗口里复现。结果先返回，标签组在后台关（`ActionRunner.closeLater`），daemon 退出前等它们关完。不同的 run 可以同时跑，没有排队锁。
-- **观察按游标**（`debug/observe.ts`，`debug/explore.ts`）：返回游标之后这个窗口的变化并推进游标（请求只列这个窗口里第一次出现的 endpoint；之前出现过的列在「重复」里，写明这个窗口里第几次、上次的编号、是否已有 action 覆盖，只是事实，不判断该不该重复；全部都在 `timeline.jsonl` 里）：页面状态、导航（跳到别的站点时写明站点）、请求（去掉噪声、静态资源、轮询；`describeRequest` 一行：编号、`方法 路径`、状态、内容类型、有没有响应体、请求文件名）、请求之间值相同的地方（`dependencies`：后一个请求里长度 ≥ 6 的值等于前一个响应里的值，输出写成"值相同"，可能是巧合）。改变页面的操作执行完等页面安静、记录送达（`RunHost.quiet`，见 §7），自动附带一次观察；`computer wait` 等完也附带一次（晚到的请求用它看）。"这一步之后发生了什么"以两次观察之间为准，不靠 `cause` 猜。这一段里有同站请求被 401/403 拒，或者页面在登录页（`utils/url.ts` 的 `isLoginUrl`），观察里列出事实（哪个请求、状态码、页面地址命中登录页规则），并说明 401/403 也可能是限流、没权限，是不是登录失效由 agent 看页面判断；run 失败时同样只列事实（页面地址命中登录页规则时写在「说明」里）。
-- **写请求不拦，也不判断**：debug 窗口里页面发什么就真的发什么，`run` 带 `@write` 的 action 也直接发。一个请求有没有副作用、多严重，由 agent 按 SKILL 的标准判断（原则 6）；`@write` 是 agent 写的提示。每次 `run` 统计这次实际发出的非 GET 请求（`request()` 发的和页面自己发的，只看方法、不是 GET / HEAD / OPTIONS 就算，`browser/host.ts` 的 `watchSent` / `takeSent`），输出里列成「已发出的非 GET 请求」，也写进 run 窗口 `meta.json` 的 `sent`；agent 拿它核对有没有意料之外的、告诉用户真发了什么。
+- **debug 窗口**（`debug/windows.ts`）：`spr debug <名> navigate <网址|tab 号>` 在窗口没开时打开它（无需预先存在同名文件）；若目标站点下已有 `action` 会自动列出来防漏复用，第一次输出 debug 指引（`debug/guide.ts`，存在 `~/.speedrun/debug-guide.md`，内容变了才给全文）。窗口按 `<名>` 查找，内部 id 是 `<名>-<时间>`，`debug-windows/<id>/meta.json` 存窗口信息、当前 URL、标题、观察游标、操作次数及关闭原因（`closedBy: "cmd" | "idle" | "restart" | "tab-closed"`）。`spr run` 成功或失败都不关它。操作上限 200 次。同一个窗口一次只跑一条命令（`DebugWindows.claim`），后到的直接 `fail`。当窗口录到了尚未被现有 `action`（`@endpoint`）或 `@from <id>` 覆盖的请求/操作时，输出末尾附带提示引导主 agent 派发后台 `distiller` subagent。
+- **run 窗口**：每次 `spr run` 新开一个，整个 run（含嵌套调用的 `action`）共用，结束就关；失败时先截图（`screenshots/failure.*`）再关。结果先返回，标签组在后台关（`ActionRunner.closeLater`），daemon 退出前等它们关完。不同的 run 可以同时跑，没有排队锁。
+- **观察按游标**（`debug/observe.ts`，`debug/explore.ts`）：返回游标之后这个窗口的变化并推进游标（请求只列这个窗口里第一次出现的 endpoint；之前出现过的列在「重复」里；全部都在 `timeline.jsonl` 里）：页面状态、导航、请求、请求之间值相同的地方（`dependencies`）。改变页面的操作执行完等页面安静、记录送达（`RunHost.quiet`，见 §7），自动附带一次观察；`computer wait` 等完也附带一次。同站请求被 401/403 拒或命中登录页规则时只列事实。
+- **写请求不拦，也不判断**：debug 窗口里页面发什么就真的发什么，`run` 带 `@write` 的 action 也直接发。每次 `run` 将实际发出的非 GET 请求拆分为脚本通过 `request()` 主动发出的（`sent`）与页面加载/交互自发触发的（`pageSent`），避免页面初始化自带的背景 POST 淹没真实写操作。
 
-### 2.2 action 和 compose 的运行
+### 2.2 action 与 `spr run -e` 的运行
 
-- **compose 只能调用 action**：`~/.speedrun/compose/` 下的文件跑起来时会话标为 compose-only，任何页面操作都被 `RunHost` 拒绝；反过来，action 里调用别的 action（`action()`）被 `ActionRunner` 拒绝。`spr run` 只接受 compose，action 不能单独运行。compose 可以调用 draft。
-- **draft 变成 verified**（`commands/run.ts` 的 `finishRun`）：run 成功、执行过的 draft 都变成 verified（跑成功就是事实，action 自己检查状态码和返回值）。`blocked` 的 action 在执行前检查时就报出来。
-- **参数**（`run/actions.ts` 的 `checkParams`、`coerceParams`）：对照文件头 `@param <name>[?][:<type>]`（名字只用英文字母、数字、下划线） 检查缺的、多的，再按类型（`number`、`boolean`、`json`，默认字符串）转换后作为函数参数交给脚本；compose 里 `action()` 传的参数也一样。
-- **执行前检查**（`run/link.ts` 的 `checkCompose`）：`spr run` 和失败后的 `spr resume` 先读文件，跳过注释和字符串找 `action()` 调用。缺的 action 一次报全，带 compose 里每处调用的参数源码（`zhihu-vote({ id }) is not defined`），依赖 blocked 也在这里报；调用了 compose 是用法错误（运行时也拒绝）。名字不是字面量的调用检查不了，照常运行，输出里列出来。这一步不开窗口、不需要扩展。别名导入这类写法看不到，`runAction` 运行时还会再报 `is not defined`。
-- **compose 是 agent 写的文件**（`~/.speedrun/compose/<名>.js`）：和 action 一样的文件头（`@description` `@status` `@param` `@timeout` `@write`）和 `export default async ({ ...params }) => result`，`import { action, ask } from "spr"`。放在这个目录里的就是 compose，不看文件头。一直保留、不淘汰；跑成功后 speedrun 只把 `@status draft` 改成 `verified`。`ActionRunner` 跑 compose 时把这一刻读到的代码写成它旁边的临时文件 `.run-*.mjs` 再跑（相对 import 照样能用），跑完删掉。
-- **`ask`**（`run/runner.ts` 的 `work()`、`commands/run.ts` 的 `handleAsk`）：run 停下输出 `ask <问题>`、`数据`、`恢复`（`spr resume <编号> --answer …`）。恢复记录存下停下那一刻的 compose 代码；`spr resume` 新开 run 窗口、用这份代码从头重跑（agent 中途改了文件也不影响），恢复时按内容复用：名字和参数（规范化后：key 排序、去掉 undefined）都相同的第 k 次 `action()` 调用返回上次记下的第 k 个结果，同一个问题的第 k 次 ask 返回第 k 个回答；对不上的照常执行，不报错（修 action 时改了参数，只有那一次重新执行）。只复用名字和参数完全相同的调用，所以不会把一次写请求重复发出。这次没用到的记录接在 journal 后面，留给下一次恢复。`ask` 是把控制权交回 agent：代码里没有模型调用，agent 自己判断或转问用户后用 `--answer` 给出 `ask()` 的返回值。只有 compose 能 ask，action 里不能；`data` 超过 100KB 失败。恢复记录只在 daemon 内存里（`run/asks.ts`，归 `ActionRunner`），最多 20 条、30 分钟过期，用过就作废（ask 恢复失败时保留）。
-- **失败后恢复**（`commands/run.ts` 的 `keepForResume`）：compose 失败且已有完成的 action 时，留一条 `failed` 恢复记录，不存代码。`spr resume <编号>` 不带 `--answer`，读当前文件，已完成的 action 从 journal 返回（同上，按内容复用），失败的 action 用修好的文件重新执行。再次失败时换一条新记录。
-- **取消**（`daemon.ts` 的 `onCli`、`run/runner.ts`）：CLI 的连接断开（`spr` 进程被 Ctrl+C、被停止、超时被杀）时 daemon 中止这次 run：终止 worker、关窗口，结果记成 `cancelled`。CLI 这边不限时（时长由 `@timeout` 管），所以长的 run 可以放进宿主的后台任务里跑，停掉后台任务就是取消（原则 8）。
-- **失败输出**（`run/runner.ts` 的 `trimError`、`commands/run.ts`）：第一行是错误原文；stack 只留用户文件（action、compose、helpers）的帧，`位置` 是第一个用户文件的 file:line，compose 的临时文件名换回 compose 文件；完整报错和完整 stack 写进窗口的 `error.txt`。失败时页面停在暖页面（`origin/robots.txt`，action 没打开过页面）就不给页面和截图，改给这个窗口里最后一个出错（≥ 400 或没发出去）的请求文件。失败带类别 `code`（`run/runner.ts` 的 `ErrorCode`），只放 speedrun 确定知道的（名字找不到、参数不对、超时、取消、action 自己抛错……）；compose 里的 action 失败时以最先失败的 action 的类别为准。
+- **持久化只有 `action`，组合免落盘走 `spr run -e`**：`spr run <action> [--<param> <value>]` 直接运行单个 `action`；需要循环、并发、跨多个 `action` 串联或裁剪大结果时用 `spr run -e '<js>' [--timeout 秒]`（worker 自动包装顶层 `async` 函数并注入 `action`、`sleep`，运行在 `inlineOnly` 会话中，不能直接操作页面或发请求，跑完自动清理临时 `.inline-*.mjs` 文件）。`action` 之间允许最多两层调用（`MAX_ACTION_DEPTH = 2`，防套娃与自递归），嵌套调用共用同一个 `run` 窗口和已打开的同源标签页。
+- **draft 变成 verified**（`commands/run.ts` 的 `finishRun`）：run 成功、执行过的 draft 都变成 verified。`blocked` 的 action 直接拒绝执行。
+- **参数**（`run/actions.ts` 的 `checkParams`、`coerceParams`）：对照文件头 `@param <name>[?][:<type>]` 检查缺的、多的，再按类型（`number`、`boolean`、`json`，默认字符串）转换后交给脚本。
+- **取消**（`daemon.ts` 的 `onCli`、`run/runner.ts`）：CLI 的连接断开（`spr` 进程被 Ctrl+C、被停止、超时被杀）时 daemon 中止这次 run：终止 worker、关窗口，结果记成 `cancelled`。
+- **失败输出**（`run/runner.ts` 的 `trimError`、`commands/run.ts`）：第一行是错误原文；stack 只留用户文件（action、helpers）的帧，`位置` 是第一个用户文件的 file:line；完整报错写进窗口的 `error.txt`。停在暖页面（`origin/robots.txt`）时不给截图，改给最后一个出错的请求文件。失败带类别 `code`（`ErrorCode`）。
 
 ## 3. 进程与分层
 
@@ -103,7 +99,7 @@ daemon 内部分四层，上层只依赖下层：
 
 `src/chrome-extension/background.js` 没有业务逻辑，是一个固定 ABI 的管道；页面脚本（`page/`）只经 CDP 注入 speedrun 的标签页，不是内容脚本，用户的网页里没有 speedrun 的任何代码。`manifest.json` 有固定的 `key`，扩展 ID 是 `dkjmgdhelenchaippejoppbcfbjfgppl`（和 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）；权限 `tabs`、`tabGroups`、`nativeMessaging`、`alarms`、`scripting`、`storage`、`debugger`、`<all_urls>`，Chrome 135 起，只支持 Chrome。
 
-- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 15）：`call`（在页面 MAIN world 调 `window.__spr.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`history`（后退、前进）、`openTab`、`closeTab`、`closeGroup`、`closeAllGroups`、`idleGroup`、`screenshot`、`input`、`evaluate`、`reload`。帧是 4 字节小端长度加 UTF-8 JSON。
+- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 16）：`call`（在页面 MAIN world 调 `window.__spr.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`history`（后退、前进）、`openTab`、`closeTab`、`closeGroup`、`closeAllGroups`、`idleGroup`、`screenshot`、`input`、`evaluate`、`reload`。帧是 4 字节小端长度加 UTF-8 JSON。
 - **CDP**（`cdp.js`，`chrome.debugger`）：speedrun 唯一的输入路径，debug 的 `computer` / `form_input` 和 action 的 `click` / `hover` / `key` / `scroll` / `form_input` 都走这里，发的是真实输入（`isTrusted` 为真）：鼠标 `mouseMoved → mousePressed → mouseReleased`（双击三击按 `clickCount`）、拖动分 10 步、滚轮 `mouseWheel`、按键 `dispatchKeyEvent`（键名表在 `keys.js`，扩展和自检共用；mac 上 cmd 组合键带 `commands`，如 `selectAll`）、输入文字每个 ASCII 字符 `rawKeyDown → insertText → keyUp`、中文只 `insertText`。截图是 `Page.captureScreenshot`（按 `1/devicePixelRatio` 缩，图上一个像素就是一个 CSS 像素，不用把标签页切到前台），`evaluate` 是 `Runtime.evaluate`（不受页面 CSP 限制）。只附着 speedrun 的标签页：标签页一开出来就附着（`call`、`goto` 之前也确保附着），附着后开 `Emulation.setFocusEmulationEnabled`。附着同时是放进页面脚本的时机（见下面的「页面脚本怎么进 speedrun 的标签页」）和后台标签页的「渲染开关」：没附着的后台标签页不渲染（rAF、IntersectionObserver 都停），在折叠的组里约 3 秒后还会被 Chrome 冻结（冻结的页面里 `chrome.scripting` 一直挂着）；附着后页面以为自己可见、有焦点，照常渲染，冻结的立刻解冻。组闲置 20 秒（`GROUP_IDLE_MS`）就解除附着（`idleGroup`），不吃 CPU，没有附着时「正在调试此浏览器」的横幅也消失（横幅是浏览器级别的，附着期间所有窗口都显示）；同时附着同一个标签页的调用共用一次附着；每条命令 20 秒超时；附着断了（用户点掉「正在调试此浏览器」提示条）下一次自动重新附着；speedrun 的标签页开着 DevTools 时附着失败，报清楚的错。
 - **握手和自动重新加载**：`hello` 带 `abi` 和 `build`（`setup.js` 写进 `chrome-extension/build.js` 的版本）。和 daemon 的 ABI 不一致时不工作；扩展支持 `reload`（ABI ≥ 13）并且跑的不是磁盘上这一版（ABI 不同，或 `build` 和 `~/.speedrun/src/.version` 不同）时，daemon 让它 `chrome.runtime.reload()` 从磁盘重新加载、重连，`ensureExtension` 等它回来。新代码跑在还没有 `debugger` 权限的旧 manifest 上时 `cdp.js` 也会自己重新加载。只有第一次加载要用户在 `chrome://extensions` 里操作。
 - **页面脚本怎么进 speedrun 的标签页**（`cdp.js`）：附着后注册 `Page.addScriptToEvaluateOnNewDocument`（之后每个新文档都在页面自己的脚本之前执行页面脚本，同站 iframe 一起带上）、`Runtime.addBinding`（页面脚本调用 `window.__sprSend` 上报）、`Target.setAutoAttach`（跨站 iframe 作为子会话附着上来，注册后再放行），并给当前文档补注入一次（脚本自己防重复）。要先 `Page.enable`、`Runtime.enable`，否则注册的脚本不执行、binding 收不到。解除附着后注册跟着没了：组闲置 20 秒解除附着期间，页面自己跳到的新文档没有脚本，下次操作重新附着时补上。service worker 重启后调试器和注册都还在，`attach` 会报「已经有调试器」：能发 CDP 命令就是 speedrun 自己之前的附着，解除再重新附着（清掉旧注册）；发不通才是开着 DevTools。经 `chrome.debugger` 单条消息 16MB 能完整送到。
@@ -135,13 +131,13 @@ daemon 内部分四层，上层只依赖下层：
 - **过滤**（`filter.ts`）：命中 adblock 规则的标 `noise`，不存响应体、不进原始请求表、不进 `endpoints.json`；第一方埋点的路径、域名规则（`TELEMETRY_HOST`、`TELEMETRY_PATH`，非 GET；204 也算）只标 `maybeTelemetry`，照常存，观察里折叠。跨站请求和同站一样存（页面脚本也读跨站的响应体）。adblock 规则缓存在 `~/.speedrun/adblock-engine.bin`，7 天内用缓存，过期才联网下载；下载失败就用过期的缓存，都没有时只用启发式。
 - **脱敏**（`sanitize.ts`）：请求头名、查询参数名、JSON key（请求体和 JSON 响应体都算）里像秘密的，和 JWT，换成稳定的别名 `⟨secret_…⟩`（盐 + 真值的 HMAC，盐在 `~/.speedrun/alias-salt`）；HTML（页面快照、HTML 响应体）里密码框、隐藏框、卡号 / 安全码 / 一次性验证码框、名字像秘密的输入框的 `value`，和名字像秘密的 `<meta>`（`csrf-token` 这类）的 `content`，也换成别名。正文里的自由文本、内联脚本不扫描，原样写盘。同一个值的别名总是同一个，所以观察里的「依赖」照样能把请求里的值和前面响应里的对上。**别名 → 真值的对照表只在 daemon 内存里。**
 - **窗口生命周期**（`record/windowlog.ts`、`record/ingest.ts` 的 `closeWindow`）：只有 `openWindow` 登记过、还没被淘汰的窗口能写，写到不认识的窗口直接忽略，不会凭空建目录。窗口关掉（`AgentWindows.dispose`、扩展重连时的 `forget`）时同步收尾：写出这个窗口还开着的 websocket 的最后一行摘要，丢掉它们的内存状态（标签页被直接关掉时 websocket 不发 close）。
-- **调用记录**（`record/invocations.ts`，`~/.speedrun/session/invocations.jsonl`）：每条 spr 命令结束时 daemon 追加一行，包括还没开窗口就失败的（用法错误）和被取消的：`id`、`ts`、`ms`、`cmd`、`name`、`cwd`、`exit`、`status`（`ok` `fail` `ask` `wait` `usage` `cancelled`）、`head`（输出第一行）；run / resume 再加 `params`（按脱敏规则换别名、过长的截断）、`window`、`error`（`code`、`message`、`action`、`at`）、`result`（`bytes`、`count`、`empty`）、`calls`（每次 `action()`：名字、耗时、状态、是否复用）、`sent`、`resumedFrom`。给 agent 的输出为了省上下文会裁剪，这里留完整的事实，用 jq / rg 查；不跟 run 窗口的条数上限走，超过 20MB 丢掉最旧的。run 窗口目录里另有 `result.json`（成功时的完整结果）、`error.txt`（失败时的完整报错），`meta.json` 带 `status`、`error`。
+- **调用记录**（`record/invocations.ts`，`~/.speedrun/session/invocations.jsonl`）：每条 spr 命令结束时 daemon 追加一行，包括用法错误和被取消的：`id`、`ts`、`ms`、`cmd`、`name`、`cwd`、`caller`（`host`、`session`、`ppid`、`role: "main" | "distiller"`、`fromWindow`）、`exit`、`status`（`ok` `fail` `wait` `usage` `cancelled`）、`head`；`run` 另记 `mode`（`"action" | "inline"`）、`params` 或脱敏截断后的 `code`、`window`、`error`、`result`、`calls`、`sent`（主动 `request` 非 GET）、`pageSentCount`、`perf`（`openMs`、`navMs`、`reqMs`、`domMs`）、`ops`（`nav`、`req`、`dom`、`eval`）；`debug` 另记 `tool`、`sub`、`window`、`ops`、`site`、`siteActions`、`promptedDistill`。可用仓库 `node tools/stats.mjs` 或 `jq` / `rg` 直接统计。
 - 读日志不是命令：agent 直接读文件。隔离不是安全边界——agent 能读所有窗口目录。
 
 ### 数据格式
 
 - **文件名**：以 6 位**日志编号**开头，后面是语义（请求是方法和 endpoint 名，页面是路径）。编号全局唯一、递增；只知道编号时 `ls ~/.speedrun/*-windows/*/requests/001203-*` 只会命中一个。观察输出里的文件名是相对窗口目录的。
-- **文件头**：`@description` `@status draft|verified|blocked` `@endpoint`（action，可多行）`@param` `@returns` `@write` `@timeout` `@note`。名字全局唯一（action 和 compose 共用），先在 `~/.speedrun/action/` 的各站点里找，再找 `~/.speedrun/compose/`。
+- **文件头**：`@description` `@status draft|verified|blocked` `@from <debug窗口id>` `@endpoint`（可多行）`@param` `@returns` `@write` `@timeout` `@note`。名字全局唯一，存放在 `~/.speedrun/action/<站点>/<名字>.js`。
 - **站点**是页面的 host，去掉前导 `www.`（非默认端口带上，目录名里 `:` 变 `_`）：`app.example.com`、`docs.google.com`、`x.com`。请求属于**发出请求的页面**的站点，不是请求地址的站点：`x.com` 页面调 `api.x.com` 记在 `x.com` 里。
 
 **timeline 一行**（JSON）：
@@ -173,14 +169,15 @@ daemon 内部分四层，上层只依赖下层：
   - `request` 的请求头按顺序凑齐，尽量继承复用：① 浏览器自己带的（cookie）；② 从这次窗口里页面发过的同站请求抄（`copyHeaders`）：页面发过同一个 endpoint 就整组抄它最近一次的，否则按 `record/headers.ts` 的 `headerKinds` 只抄页面级不变的头，每次都变、按 endpoint 变的不跨 endpoint 抄，和它们同一族的（名字去掉最后一段相同，如 `x-zse-93` 和 `x-zse-96`）也不抄：只带签名族的一半会被拒；这次窗口里还没有同站请求就等 1.5 秒；③ `auth` 声明的页面固定位置（cookie、localStorage、sessionStorage、meta），发送时在页面里现读；`authQuery` 同样现读，拼进地址的查询参数。`auth`、`authQuery` 读到的值登记给脱敏器（`Sanitizer.register`），之后在 URL、请求头、请求体里一律换成别名，不管名字像不像秘密；④ 前序请求的值由 action 代码写进 `headers`；`headers` 显式写的最后覆盖。cmd 行的 `detail` 记下抄自哪些 endpoint、抄了和没抄的头名。被 401/403 拒时，run 失败输出的「说明」写清楚抄了什么、没抄什么、从页面现读了什么（`takeRejected`）。原始请求跨站的也存，但只从发往同一目标站点的请求抄头，第三方的头不会带到别的站点。和当前页面同 origin、或者当前页面在这次窗口里自己往那个 origin 发过请求的，在当前页面上发；否则在请求自己的 origin 上开页面发（只看注册域名不够：a.example.com 和 b.example.com 同是 example.com，互不放行跨域）。
   - `waitRequest` 等页面自己发出的第一个匹配请求，签名由页面算。
   - **等待**只有四种，都有明确的结束条件和上限（`utils/constants.ts`）：① 页面可用：`navigate` 等到 `readyState` 是 interactive（`GOTO_WAIT_MS`，不等被墙的子资源）；② 页面安静 + 记录送达（`quiet`，`QUIET_MAX_MS` 2 秒）：页面没有在途请求、DOM 400ms 没变（`executor.js` 的 `quiet`），并且页面报告的最后一个消息序号已经到了 daemon（`ingest.ts` 的 `waitDelivered`）；debug 每步之后、第一次 `navigate`、`request` 抄头前（刚 `navigate` 过、这次窗口还没有同站请求时）默认等，SDK 的 `navigate` / 操作带 `{ settle: true }` 时等；③ 等某个请求：`waitRequest`（`WAIT_REQUEST_MS`）；④ 等某个元素：操作先找元素、`waitFor`（10 秒）。单步 `STEP_TIMEOUT_MS`、整个 action `ACTION_TIMEOUT_MS` 是兜底。没有固定时长的等待。
-- **ActionRunner**（`run/runner.ts`）：action 在 worker 线程里跑，SDK（`action-lib/index.js`，daemon 每次启动整个覆盖到 `~/.speedrun/lib`，保证和 daemon 同一个版本）的每个函数是向 daemon 发一个操作，不用传 page；action 和 compose 文件是 `export default async ({ ...params }) => result`（`run/worker.ts` 调用它），`import … from "spr"`，`~/.speedrun/node_modules/spr` 链到 `lib/`；agent 自己的纯函数在 `~/.speedrun/helpers/`，只在不存在时建目录，从不覆盖；compose 跑的时候写成旁边的临时文件 `.run-*.mjs`（见 §2.2）。整体超时 115 秒（`@timeout` 可改）。最外层 compose 失败时输出带 `failedAction`、`page`（URL、标题、截图），像登录失效时带 `hint`。
-- **debug 的工具**（`commands/debug.ts`）：和 Claude in Chrome 同名、同参数、同语义：`read_page`、`find`、`get_page_text`（只看不动：不计次数、不附带观察；`read_page` 的全文存进 `pages/<编号>-a11y.txt`）、`computer`（`parseComputer`：坐标或 `--ref`）、`form_input`、`navigate`，加 speedrun 自有的 `inspect`、`trace`。输入（`RunHost.input`）先在页面里把目标换成坐标（`a11y.js` 的 `point`），再由扩展用 CDP 发，输出 `落在：`、`被遮挡：`、`定位：`、提醒；`form_input` 的文本框是点一下 → 全选 → 删除 → `insertText`，复选框状态不对就点，下拉框在页面里直接设值（原生下拉的选项 CDP 点不到），最后核对值。action 的 SDK 走同一个 `RunHost.input`，只是目标是持久定位。工具只用来触发页面行为、让 speedrun 录到请求；每条输出末行复述目标，代替分散的提醒。
+- **ActionRunner**（`run/runner.ts`）：`action` 和 `spr run -e` 在 worker 线程里跑，SDK（`action-lib/index.js`，daemon 每次启动覆盖到 `~/.speedrun/lib`，`lib/helpers` 软链到 `../helpers`，`~/.speedrun/node_modules/spr` 链到 `lib/`）的每个函数是向 daemon 发一个操作；`action` 文件是 `export default async ({ ...params }) => result`，`import … from "spr"` 或 `import … from "spr/helpers/<file>.js"`；`spr run -e` 写成 `~/.speedrun/.inline-*.mjs` 临时文件并在结束后删掉。整体超时默认 115 秒（`@timeout` 或 `--timeout` 可改）。
+
+- **debug 的工具**（`commands/debug.ts`）：和 Claude in Chrome 同名、同参数、同语义：`read_page`、`find`、`get_page_text`、`computer`（坐标或 `--ref`）、`form_input`、`navigate`，加 `inspect`、`trace`。输入（`RunHost.input`）先在页面里把目标换成坐标（`a11y.js` 的 `point`），再由扩展用 CDP 发。当窗口产生了未覆盖的请求或操作时，输出末尾附带提示让主 agent 派发后台 subagent 读取 `~/.speedrun/agents/distiller.md` 提炼 `action`。
 - **原始请求**（`record/raw.ts`）：含真值，只在 daemon 内存里，**绝不落盘**，daemon 重启就没了。
 - **请求头的信号**（`debug/observe.ts`、`record/auth.ts`、`record/headers.ts`）：观察里每个带非浏览器头的请求有一行「请求头」：按头名统计这个窗口里同站请求的真值怎么变（只在同一次页面加载里比），再拿真值和页面此刻的 cookie、localStorage、sessionStorage、meta 比对出位置；只输出、只记类别和位置（`endpoints.json` 的 `headers`），不记值。查询参数也一样比对：值在页面存储里找得到的，列一行「查询参数」（`querySignals`，给 `authQuery` 用），找不到不列。
 
 ## 8. 存储与安装
 
-- 用户数据：`~/.speedrun/debug-windows`、`~/.speedrun/run-windows`（日志）、`~/.speedrun/action`（`endpoints.json`、action 文件、`.seq`）、`~/.speedrun/compose`、`~/.speedrun/helpers`、`~/.speedrun/alias-salt`；speedrun 维护的 `~/.speedrun/lib`、`~/.speedrun/adblock-engine.bin`（adblock 规则的缓存）；运行时状态 `~/.speedrun/session`；运行时代码 `~/.speedrun/src`。
+- 用户数据：`~/.speedrun/debug-windows`、`~/.speedrun/run-windows`（日志）、`~/.speedrun/action`（`endpoints.json`、action 文件、`.seq`）、`~/.speedrun/helpers`、`~/.speedrun/alias-salt`；speedrun 维护的 `~/.speedrun/lib`、`~/.speedrun/agents`、`~/.speedrun/adblock-engine.bin`（adblock 规则的缓存）；运行时状态 `~/.speedrun/session`；运行时代码 `~/.speedrun/src`。
 - `setup.js` 把 skill 目录镜像到 `~/.speedrun`（只排除 `node_modules`、`.DS_Store`；本机数据目录不碰）、装依赖、注册 native host、生成命令、`build` 不同时让旧 daemon 退出（扩展重连时拉起新代码）、运行 `doctor`。
 - 版本：`~/.speedrun/src/.version` 的 `build`；只有 `setup.js` 发现 `build` 不同、或用户 `spr daemon restart` 时才换代码。`spr doctor` 只读。
 
