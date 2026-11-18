@@ -44,6 +44,11 @@ npm run verify:pack
 
 **自检只留最关键的，不模拟扩展**：一个测试必须守住一个“坏了就会静默出错或泄密”的点，否则不留。多文件改动时，改完全部文件再一次性跑 `check`/`test`，不要逐文件验证。
 
+**安装端到端验证（改安装文档或发版前）**：改过 `README.md`、`install.md` 或 `setup.js` 后，先确保目标变更已在 `main` 上（在线安装拉取 GitHub `main`），再在**仓库外的空目录**启动全新无上下文的 agent，原封不动输入 `README.md` 中的安装 prompt，验证它能自己走完 `skills add` → `skills ls -g` → 读 `install.md` → `setup.js` → `spr doctor`（全绿）→ `spr tabs`：
+
+- **覆盖升级本机（日常发版）**：在真实 `HOME` 下直接覆盖更新 `~/.speedrun/src` 并触发扩展自动重连（`~/.speedrun/action`、`debug-windows` 等用户数据不被覆盖）。
+- **隔离全新安装（首次引导验收）**：在临时 `HOME` 跑完 `setup.js` 后，配合独立 `--user-data-dir` Chrome 窗口手动在 `chrome://extensions` 加载一次扩展，确认 `spr doctor` 全绿后清理临时目录。
+
 ### 2.3 真实 Chrome 里的验证：用 Claude in Chrome
 
 **不再模拟扩展**：没有假扩展、没有桩 `chrome.*`、没有起 Chrome for Testing 的端到端脚本。改了扩展、页面脚本、speedrun 窗口（标签组）、action 运行时之后，用真实的 Chrome 验证。speedrun 只录自己标签组里的标签页，所以录制要在 debug 窗口里触发（先写好 compose，`spr debug <compose> navigate <网址>` 打开，`spr debug <compose> <工具>` 操作），再读 `~/.speedrun/debug-windows/<id>/` 下的 `timeline.jsonl`、`requests/` 和 `~/.speedrun/action/<站点>/endpoints.json`（格式见 `ARCHITECTURE.md` 第 6 节）；Claude in Chrome 只用来在 speedrun 组外浏览（确认不产生记录），以及开出被 `--url tab号` 引用的页面。
