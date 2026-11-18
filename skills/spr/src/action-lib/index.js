@@ -11,8 +11,12 @@ parentPort?.on("message", (m) => {
   const entry = pending.get(m.id);
   if (!entry) return;
   pending.delete(m.id);
-  if (m.error) entry.reject(new Error(m.error));
-  else entry.resolve(m.result);
+  if (m.error) {
+    const err = new Error(m.error);
+    if (m.sprCode) err.sprCode = m.sprCode;
+    if (m.failedAction) err.failedAction = m.failedAction;
+    entry.reject(err);
+  } else entry.resolve(m.result);
 });
 
 function call(op, args = {}) {

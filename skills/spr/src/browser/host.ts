@@ -6,7 +6,7 @@ import type { RawEntry, RawStore } from "../record/raw.ts";
 import type { AuthSnapshot } from "../record/auth.ts";
 import { endpointKey, endpointOf } from "../record/digest.ts";
 import { fetchableHeaders, headerKinds, notableHeaders } from "../record/headers.ts";
-import { GOTO_WAIT_MS, QUIET_MAX_MS, STEP_TIMEOUT_MS, WAIT_REQUEST_MS } from "../utils/constants.ts";
+import { EXTENSION_COMMAND_TIMEOUT_MS, GOTO_WAIT_MS, QUIET_MAX_MS, STEP_TIMEOUT_MS, WAIT_REQUEST_MS } from "../utils/constants.ts";
 import { isSameSite, parseUrl, siteOfUrl } from "../utils/url.ts";
 import type { AgentWindows } from "./window.ts";
 
@@ -252,12 +252,13 @@ export class RunHost {
     return s.tab;
   }
 
-  async callTab(tab: number, fn: string, args: unknown[]): Promise<any> {
+  async callTab(tab: number, fn: string, args: unknown[], timeoutMs = STEP_TIMEOUT_MS): Promise<any> {
     const done = this.d.win.busy(tab);
     const key = this.byTab.get(tab)?.key;
     const signal = key ? this.d.win.signalOf?.(key) : undefined;
+    const linkTimeout = Math.max(EXTENSION_COMMAND_TIMEOUT_MS, timeoutMs + 10_000);
     try {
-      const res = (await withTimeout(this.d.link.request("call", { tabId: tab, fn, args }), STEP_TIMEOUT_MS, "页面调用", signal)) as { v: unknown };
+      const res = (await withTimeout(this.d.link.request("call", { tabId: tab, fn, args }, linkTimeout), timeoutMs, "页面调用", signal)) as { v: unknown };
       return res.v;
     } catch (e) {
       // 标签页被关了（用户关了窗口、被回收）：在同一个站点重新拿一个再试一次
@@ -266,7 +267,7 @@ export class RunHost {
       const origin = s.origin;
       this.releaseTab(s);
       const fresh = await this.bind(s, origin);
-      const res = (await withTimeout(this.d.link.request("call", { tabId: fresh, fn, args }), STEP_TIMEOUT_MS, "页面调用", signal)) as { v: unknown };
+      const res = (await withTimeout(this.d.link.request("call", { tabId: fresh, fn, args }, linkTimeout), timeoutMs, "页面调用", signal)) as { v: unknown };
       return res.v;
     } finally {
       done();
@@ -417,8 +418,9 @@ export class RunHost {
     const safe = this.d.ingest.sanitizer.url(target.href);
     const detail = { method, endpoint, bareUrl: safe.bareUrl, query: safe.query, ...(a.json !== undefined ? { reqBody: JSON.stringify(this.d.ingest.sanitizer.body(a.json)).slice(0, 4000) } : {}), headersFrom: source.from, copied: source.copied, ...(source.skipped.length ? { skipped: source.skipped } : {}) };
     this.noteSent(s.key, method, endpoint, "direct");
+    const stepMs = a.timeout ?? STEP_TIMEOUT_MS;
     const res = await this.log(tab, "request", `${method} ${safe.bareUrl}`, detail, async () => {
-      const r = await withTimeout(this.callTab(tab, "fetch", [{ method, url: target.href, headers, body, timeout: a.timeout ?? STEP_TIMEOUT_MS }]), (a.timeout ?? STEP_TIMEOUT_MS) + 3000, "请求");
+      const r = await withTimeout(this.callTab(tab, "fetch", [{ method, url: target.href, headers, body, timeout: stepMs }], stepMs + 3000), stepMs + 3000, "请求");
       if (r.ok === false) throw new Error(`请求失败：${r.error}`);
       return { ...r, source };
     }, (r: any) => ({ status: r.status, size: r.size, ms: r.ms })) as { status?: number };

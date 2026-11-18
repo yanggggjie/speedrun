@@ -2,6 +2,12 @@
 
 ## 未发布
 
+- **机制收归与双 Agent 沉淀**：砍掉中间层 `compose`、`ask()`、`spr resume` 与 `link.ts`，持久化脚本收归为单层 `action`（`~/.speedrun/action/<站点>/<名>.js`，支持最多 2 层同窗嵌套）；免落盘组合统一走 `spr run -e '<js>' [--timeout 秒]`；新增后台 `distiller` subagent 提示词（`agents/distiller.md`）与中档快速模型选型指引、全链路 `invocations.jsonl` / `meta.json` 闭环及统计脚本 `tools/stats.mjs`。
+- **全局唯一黄色收纳组与 `WindowScope`（ABI 17）**：标签组降级为扩展内纯 UI 收纳盒（`parkInGroup` 单飞维护全局唯一黄色折叠 `speedrun` 组、`connect()` 握手自清场），移除 `chrome.storage.session`、手动拖进/拖出组以及会误伤后台折叠页的 `T.foreground()`；daemon 改用 `WindowScope`（含 `AbortSignal`）与 `tabId` 管理生命周期，去掉冗余 `reaper`、`robots.txt` 占位重跳与 `nested?: Session` 共享；`ActionRunner` 实现子 worker 级联中止与并发失败单次抢占截图。
+- **运行可靠性与报错体验提升**：`wrapInlineCode` 全量受控注入 SDK 导出，让 `-e` 误调未 `import` 的 `navigate` / `request` 统一命中 `inlineOnly` 守卫（退出码 `3` `usage`）；`sprCode` / `failedAction` 随异常值传递，避免 `.catch()` 吃掉的子错误污染后续 `timeout` / `cancelled`；扩展通道超时调至 `90s`（并随长 `request({ timeout })` 动态放宽），避免与 `60s` 步骤超时撞车。
+
+### 早期未发布变更（归档参考）
+
 - **破坏性改动：写可复用的脚本成为唯一主线。** 任务固定走 `Find → Write → Run ⇄ Debug`，不留兼容。其他机器上已有的 action、compose 要手动改成下面的写法。
   - `learn` 改名 `debug`：`spr debug <compose> navigate <网址|tab 号>` 打开窗口，窗口按 compose 查找，可以写多个 action。删除 `learn new`、句柄、`try_action`。日志目录改成 `debug-windows/`，旧的 `learn-windows/`、`learn-guide.md` 不再使用，可以手动删除。
   - `spr run` 只接受 compose，单步任务也写 compose。执行前检查一次报全缺的 action（`is not defined`），什么都不发。删除 `spr run <名> --help`，说明和参数直接读文件头。

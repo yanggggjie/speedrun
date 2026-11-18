@@ -20,8 +20,8 @@ export const INVOCATIONS_MAX_BYTES = 20 * 1024 * 1024;
 export const DAEMON_READY_MS = 8_000;
 /** 没有扩展连接、也没有命令请求超过这么久，daemon 退出。 */
 export const DAEMON_IDLE_EXIT_MS = 10 * 60_000;
-/** daemon 等扩展回包的上限。 */
-export const EXTENSION_COMMAND_TIMEOUT_MS = 60_000;
+/** daemon 等扩展回包的上限（需大于 STEP_TIMEOUT_MS，避免业务请求超时先触发扩展通道超时）。 */
+export const EXTENSION_COMMAND_TIMEOUT_MS = 90_000;
 
 /** 站点目录：<站点>/ 放 endpoints.json、page-api.json 和 action 文件；日志按窗口放在 debug-windows/、run-windows/，见 record/windowlog.ts。 */
 export const ACTION_DIR = path.join(DATA_HOME, "action");

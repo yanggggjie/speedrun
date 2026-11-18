@@ -6,8 +6,10 @@ import { RawStore } from "../record/raw.ts";
 
 const raw = new RawStore();
 const sent: Array<{ url: string; headers: Record<string, string> }> = [];
+const linkTimeouts: Array<{ name: string; timeoutMs: number | undefined }> = [];
 const link = {
-  request: async (name: string, args: Record<string, unknown>) => {
+  request: async (name: string, args: Record<string, unknown>, timeoutMs?: number) => {
+    linkTimeouts.push({ name, timeoutMs });
     if (name === "goto") return { url: String(args.url), title: "t", loaded: true };
     if (name === "call") {
       const req = (args.args as Array<{ url: string; headers: Record<string, string> }>)[0]!;
@@ -55,6 +57,8 @@ assert.equal(sent[0]!.headers.authorization, undefined, "这次窗口里没有�
 const t0 = Date.now();
 await host.op(fresh, "request", { url: "https://api.example.com/api/me" });
 assert.ok(Date.now() - t0 < 1000, "没打开过页面：不等页面发请求（只靠 cookie 的站点不被拖慢）");
+await host.op(fresh, "request", { url: "https://api.example.com/api/slow", timeout: 100_000 });
+assert.equal(linkTimeouts.at(-1)?.timeoutMs, 113_000, "显式长 timeout 时扩展通道上限同步放宽，不先于 fetch 超时");
 
 // releaseTab 只归还当前 session 的 tab，不清理窗口级 raw；end(key) 才清 raw
 const sRel = new Session("r-rel-20261101-120000");

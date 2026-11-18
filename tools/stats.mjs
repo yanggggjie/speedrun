@@ -84,8 +84,9 @@ const turnsSummary = (eps) => {
   return t.length ? `共 ${t.length} 段，p50=${pQuantile(t, 0.5)} turns，p90=${pQuantile(t, 0.9)} turns，max=${t.at(-1)} turns` : "无";
 };
 
-// 2. 沉淀漏斗
-const debugRows = rows.filter((r) => r.cmd === "debug" && r.window);
+// 2. 沉淀漏斗（仅计入磁盘上仍存在的 debug 窗口目录，过滤已清理的测试窗口）
+const debugWindowExists = (id) => fs.existsSync(path.join(dataHome, "debug-windows", id, "meta.json"));
+const debugRows = rows.filter((r) => r.cmd === "debug" && r.window && debugWindowExists(r.window));
 const windowsPrompted = new Set(debugRows.filter((r) => r.promptedDistill).map((r) => r.window));
 const allDebugWins = new Set(debugRows.map((r) => r.window));
 const distillerWins = new Set(rows.filter((r) => r.caller?.role === "distiller" && r.caller?.fromWindow).map((r) => r.caller.fromWindow));

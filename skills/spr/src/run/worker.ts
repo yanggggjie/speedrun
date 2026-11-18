@@ -9,6 +9,12 @@ try {
   const result = await (mod.default as (p: Record<string, unknown>) => unknown)(params);
   parentPort?.postMessage({ type: "done", result: result === undefined ? null : result });
 } catch (e) {
-  const err = e as { stack?: string; message?: string } | undefined;
-  parentPort?.postMessage({ type: "fail", error: String(err?.stack ?? e), message: String(err?.message ?? e) });
+  const err = e as { stack?: string; message?: string; sprCode?: string; failedAction?: string } | undefined;
+  parentPort?.postMessage({
+    type: "fail",
+    error: String(err?.stack ?? e),
+    message: String(err?.message ?? e),
+    ...(err?.sprCode ? { sprCode: err.sprCode } : {}),
+    ...(err?.failedAction ? { failedAction: err.failedAction } : {}),
+  });
 }

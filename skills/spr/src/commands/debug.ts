@@ -164,7 +164,7 @@ function distillPromptLine(ctx: Ctx, w: DebugWindow, out: Output): string | unde
   if (out.caller?.role === "distiller") return undefined;
   if (!hasUnprecipitatedWork(ctx, w)) return undefined;
   out.rec.promptedDistill = true;
-  return `未沉淀窗口：${ctx.log.winDir(w.id)} —— 完成本次用户任务后，启动一个后台 subagent（不支持后台则普通 subagent）读取 ${DISTILLER_FILE} 并处理该窗口目录`;
+  return `未沉淀窗口：${ctx.log.winDir(w.id)} —— 完成本次用户任务后，启动一个后台 subagent（优先中档快速编程模型，避免旗舰重推理或极简小模型；不支持后台则普通 subagent）读取 ${DISTILLER_FILE} 并处理该窗口目录`;
 }
 
 async function closeDebug(name: string, ctx: Ctx, out: Output): Promise<void> {

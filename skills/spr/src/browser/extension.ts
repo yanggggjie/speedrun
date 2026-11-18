@@ -27,12 +27,12 @@ export class ExtensionLink {
   private handlers = new Map<string, (msg: Record<string, unknown>) => void>();
 
   /** 让扩展执行一个操作。 */
-  request(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  request(name: string, args: Record<string, unknown> = {}, timeoutMs = EXTENSION_COMMAND_TIMEOUT_MS): Promise<unknown> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`扩展命令超时 ${EXTENSION_COMMAND_TIMEOUT_MS}ms：${name}`));
-      }, EXTENSION_COMMAND_TIMEOUT_MS);
+        if (this.pending.delete(id)) reject(new Error(`扩展命令超时 ${timeoutMs}ms：${name}`));
+      }, timeoutMs);
       timer.unref();
       this.pending.set(id, { resolve, reject, timer });
       try {

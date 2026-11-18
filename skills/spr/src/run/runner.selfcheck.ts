@@ -92,11 +92,17 @@ assert.deepEqual(plain(inlineImport), { status: "success", result: "[6]" }, "支
 
 const inlineNav = await runner.runInline(`import { navigate } from "spr";\nawait navigate("https://example.com/");`);
 assert.ok(inlineNav.status === "failure" && inlineNav.code === "usage" && /不能直接操作页面/.test(inlineNav.error), "run -e 里直接碰页面被拒");
+const inlineUnimported = await runner.runInline(`await request({ url: "https://example.com/api" });`);
+assert.ok(inlineUnimported.status === "failure" && inlineUnimported.code === "usage" && /不能直接操作页面/.test(inlineUnimported.error), "run -e 里未写 import 直接调 request/navigate 也统一拦成 usage");
 assert.deepEqual(fs.readdirSync(root).filter((f) => f.startsWith(".inline-")), [], "跑完不留临时文件");
 
-// 超时与进程退出取消（signal）
+// 超时与进程退出取消（signal）；被 .catch() 捕获的子 action 失败不污染外层 timeout 的 code
 const slowInline = await runner.runInline(`await sleep(3000); return 1;`, { timeoutMs: 800 });
 assert.ok(slowInline.status === "failure" && slowInline.code === "timeout" && /超过 1 秒/.test(slowInline.error));
+const caughtThenTimeout = await runner.runInline(`await action("nobody", {}).catch(() => null); await sleep(3000); return 1;`, { timeoutMs: 800 });
+assert.equal(caughtThenTimeout.status, "failure");
+assert.equal(caughtThenTimeout.code, "timeout", "已捕获的子失败不覆盖后续 timeout 错误码");
+assert.equal(caughtThenTimeout.failedAction, undefined, "timeout 不误挂已捕获的 failedAction");
 
 const ac = new AbortController();
 setTimeout(() => ac.abort(), 100);

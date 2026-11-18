@@ -37,7 +37,7 @@ allowed-tools: Bash(~/.speedrun/bin/spr *)
      ```
      （用户说“我开着的那个页面”时，先用 `~/.speedrun/bin/spr tabs` 对出 `tab 号`；`<窗口名>` 用小写字母、数字和 `-`，如 `zhihu-hot`，无需预先建文件。）
    - **本次就是翻很多页 / 处理很多条的批量任务**：在窗口里只做第 1 条看清请求，当场写成 `~/.speedrun/action/<站点>/<名字>.js`（写法见 `~/.speedrun/debug-guide.md`），再用 `spr run -e` 一次跑完——比手动点几十次快得多。
-   - **异步沉淀 `action`（重要）**：当 `spr debug` 输出末尾出现 `未沉淀窗口：<窗口目录>` 提示时，在回复用户的同一轮启动一个**后台 subagent**（当前宿主不支持后台 subagent 则用普通 subagent；完全没有 subagent 工具的环境才自己内联做），把 `<窗口目录>` 和本次任务一句话目标传给它，让它读取 `~/.speedrun/agents/distiller.md` 将窗口日志提炼为可复用的 `action`。
+   - **异步沉淀 `action`（重要）**：当 `spr debug` 输出末尾出现 `未沉淀窗口：<窗口目录>` 提示时，在回复用户的同一轮启动一个**后台 subagent**（当前宿主不支持后台 subagent 则用普通 subagent；完全没有 subagent 工具的环境才自己内联做），模型优先选**快速的中档编程模型**（如 Antigravity 用 `flash`、Claude Code 用 `sonnet`，不必用旗舰重推理模型，也避免用极简摘要小模型；若中档受限则继承当前模型），把 `<窗口目录>` 和本次任务一句话目标传给它，让它读取 `~/.speedrun/agents/distiller.md` 将窗口日志提炼为可复用的 `action`。
 
 ## 2. 命令速查
 

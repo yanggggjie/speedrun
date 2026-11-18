@@ -70,7 +70,6 @@ type RunContext = {
   stacks: string[];
   calls: CallRecord[];
   drafts: Set<string>;
-  code?: ErrorCode;
   cancelSignal?: AbortSignal;
   controller: AbortController;
   children: Set<Promise<unknown>>;
@@ -92,9 +91,14 @@ export function trimError(message: string, stack: string, dirs = USER_DIRS): { t
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...a: string[]) => (...a: unknown[]) => Promise<unknown>;
 
+const SDK_EXPORTS: string[] = (() => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, "..", "action-lib", "index.js"), "utf8");
+  return [...src.matchAll(/^export\s+(?:async\s+)?(?:const|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/gm)].map((m) => m[1]!);
+})();
+
 /**
  * 把 spr run -e '<js>' 的内联代码包成 worker 可加载的 ES 模块：
- * - 顶层 import 语句保留在模块最前；自动注入未声明的 action、sleep；
+ * - 顶层 import 语句保留在模块最前；自动注入未声明的 spr SDK 导出（让 -e 误调页面/请求操作时统一命中 inlineOnly 守卫）；
  * - 单表达式（没写 return）自动 return，多语句块按原样执行。
  */
 export function wrapInlineCode(raw: string): string {
@@ -108,15 +112,14 @@ export function wrapInlineCode(raw: string): string {
     else { inImports = false; restLines.push(line); }
   }
   const body = restLines.join("\n").trim();
-  const hasAction = imports.some((l) => /\baction\b/.test(l));
-  const hasSleep = imports.some((l) => /\bsleep\b/.test(l));
-  const inject: string[] = [];
-  if (!hasAction) inject.push("action");
-  if (!hasSleep) inject.push("sleep");
+  const isDeclared = (name: string): boolean =>
+    imports.some((l) => new RegExp(`\\b${name}\\b`).test(l)) ||
+    new RegExp(`\\b(?:const|let|var|function|class)\\s+${name}\\b`).test(body);
+  const inject = SDK_EXPORTS.filter((name) => !isDeclared(name));
   const header = [...(inject.length ? [`import { ${inject.join(", ")} } from "spr";`] : []), ...imports].join("\n");
   if (body && !/\breturn\b/.test(body)) {
     try {
-      new AsyncFunction("action", "sleep", `return (\n${body}\n);`);
+      new AsyncFunction(`return (\n${body}\n);`);
       return `${header}\nexport default async () => (\n${body}\n);\n`;
     } catch { /* 按语句块包 */ }
   }
@@ -145,13 +148,7 @@ export class ActionRunner {
     const depth = opts.depth ?? 1;
     const chain = [...(opts.chain ?? []), name];
     const parentKey = opts.parentKey;
-    const earlyFail = (code: ErrorCode, error: string): Outcome => {
-      if (parentKey) {
-        const tr = this.traces.get(parentKey);
-        if (tr) tr.code ??= code;
-      }
-      return { status: "failure", code, error, ...(parentKey ? { failedAction: name } : {}) };
-    };
+    const earlyFail = (code: ErrorCode, error: string): Outcome => ({ status: "failure", code, error, ...(parentKey ? { failedAction: name } : {}) });
     if (depth > MAX_ACTION_DEPTH) {
       return earlyFail("usage", `action 嵌套调用最多 ${MAX_ACTION_DEPTH} 层（${chain.join(" → ")}）：把公共纯函数放进 ~/.speedrun/helpers/，或在顶层用 spr run -e 组合`);
     }
@@ -189,7 +186,7 @@ export class ActionRunner {
           trace.failureShotPromise = this.host.failureShot(session, this.windows.failureFile(key));
           await trace.failureShotPromise;
         }
-        if (parentKey) { out.failedAction ??= name; trace.code ??= out.code; }
+        if (parentKey) out.failedAction ??= name;
         else await this.decorateFailure(out, key, name, trace);
       }
       if (out.status === "success" && summary.status === "draft") trace.drafts.add(file);
@@ -237,7 +234,6 @@ export class ActionRunner {
   }
 
   private async decorateFailure(out: Extract<Outcome, { status: "failure" }>, key: string, label: string, trace: RunContext): Promise<void> {
-    if (out.failedAction && trace.code) out.code = trace.code;
     out.code ??= "internal";
     out.hasNavigated = trace.hasNavigated;
     if (trace.stacks.length) out.stack = trace.stacks.join("\n\n");
@@ -305,7 +301,6 @@ export class ActionRunner {
       const logs: string[] = [];
       const worker = new Worker(WORKER, { workerData: { file, params }, env: {} });
       let settled = false;
-      let failedAction: string | undefined;
       const onAbort = (): void => {
         const cancelled = trace?.cancelSignal?.aborted === true;
         finish({ status: "failure", code: cancelled ? "cancelled" : "internal", error: cancelled ? "已取消：调用 spr 的进程退出了（被停止、被杀或超时），这次 run 中止" : "run 窗口已结束" });
@@ -316,7 +311,6 @@ export class ActionRunner {
         clearTimeout(timer);
         trace?.controller.signal.removeEventListener("abort", onAbort);
         void worker.terminate();
-        if (out.status === "failure" && failedAction) out.failedAction ??= failedAction;
         if (out.status === "failure" && logs.length) out.error += `\n--- action 输出 ---\n${logs.slice(-10).join("\n")}`;
         resolve(out);
       };
@@ -331,7 +325,8 @@ export class ActionRunner {
           const stack = String(m.error), message = String(m.message ?? stack.split("\n")[0]);
           trace?.stacks.push(stack);
           const t = trimError(message, stack, userDirs);
-          return finish({ status: "failure", code: "action-throw", error: t.text, ...(t.at ? { at: t.at } : {}) });
+          const code = (m.sprCode as ErrorCode | undefined) ?? "action-throw";
+          return finish({ status: "failure", code, error: t.text, ...(t.at ? { at: t.at } : {}), ...(m.failedAction ? { failedAction: String(m.failedAction) } : {}) });
         }
         if (m.type === "log") { if (logs.length < MAX_LOG_LINES) logs.push(String(m.text).slice(0, 500)); return; }
         if (m.type !== "call") return;
@@ -347,8 +342,10 @@ export class ActionRunner {
           run = child.then((o) => {
             trace?.calls.push({ name, ms: Date.now() - t0, status: o.status === "success" ? "success" : "failure" });
             if (o.status === "failure") {
-              failedAction = o.failedAction ?? name;
-              throw new Error(o.error.startsWith(`[${name}]`) ? o.error : `[${name}] ${o.error}`);
+              throw Object.assign(new Error(o.error.startsWith(`[${name}]`) ? o.error : `[${name}] ${o.error}`), {
+                sprCode: o.code,
+                failedAction: o.failedAction ?? name,
+              });
             }
             return o.result;
           });
@@ -357,7 +354,17 @@ export class ActionRunner {
           if (m.op === "navigate" && trace) trace.hasNavigated = true;
           return r;
         });
-        run.then((result) => reply({ result: result ?? null }), (e: unknown) => reply({ error: e instanceof Error ? e.message : String(e) }));
+        run.then(
+          (result) => reply({ result: result ?? null }),
+          (e: unknown) => {
+            const err = e as { message?: string; sprCode?: string; failedAction?: string } | undefined;
+            reply({
+              error: e instanceof Error ? e.message : String(e),
+              ...(err?.sprCode ? { sprCode: err.sprCode } : {}),
+              ...(err?.failedAction ? { failedAction: err.failedAction } : {}),
+            });
+          },
+        );
       });
     });
   }
