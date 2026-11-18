@@ -26,7 +26,7 @@ const REPEAT_MAX = 6;
 export type ObserveDeps = {
   ingest: Ingestor;
   log: WindowLog;
-  win: Pick<AgentWindows, "groupOf">;
+  win: Pick<AgentWindows, "winOf">;
   tabs(): Promise<TabInfo[]>;
   index: EndpointIndex;
   raw: RawStore;
@@ -47,12 +47,11 @@ export async function observe(d: ObserveDeps, w: DebugWindow, sess: Session | un
   const timeline = d.log.readRows(w.id, { limit: 1_000_000 });
   const rows = timeline.filter((r) => r.seq > from && r.seq <= to);
   const lines = [`观察：${to > from ? `#${from + 1} → #${to}` : `#${from} 之后没有新的编号`}`];
-  // 页面：这个窗口（speedrun 组）里的标签页，当前页面在前
-  const group = d.win.groupOf(w.id);
-  const tabs = w.open && group !== undefined ? (await d.tabs()).filter((t) => t.groupId === group) : [];
+  // 页面：这个窗口所属的标签页，当前页面在前
+  const tabs = w.open ? (await d.tabs()).filter((t) => d.win.winOf(t.tabId) === w.id) : [];
   const current = tabs.find((t) => t.tabId === sess?.tab) ?? tabs[0];
   if (current) { w.url = current.url; w.title = current.title; }
-  lines.push(current ? `页面：${current.url} "${current.title}"${tabs.length > 1 ? `；窗口里共 ${tabs.length} 个标签页，其余：${tabs.filter((t) => t !== current).map((t) => t.url).join("、")}` : ""}` : `页面：speedrun 组没开（上次在 ${w.url}）`);
+  lines.push(current ? `页面：${current.url} "${current.title}"${tabs.length > 1 ? `；窗口里共 ${tabs.length} 个标签页，其余：${tabs.filter((t) => t !== current).map((t) => t.url).join("、")}` : ""}` : `页面：窗口没开（上次在 ${w.url}）`);
   const navs = rows.filter((r) => r.type === "nav" && r.via !== "replaceState");
   const opened = rows.filter((r) => r.type === "tab" && (r.via === "opened" || r.via === "leaked"));
   if (opened.length) lines.push(`新标签页：页面打开了 ${opened.slice(-5).map((r) => `#${r.seq} ${r.url}`).join("、")}（在同一个组里；页面里的新开都由 speedrun 接管，不会切走用户的标签页）`);

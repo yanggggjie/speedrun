@@ -8,17 +8,12 @@
   // ---- 发消息：调用扩展经 CDP 注册的 binding（window.__sprSend），交给扩展，再到 daemon。限流，防止异常页面把日志刷爆 ----
   // 页面脚本只在 speedrun 的标签页里（扩展经 CDP 注入，用户的网页里没有），所以不用再问"录不录"。
   // 每条消息带这次页面加载的编号 d 和递增序号 n：操作结束时页面报告最后的 n，daemon 等它到了，就知道这一步引发的记录都收齐了。
-  // 标签页被拖出 speedrun 的组时扩展先调 T.stop()：之后一条都不发，也不再拦新标签页（当前文档里的钩子还在，下一个文档就没有脚本了）。
   T.doc = Math.random().toString(36).slice(2, 10);
   T.n = 0;
   const BINDING = "__sprSend";
-  let sent = 0, windowStart = Date.now(), stopped = false;
+  let sent = 0, windowStart = Date.now();
   const top = (() => { try { return window === window.top; } catch { return false; } })();
-  T.stop = () => { stopped = true; };
-  T.recording = () => !stopped;
-  T.isAgent = () => !stopped;
   T.post = (o) => {
-    if (stopped) return;
     const now = Date.now();
     if (now - windowStart > 60000) { windowStart = now; sent = 0; }
     if (o.k !== "res" && ++sent > 3000) return;
@@ -26,12 +21,6 @@
     // binding 每次现取：解除附着再重新附着后扩展会重新注册它
     try { globalThis[BINDING](JSON.stringify({ top, page: location.href, msg: m })); } catch {}
   };
-
-  // ---- 前台判断：页面可见，或刚离开前台不久（点击触发的请求可能还在路上）----
-  const GRACE_MS = 8000;
-  let hiddenAt = 0;
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") hiddenAt = Date.now(); });
-  T.foreground = () => document.visibilityState === "visible" || Date.now() - hiddenAt < GRACE_MS;
 
   // ---- 元素描述 ----
   const SENSITIVE_AUTOCOMPLETE = /cc-|password|one-time/i;

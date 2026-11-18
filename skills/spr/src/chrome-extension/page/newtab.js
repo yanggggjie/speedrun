@@ -1,6 +1,6 @@
 // 页面要新开标签页时拦下来，交给扩展在同一个 speedrun 组里开（扩展的 openForPage）。
 // 原因：页面在用户手势下自己新开标签页（点 target=_blank、cmd/中键点击、window.open），Chrome 会选中新标签页、显示它的窗口，
-// 用户在别的应用里也会被拉回 Chrome——这就是抢前台。speedrun 自己开的标签页不会。只在 speedrun 的标签页里拦（T.isAgent()），用户的标签页不动。
+// 用户在别的应用里也会被拉回 Chrome——这就是抢前台。speedrun 自己开的标签页不会。只经 CDP 注入 speedrun 的标签页，用户的标签页没有这段脚本。
 // 不拦：带窗口参数的 window.open（弹出窗口，如 OAuth 登录）、download 链接、非 http(s) 地址、指向页面里已有 frame 的 target。
 // 代价：新标签页没有 window.opener，原页面拿到的是假的窗口对象；target=_blank 的表单改在当前标签页提交。
 (() => {
@@ -56,7 +56,7 @@
 
   // 点链接（包括中键 auxclick）：只拦默认行为，不挡页面自己的处理
   const onClick = (e) => {
-    if (!T.isAgent() || e.defaultPrevented) return;
+    if (e.defaultPrevented) return;
     const a = linkOf(e);
     if (!a || !N.link(linkInfo(a), ev(e))) return;
     e.preventDefault();
@@ -70,7 +70,7 @@
 
   // 脚本 a.click() 一个没放进页面的链接（事件到不了 window）
   wrap(HTMLAnchorElement.prototype, "click", (fn, self, args) => {
-    if (T.isAgent() && self && !self.isConnected && N.link(linkInfo(self), {})) { want(self.href); return; }
+    if (self && !self.isConnected && N.link(linkInfo(self), {})) { want(self.href); return; }
     return Reflect.apply(fn, self, args);
   });
 
@@ -87,7 +87,7 @@
   };
   wrap(window, "open", (fn, self, args) => {
     const [url, target, features] = args;
-    if (!T.isAgent() || !N.open(url, target, features, frameNamed(target))) return Reflect.apply(fn, self, args);
+    if (!N.open(url, target, features, frameNamed(target))) return Reflect.apply(fn, self, args);
     const blank = url === undefined || url === null || url === "" || url === "about:blank";
     if (!blank) want(url);
     return fakeWindow(blank);
@@ -95,7 +95,7 @@
 
   // 表单：target 指向新标签页的改在当前标签页提交
   const fixForm = (form, submitter) => {
-    if (!T.isAgent() || !form) return;
+    if (!form) return;
     if (submitter && submitter.hasAttribute && submitter.hasAttribute("formtarget") && N.form(submitter.getAttribute("formtarget"), frameNamed(submitter.getAttribute("formtarget")))) submitter.setAttribute("formtarget", "_self");
     if (N.form(form.getAttribute("target"), frameNamed(form.getAttribute("target")))) form.setAttribute("target", "_self");
   };

@@ -24,7 +24,7 @@ export type CallRecord = { name: string; ms: number; status: "success" | "failur
  */
 export type Outcome = (
   | { status: "success"; result: unknown }
-  | { status: "failure"; error: string; code?: ErrorCode; at?: string; stack?: string; failedAction?: string; page?: FailurePage; hint?: string }
+  | { status: "failure"; error: string; code?: ErrorCode; at?: string; stack?: string; failedAction?: string; page?: FailurePage; hint?: string; hasNavigated?: boolean }
 ) & {
   runWindow?: string;
   drafts?: string[];
@@ -63,10 +63,20 @@ export function runWindowsOf(log: Pick<WindowLog, "freshName" | "openWindow" | "
   };
 }
 
-export type RunOptions = { depth?: number; chain?: string[]; signal?: AbortSignal };
+export type RunOptions = { depth?: number; chain?: string[]; signal?: AbortSignal; parentKey?: string };
 
-/** 一次 run（含嵌套调用的 action）共用的记录：完整 stack、每次 action() 调用、最先失败的类别、取消信号。 */
-type Trace = { stacks: string[]; calls: CallRecord[]; code?: ErrorCode; signal?: AbortSignal };
+/** 一次 run（含嵌套调用的 action）共用的窗口级上下文：完整 stack、调用记录、draft 列表、失败现场图、取消信号。 */
+type RunContext = {
+  stacks: string[];
+  calls: CallRecord[];
+  drafts: Set<string>;
+  code?: ErrorCode;
+  cancelSignal?: AbortSignal;
+  controller: AbortController;
+  children: Set<Promise<unknown>>;
+  hasNavigated: boolean;
+  failureShotPromise?: Promise<FailurePage | undefined>;
+};
 
 /** 用户写的文件：action、helpers。报错里只留这些文件的 stack 帧，speedrun 自己的完整存进 error.txt。 */
 const USER_DIRS = [ACTION_DIR, HELPERS_DIR].map((d) => `${d}${path.sep}`);
@@ -118,7 +128,7 @@ export class ActionRunner {
   private readonly host: RunHost;
   private readonly paths: RunnerPaths;
   private readonly windows: RunWindows;
-  private readonly traces = new Map<string, Trace>();
+  private readonly traces = new Map<string, RunContext>();
   /** 正在后台关的 run 窗口：结果先返回，daemon 退出前等它们关完（drain）。 */
   private readonly closing = new Set<Promise<void>>();
   /** 单个 action 的超时（自检里调小）；默认按文件头的 @timeout 或 ACTION_TIMEOUT_MS。 */
@@ -130,16 +140,17 @@ export class ActionRunner {
     this.windows = windows;
   }
 
-  /** 按名字运行 action；嵌套调用（nested 传进来）共用这次 run 的窗口和已打开的页面，最多嵌套 MAX_ACTION_DEPTH 层。 */
-  async runAction(name: string, params: Record<string, unknown>, nested?: Session, opts: RunOptions = {}): Promise<Outcome> {
+  /** 按名字运行 action；嵌套调用（opts.parentKey 传进来）共用同一 RunContext 与窗口池，每次调用独立借还 tab，最多嵌套 MAX_ACTION_DEPTH 层。 */
+  async runAction(name: string, params: Record<string, unknown>, opts: RunOptions = {}): Promise<Outcome> {
     const depth = opts.depth ?? 1;
     const chain = [...(opts.chain ?? []), name];
+    const parentKey = opts.parentKey;
     const earlyFail = (code: ErrorCode, error: string): Outcome => {
-      if (nested) {
-        const tr = this.traces.get(nested.key);
+      if (parentKey) {
+        const tr = this.traces.get(parentKey);
         if (tr) tr.code ??= code;
       }
-      return { status: "failure", code, error, ...(nested ? { failedAction: name } : {}) };
+      return { status: "failure", code, error, ...(parentKey ? { failedAction: name } : {}) };
     };
     if (depth > MAX_ACTION_DEPTH) {
       return earlyFail("usage", `action 嵌套调用最多 ${MAX_ACTION_DEPTH} 层（${chain.join(" → ")}）：把公共纯函数放进 ~/.speedrun/helpers/，或在顶层用 spr run -e 组合`);
@@ -159,33 +170,46 @@ export class ActionRunner {
     const typed = coerceParams(file, params);
     if ("error" in typed) return earlyFail("param", `[${name}] ${typed.error}`);
     params = typed.params;
-    const key = nested?.key ?? this.windows.open(name, { action: name, params });
-    if (!nested) this.traces.set(key, { stacks: [], calls: [], ...(opts.signal ? { signal: opts.signal } : {}) });
+    const key = parentKey ?? this.windows.open(name, { action: name, params });
+    if (!parentKey) {
+      const controller = new AbortController();
+      if (opts.signal) {
+        if (opts.signal.aborted) controller.abort();
+        else opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+      }
+      this.traces.set(key, { stacks: [], calls: [], drafts: new Set(), controller, children: new Set(), hasNavigated: false, ...(opts.signal ? { cancelSignal: opts.signal } : {}) });
+      this.host.watchSent(key);
+    }
     const trace = this.traces.get(key)!;
     const session = new Session(key);
-    if (nested) { session.tab = nested.tab; session.origin = nested.origin; session.fresh = nested.fresh; }
-    else this.host.watchSent(key);
     try {
       const out = await this.work(file, params, actionTimeoutMs(file), session, depth, chain);
-      if (out.status === "failure" && nested) { out.failedAction ??= name; trace.code ??= out.code; }
-      if (out.status === "failure" && !nested) await this.decorateFailure(out, session, key, name, trace);
-      if (out.status === "success" && summary.status === "draft") session.draftsOk.push(file);
-      if (nested) {
-        nested.tab = session.tab; nested.origin = session.origin; nested.fresh = session.fresh;
-        nested.draftsOk.push(...session.draftsOk);
-      } else {
-        this.attachWindowSummary(out, key, session, trace);
+      if (out.status === "failure") {
+        if (!trace.failureShotPromise && session.tab !== undefined) {
+          trace.failureShotPromise = this.host.failureShot(session, this.windows.failureFile(key));
+          await trace.failureShotPromise;
+        }
+        if (parentKey) { out.failedAction ??= name; trace.code ??= out.code; }
+        else await this.decorateFailure(out, key, name, trace);
       }
+      if (out.status === "success" && summary.status === "draft") trace.drafts.add(file);
+      if (!parentKey) this.attachWindowSummary(out, key, trace);
       return out;
     } finally {
-      if (!nested) await this.cleanupOuter(key, session);
+      this.host.releaseTab?.(session);
+      if (!parentKey) await this.cleanupOuter(key);
     }
   }
 
   /** 免落盘运行一段内联组合代码（spr run -e '<js>'）：共用一个 run 窗口，只能调 action() 和 sleep()。 */
   async runInline(code: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Outcome> {
     const key = this.windows.open("inline", { action: "-e", mode: "inline" });
-    this.traces.set(key, { stacks: [], calls: [], ...(opts.signal ? { signal: opts.signal } : {}) });
+    const controller = new AbortController();
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+    this.traces.set(key, { stacks: [], calls: [], drafts: new Set(), controller, children: new Set(), hasNavigated: false, ...(opts.signal ? { cancelSignal: opts.signal } : {}) });
     const trace = this.traces.get(key)!;
     const session = new Session(key);
     session.inlineOnly = true;
@@ -201,21 +225,23 @@ export class ActionRunner {
         if (out.at) out.at = out.at.split(tmp).join("<spr run -e>");
         if (out.error.includes("不能直接操作页面或发 request")) out.code = "usage";
         trace.stacks = trace.stacks.map((t) => t.split(tmp).join("<spr run -e>"));
-        await this.decorateFailure(out, session, key, "-e", trace);
+        await this.decorateFailure(out, key, "-e", trace);
       }
-      this.attachWindowSummary(out, key, session, trace);
+      this.attachWindowSummary(out, key, trace);
       return out;
     } finally {
       fs.rmSync(tmp, { force: true });
-      await this.cleanupOuter(key, session);
+      this.host.releaseTab?.(session);
+      await this.cleanupOuter(key);
     }
   }
 
-  private async decorateFailure(out: Extract<Outcome, { status: "failure" }>, session: Session, key: string, label: string, trace: Trace): Promise<void> {
+  private async decorateFailure(out: Extract<Outcome, { status: "failure" }>, key: string, label: string, trace: RunContext): Promise<void> {
     if (out.failedAction && trace.code) out.code = trace.code;
     out.code ??= "internal";
+    out.hasNavigated = trace.hasNavigated;
     if (trace.stacks.length) out.stack = trace.stacks.join("\n\n");
-    const page = await this.host.failureShot(session, this.windows.failureFile(key));
+    const page = trace.failureShotPromise ? await trace.failureShotPromise : undefined;
     if (page) out.page = page;
     if (page?.url && isLoginUrl(page.url)) {
       const debugName = out.failedAction ?? (label === "-e" ? "explore" : label);
@@ -224,9 +250,9 @@ export class ActionRunner {
     this.addRejected(out, key);
   }
 
-  private attachWindowSummary(out: Outcome, key: string, session: Session, trace: Trace): void {
+  private attachWindowSummary(out: Outcome, key: string, trace: RunContext): void {
     out.runWindow = key;
-    out.drafts = [...new Set(session.draftsOk)];
+    out.drafts = [...trace.drafts];
     out.sent = this.host.takeSent(key);
     const pageSent = this.host.takePageSent?.(key) ?? [];
     if (pageSent.length) out.pageSent = pageSent;
@@ -236,12 +262,17 @@ export class ActionRunner {
     if (trace.calls.length) out.calls = trace.calls;
   }
 
-  private async cleanupOuter(key: string, session: Session): Promise<void> {
+  private async cleanupOuter(key: string): Promise<void> {
+    const trace = this.traces.get(key);
+    if (trace) {
+      trace.controller.abort();
+      if (trace.children.size) await Promise.allSettled([...trace.children]);
+    }
     this.traces.delete(key);
     this.host.takeSent(key);
     this.host.takePageSent?.(key);
     this.host.takeStats?.(key);
-    await this.host.end(session);
+    await this.host.end(key);
     this.closeLater(key);
   }
 
@@ -275,20 +306,23 @@ export class ActionRunner {
       const worker = new Worker(WORKER, { workerData: { file, params }, env: {} });
       let settled = false;
       let failedAction: string | undefined;
-      const onAbort = (): void => finish({ status: "failure", code: "cancelled", error: "已取消：调用 spr 的进程退出了（被停止、被杀或超时），这次 run 中止" });
+      const onAbort = (): void => {
+        const cancelled = trace?.cancelSignal?.aborted === true;
+        finish({ status: "failure", code: cancelled ? "cancelled" : "internal", error: cancelled ? "已取消：调用 spr 的进程退出了（被停止、被杀或超时），这次 run 中止" : "run 窗口已结束" });
+      };
       const finish = (out: Outcome): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        trace?.signal?.removeEventListener("abort", onAbort);
+        trace?.controller.signal.removeEventListener("abort", onAbort);
         void worker.terminate();
         if (out.status === "failure" && failedAction) out.failedAction ??= failedAction;
         if (out.status === "failure" && logs.length) out.error += `\n--- action 输出 ---\n${logs.slice(-10).join("\n")}`;
         resolve(out);
       };
       const timer = setTimeout(() => finish({ status: "failure", code: "timeout", error: `action 超过 ${Math.round(limit / 1000)} 秒未结束，已终止；确实需要更久时，在文件头加 @timeout <秒>（或 spr run -e --timeout <秒>），超过 2 分钟的放到后台跑` }), limit);
-      if (trace?.signal?.aborted) onAbort();
-      else trace?.signal?.addEventListener("abort", onAbort, { once: true });
+      if (trace?.controller.signal.aborted) onAbort();
+      else trace?.controller.signal.addEventListener("abort", onAbort, { once: true });
       worker.on("error", (e) => { trace?.stacks.push(String(e.stack ?? e)); finish({ status: "failure", code: "internal", error: `${e.name}: ${e.message}` }); });
       worker.on("exit", () => finish({ status: "failure", code: "internal", error: "action 没有返回结果就退出了" }));
       worker.on("message", (m: any) => {
@@ -307,7 +341,10 @@ export class ActionRunner {
           const name = String(m.args.name);
           const p = Object.fromEntries(Object.entries(m.args.params ?? {}).filter(([, v]) => v !== undefined)) as Record<string, unknown>;
           const t0 = Date.now();
-          run = this.runAction(name, p, session, { depth: depth + 1, chain }).then((o) => {
+          const child = this.runAction(name, p, { depth: depth + 1, chain, parentKey: session.key });
+          trace?.children.add(child);
+          void child.finally(() => trace?.children.delete(child));
+          run = child.then((o) => {
             trace?.calls.push({ name, ms: Date.now() - t0, status: o.status === "success" ? "success" : "failure" });
             if (o.status === "failure") {
               failedAction = o.failedAction ?? name;
@@ -316,7 +353,10 @@ export class ActionRunner {
             return o.result;
           });
         } else if (m.op === "screenshot") run = this.shoot(session, m.args);
-        else run = this.host.op(session, m.op, m.args);
+        else run = this.host.op(session, m.op, m.args).then((r) => {
+          if (m.op === "navigate" && trace) trace.hasNavigated = true;
+          return r;
+        });
         run.then((result) => reply({ result: result ?? null }), (e: unknown) => reply({ error: e instanceof Error ? e.message : String(e) }));
       });
     });

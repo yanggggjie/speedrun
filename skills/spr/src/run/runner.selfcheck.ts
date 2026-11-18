@@ -18,17 +18,19 @@ fs.writeFileSync(path.join(helpersDir, "fmt.js"), `export const wrap = (s) => "[
 fs.writeFileSync(path.join(dir, "echo.js"), `/**\n * @description 回显\n * @status draft\n * @param v 值\n */\nimport { sleep } from "spr";\nimport { wrap } from "spr/helpers/fmt.js";\nexport default async (params) => { await sleep(120); return { v: params.v, wrapped: wrap(params.v) }; };\n`);
 
 const host = {
-  op: async (s: { inlineOnly?: boolean }) => {
+  op: async (s: { inlineOnly?: boolean; tab?: number; origin?: string }, op: string) => {
     if (s.inlineOnly) throw new Error("spr run -e 里只能调用 action(\"名字\", 参数) 和 sleep(ms)，不能直接操作页面或发 request");
+    if (op === "navigate") { s.tab ??= 1; s.origin = "https://example.com"; return { url: "https://example.com/", title: "t" }; }
     throw new Error("不该碰页面");
   },
+  releaseTab: (s: { tab?: number; origin?: string }) => { s.tab = undefined; s.origin = undefined; },
   end: async () => {},
   watchSent: () => {},
   takeSent: () => [],
   takePageSent: () => [],
   takeStats: () => ({ perf: { openMs: 0, navMs: 0, reqMs: 0, domMs: 0 }, ops: { nav: 0, req: 0, dom: 0, eval: 0 } }),
   takeDialogs: () => [],
-  failureShot: async () => undefined,
+  failureShot: async (s: { tab?: number }) => (s.tab !== undefined ? { url: "https://example.com/fail", title: "fail", screenshot: `/tmp/shot-${s.tab}.png` } : undefined),
   takeRejected: () => undefined,
 };
 const opened: string[] = [], closed: string[] = [];
@@ -109,5 +111,60 @@ assert.equal(t.at, "/u/action/x.com/a.js:7");
 
 const gone = await runner.runAction("nobody", {});
 assert.ok(gone.status === "failure" && gone.code === "not-defined" && /nobody is not defined/.test(gone.error));
+
+// Promise.all 并发嵌套 action()：各自独立 session + releaseTab，串行可复用，失败截图抢占保留首张
+let seqTab = 500;
+const leasedTabs = new Set<number>();
+const poolTabs: number[] = [];
+const shotsTaken: number[] = [];
+const poolHost = {
+  ...host,
+  op: async (s: { inlineOnly?: boolean; tab?: number; origin?: string }, op: string, args: Record<string, unknown>) => {
+    if (s.inlineOnly) throw new Error("spr run -e 里只能调用 action(\"名字\", 参数) 和 sleep(ms)，不能直接操作页面或发 request");
+    if (op === "navigate") {
+      if (s.tab === undefined) {
+        const reused = poolTabs.pop();
+        s.tab = reused ?? seqTab++;
+        leasedTabs.add(s.tab);
+      }
+      s.origin = "https://example.com";
+      return { url: String(args.url ?? "https://example.com/"), title: "t" };
+    }
+    if (op === "request") {
+      if (s.tab === undefined) { s.tab = seqTab++; leasedTabs.add(s.tab); }
+      throw new Error("boom-req");
+    }
+    throw new Error("unexpected op");
+  },
+  releaseTab: (s: { tab?: number; origin?: string }) => {
+    if (s.tab !== undefined) { leasedTabs.delete(s.tab); poolTabs.push(s.tab); }
+    s.tab = undefined; s.origin = undefined;
+  },
+  failureShot: async (s: { tab?: number }) => {
+    if (s.tab === undefined) return undefined;
+    shotsTaken.push(s.tab);
+    return { url: "https://example.com/fail", title: "fail", screenshot: `/tmp/shot-${s.tab}.png` };
+  },
+};
+const poolRunner = new ActionRunner(poolHost as never, { actionDir }, windows);
+fs.writeFileSync(path.join(dir, "nav-ok.js"), `/**\n * @status verified\n * @param id 值\n */\nimport { navigate, sleep } from "spr";\nexport default async ({ id }) => { await navigate("https://example.com/" + id); await sleep(40); return id; };\n`);
+const conc = await poolRunner.runInline(`const a = await Promise.all([action("nav-ok", { id: "1" }), action("nav-ok", { id: "2" })]); const c = await action("nav-ok", { id: "3" }); return [...a, c];`);
+assert.deepEqual(plain(conc), { status: "success", result: ["1", "2", "3"] });
+assert.equal(leasedTabs.size, 0, "并发 + 串行跑完后所有 tab 均已归还");
+assert.equal(poolTabs.length, 2, "并发开了 2 张 tab，第 3 次串行复用池中空闲 tab");
+
+fs.writeFileSync(path.join(dir, "nav-fail.js"), `/**\n * @status verified\n * @param ms:number 延迟\n */\nimport { navigate, sleep } from "spr";\nexport default async ({ ms }) => { await navigate("https://example.com/bad"); await sleep(ms); throw new Error("bad-" + ms); };\n`);
+poolTabs.length = 0; shotsTaken.length = 0;
+const concFail = await poolRunner.runInline(`return Promise.all([action("nav-fail", { ms: 10 }), action("nav-fail", { ms: 60 })]);`);
+assert.equal(concFail.status, "failure");
+assert.equal(shotsTaken.length, 1, "并发失败只抢占拍一次截图");
+assert.equal(concFail.hasNavigated, true);
+assert.ok(concFail.page?.screenshot?.includes("shot-"), "外层保留失败子 action 的截图");
+assert.equal(leasedTabs.size, 0, "失败后并发 tab 也全部归还");
+
+fs.writeFileSync(path.join(dir, "req-only-fail.js"), `/**\n * @status verified\n */\nimport { request } from "spr";\nexport default async () => request({ url: "https://example.com/api/x" });\n`);
+const reqOnlyFail = await poolRunner.runAction("req-only-fail", {});
+assert.equal(reqOnlyFail.status, "failure");
+assert.equal(reqOnlyFail.hasNavigated, false, "未调 navigate 时 hasNavigated 为 false");
 
 console.log("runner selfcheck ok");

@@ -86,7 +86,7 @@ const runner = {
   runAction: async (name: string, params: Record<string, unknown>) => ({ status: "success", result: { name, params }, ...nextOutcome }),
   runInline: async (code: string) => ({ status: "success", result: { codeLen: code.length }, calls: [{ name: "vote", ms: 5, status: "success" }], ...nextOutcome }),
 };
-const win = { isAgentTab: (t: number) => t === 20, groupOf: () => 5, isOpen: async () => true, dispose: async () => {}, busy: () => () => {} };
+const win = { isAgentTab: (t: number) => t === 20, winOf: (t: number) => WINS[t] ?? "user", isOpen: async () => true, dispose: async () => {}, busy: () => () => {} };
 const debug = new DebugWindows({ log, host, win });
 const ctx = {
   ensureExtension: async () => {},

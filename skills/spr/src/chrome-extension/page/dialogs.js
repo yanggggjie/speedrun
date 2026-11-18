@@ -1,5 +1,5 @@
 // 页面的原生弹窗（离开确认、alert、confirm、prompt）是 Chrome 的系统弹窗：会把 Chrome 拉到前台，并阻塞页面和 speedrun 的操作。
-// 只在 speedrun 的标签页里拦（T.isAgent()），用户的标签页不动：页面自己的 beforeunload 处理照常跑（可能在保存），只是不再弹确认。
+// 只经 CDP 注入 speedrun 的标签页，用户的标签页没有这段脚本：页面自己的 beforeunload 处理照常跑（可能在保存），只是不再弹确认。
 // alert 直接过，confirm 选取消，prompt 返回 null（不替用户同意任何事），都上报给 daemon，agent 看得到。漏掉的由 cdp.js 的 Page.javascriptDialogOpening 兜底。
 (() => {
   const T = window.__spr;
@@ -7,10 +7,8 @@
   T.dialogs = 1;
   const report = (kind, message) => T.post({ k: "dialog", kind, message: String(message ?? "").slice(0, 200), t: Date.now() });
 
-  const native = { alert: window.alert, confirm: window.confirm, prompt: window.prompt };
   const hook = (name, result) => {
     window[name] = function (message) {
-      if (!T.isAgent()) return native[name].apply(this, arguments);
       report(name, message);
       return result;
     };
@@ -29,13 +27,12 @@
   };
   const proto = window.BeforeUnloadEvent?.prototype;
   if (proto) {
-    const prevent = Event.prototype.preventDefault;
     const value = Object.getOwnPropertyDescriptor(proto, "returnValue");
-    proto.preventDefault = function () { if (T.isAgent()) wantsConfirm(); else prevent.call(this); };
+    proto.preventDefault = function () { wantsConfirm(); };
     Object.defineProperty(proto, "returnValue", {
       configurable: true,
       get() { return value?.get?.call(this) ?? ""; },
-      set(v) { if (T.isAgent()) { if (v) wantsConfirm(); } else value?.set?.call(this, v); },
+      set(v) { if (v) wantsConfirm(); },
     });
   }
   let handler = null;
@@ -44,6 +41,6 @@
     if (!handler) return;
     const r = handler.call(window, e);
     if (r === undefined || r === null) return;
-    if (T.isAgent()) wantsConfirm(); else e.returnValue = r;
+    wantsConfirm();
   });
 })();

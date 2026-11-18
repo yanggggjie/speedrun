@@ -24,7 +24,6 @@
     "nativeMessaging",
     "alarms",
     "scripting",
-    "storage",
     "debugger",
     "tabGroups"
   ],

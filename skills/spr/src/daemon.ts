@@ -13,14 +13,13 @@ import { RunHost } from "./browser/host.ts";
 import { DebugWindows } from "./debug/windows.ts";
 import { ActionRunner, runWindowsOf } from "./run/runner.ts";
 import { coveredEndpoints, syncActionLib } from "./run/actions.ts";
-import { AgentWindows, type GroupLabel } from "./browser/window.ts";
+import { AgentWindows } from "./browser/window.ts";
 import { Ingestor, type PageMsg } from "./record/ingest.ts";
 import { RawStore } from "./record/raw.ts";
 import type { FiltersEngine } from "@ghostery/adblocker";
 import { readVersion } from "./store/version.ts";
 import { HANDSHAKE_GUIDES, RPC_ERRORS, handshakeStatusFromError, type JsonRpcRequest, type JsonRpcResponse } from "./protocol.ts";
 import { ALIAS_SALT_FILE, DAEMON_IDLE_EXIT_MS, DAEMON_READY_MS, SESSION_DIR, DATA_HOME, SESSION_LOG, SESSION_SOCK } from "./utils/constants.ts";
-import { GROUP_TITLE } from "./browser/window.ts";
 import { OWNER_CHECK_MS, listenOwned, routeByRole, type Owned } from "./session/server.ts";
 import { createLogger, setLogFile } from "./utils/logger.ts";
 import { InvocationLog } from "./record/invocations.ts";
@@ -55,16 +54,11 @@ function aliasSalt(): string {
 }
 function warnCatch(label: string): (error: unknown) => void { return (error) => logger.warn(label, { err: error instanceof Error ? error.message : String(error) }); }
 
-/** speedrun 组的标题都是「speedrun」：debug 组蓝色，run 组灰色。 */
-function groupLabel(kind: string | undefined): GroupLabel {
-  return { title: GROUP_TITLE, color: kind === "run" ? "grey" : "blue" };
-}
-
 /** daemon 的全部部件，启动时按依赖顺序一次建好（构造函数都不碰磁盘，除了别名的盐）。 */
 function build() {
   const raw = new RawStore();
   const log = new WindowLog();
-  const win = new AgentWindows(link, { label: (key) => groupLabel(log.kindOf(key)) });
+  const win = new AgentWindows(link);
   const index = new EndpointIndex({ coverage: (site) => coveredEndpoints(log.dir, site) });
   let adblock: FiltersEngine | undefined;
   const ingest = new Ingestor(log, { engine: () => adblock, aliasKey: aliasSalt(), raw, winOf: (tab) => win.winOf(tab), index });
@@ -85,14 +79,19 @@ function build() {
 const { ctx, setAdblock } = build();
 const { ingest, index, log, debug, win } = ctx;
 
-/** 页面消息：写日志。speedrun 组里的标签页记为那个窗口的（Ingestor 按 win.winOf 判断是哪个窗口）。扩展是旧版本时一条都不收。 */
+/** 页面消息：写日志。speedrun 管理的标签页记为对应窗口（Ingestor 按 win.winOf 判断）。扩展是旧版本时一条都不收。 */
 link.on("page", (m) => {
   if (!link.compatible()) return;
   const inner = (m.msg ?? {}) as Record<string, unknown>;
   const msg = { ...inner, k: String(inner.k ?? ""), t: typeof inner.t === "number" ? inner.t : Date.now(), tab: Number(m.tab), frame: Number(m.frame ?? 0), top: m.top === true, page: typeof m.page === "string" ? m.page : undefined } as PageMsg;
-  win.adopt(msg.tab, typeof m.group === "number" ? m.group : undefined); // 页面自己开的（扩展替它开在同一个组里）、用户拖进组的标签页也属于那个窗口
+  if (typeof inner.opener === "number") win.adopt(msg.tab, inner.opener);
   lastActivity = Date.now();
   ingest.push(msg);
+  if (msg.k === "tab" && inner.ev === "closed") {
+    const key = win.winOf(msg.tab);
+    win.removeTab(msg.tab);
+    if (key !== "user") debug.onTabClosed(key, msg.tab);
+  }
 });
 
 function pingBody() {

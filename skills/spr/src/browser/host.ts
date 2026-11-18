@@ -21,8 +21,6 @@ export class Session {
   inlineOnly = false;
   /** 刚 goto 过、还没等过页面安静：request 抄头时这个窗口里还没有同站请求，就先等一次安静。 */
   fresh = false;
-  /** 这次 run 里真跑成功的 draft（action 文件路径），run 结束后由命令层判断变成 verified。嵌套调用并进父 session。 */
-  readonly draftsOk: string[] = [];
   constructor(key: string) { this.key = key; }
 }
 
@@ -59,9 +57,23 @@ export type HostDeps = { link: Pick<ExtensionLink, "request">; win: AgentWindows
 const NAVIGATED = /frame.*(removed|detached)|context.*(destroyed|invalidated)|navigat|Cannot access contents|No tab with id/i;
 const originOf = (url: string): string => new URL(url).origin;
 
-function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+function withTimeout<T>(p: Promise<T>, ms: number, what: string, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error(`${what} 已取消`));
   let timer: ReturnType<typeof setTimeout>;
-  return Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} 超过 ${Math.round(ms / 1000)} 秒`)), ms); })]).finally(() => clearTimeout(timer));
+  let onAbort: (() => void) | undefined;
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} 超过 ${Math.round(ms / 1000)} 秒`)), ms);
+      if (signal) {
+        onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error(`${what} 已取消`));
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }),
+  ]).finally(() => {
+    clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+  });
 }
 
 /**
@@ -181,18 +193,29 @@ export class RunHost {
     finally { done(); }
   }
 
-  /** 把 session 绑到 origin 的标签页：已经是就复用，否则还回去再拿一个（池里有同站点空闲的就直接用）。 */
-  async bind(s: Session, origin: string): Promise<number> {
+  /** 把 session 绑到 origin 的标签页：已经是就复用，否则归还旧页再拿一个（blank 为真时未命中池直接开空白页）。 */
+  async bind(s: Session, origin: string, blank = false): Promise<number> {
     s.lastUsed = Date.now();
     // 不再每次列标签页确认还在：标签页被关了，callTab 会发现并重新拿
     if (s.tab !== undefined && s.origin === origin) return s.tab;
-    if (s.tab !== undefined) this.d.win.release(s.tab);
+    if (s.tab !== undefined) this.releaseTab(s);
     const t0 = Date.now();
-    s.tab = await this.d.win.acquire(origin, s.key);
+    s.tab = await this.d.win.acquire(origin, s.key, blank ? { blank: true } : {});
     this.addStat(s.key, "openMs", Date.now() - t0);
     s.origin = origin;
     this.byTab.set(s.tab, s);
     return s.tab;
+  }
+
+  /** 归还单次调用持有的标签页（不清理窗口级状态）。 */
+  releaseTab(s: Session): void {
+    const tab = s.tab;
+    if (tab !== undefined) {
+      this.d.win.release(tab);
+      if (this.byTab.get(tab) === s) this.byTab.delete(tab);
+    }
+    s.tab = undefined;
+    s.origin = undefined;
   }
 
   /** run 失败时留一张现场：当前页面的 URL、标题和截图（存成 file，扩展名按图片类型）。没有页面、或任何一步失败就返回 undefined，不影响原来的错误。 */
@@ -213,15 +236,14 @@ export class RunHost {
     } catch { return undefined; }
   }
 
-  async end(s: Session): Promise<void> {
-    for (const [id, w] of this.waits) if (w.key === s.key) this.waits.delete(id); // action 中途失败没等完的
-    for (const [id, w] of this.messageWaits) if (w.key === s.key) this.messageWaits.delete(id);
-    if (s.tab !== undefined) this.d.win.release(s.tab);
-    s.tab = undefined;
-    s.origin = undefined;
+  async end(target: Session | string): Promise<void> {
+    const key = typeof target === "string" ? target : target.key;
+    for (const [id, w] of this.waits) if (w.key === key) { this.waits.delete(id); w.resolve?.(undefined); } // action 中途失败没等完的
+    for (const [id, w] of this.messageWaits) if (w.key === key) { this.messageWaits.delete(id); w.resolve?.(undefined); }
+    if (typeof target !== "string") this.releaseTab(target);
     // 窗口关掉（run 结束、debug close）：这个窗口的原始请求一起清掉
-    this.d.raw.dropWindow(s.key);
-    this.rejected.delete(s.key);
+    this.d.raw.dropWindow(key);
+    this.rejected.delete(key);
   }
 
   private page(s: Session): number {
@@ -232,16 +254,19 @@ export class RunHost {
 
   async callTab(tab: number, fn: string, args: unknown[]): Promise<any> {
     const done = this.d.win.busy(tab);
+    const key = this.byTab.get(tab)?.key;
+    const signal = key ? this.d.win.signalOf?.(key) : undefined;
     try {
-      const res = (await this.d.link.request("call", { tabId: tab, fn, args })) as { v: unknown };
+      const res = (await withTimeout(this.d.link.request("call", { tabId: tab, fn, args }), STEP_TIMEOUT_MS, "页面调用", signal)) as { v: unknown };
       return res.v;
     } catch (e) {
       // 标签页被关了（用户关了窗口、被回收）：在同一个站点重新拿一个再试一次
       const s = this.byTab.get(tab);
       if (!/No tab with id/.test(e instanceof Error ? e.message : String(e)) || !s || !s.origin || s.tab !== tab) throw e;
-      s.tab = undefined;
-      const fresh = await this.bind(s, s.origin);
-      const res = (await this.d.link.request("call", { tabId: fresh, fn, args })) as { v: unknown };
+      const origin = s.origin;
+      this.releaseTab(s);
+      const fresh = await this.bind(s, origin);
+      const res = (await withTimeout(this.d.link.request("call", { tabId: fresh, fn, args }), STEP_TIMEOUT_MS, "页面调用", signal)) as { v: unknown };
       return res.v;
     } finally {
       done();
@@ -326,12 +351,11 @@ export class RunHost {
     if (a.url === "back" || a.url === "forward") return this.history(s, a.url, a);
     let url: URL;
     try { url = new URL(a.url.includes("://") ? a.url : `https://${a.url}`); if (!/^https?:$/.test(url.protocol)) throw new Error("协议"); } catch { throw new Error(`不是有效的网址：${a.url}`); }
-    const tab = await this.bind(s, url.origin);
+    const tab = await this.bind(s, url.origin, true);
     const safe = this.d.ingest.sanitizer.url(url.href);
+    const signal = this.d.win.signalOf?.(s.key);
     return this.log(tab, "navigate", safe.bareUrl, { bareUrl: safe.bareUrl, query: safe.query }, async () => {
-      let res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as { url: string; title: string; loaded?: boolean };
-      // 新开的标签页还在加载占位的 robots.txt 时，这次跳转会被它盖掉：停在占位页上就再跳一次
-      if (/\/robots\.txt$/.test(res.url) && !/\/robots\.txt$/.test(url.pathname)) res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面")) as typeof res;
+      const res = (await withTimeout(this.d.link.request("goto", { tabId: tab, url: url.href, wait: true, waitMs: GOTO_WAIT_MS }), a.timeout ?? STEP_TIMEOUT_MS, "打开页面", signal)) as { url: string; title: string; loaded?: boolean };
       this.d.win.moved(tab, originOf(res.url || url.href));
       s.origin = originOf(res.url || url.href);
       s.fresh = true;

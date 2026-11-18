@@ -56,6 +56,16 @@ const t0 = Date.now();
 await host.op(fresh, "request", { url: "https://api.example.com/api/me" });
 assert.ok(Date.now() - t0 < 1000, "没打开过页面：不等页面发请求（只靠 cookie 的站点不被拖慢）");
 
+// releaseTab 只归还当前 session 的 tab，不清理窗口级 raw；end(key) 才清 raw
+const sRel = new Session("r-rel-20261101-120000");
+page(sRel.key, "GET /api/a", "https://api.example.com/api/a", { authorization: "Bearer KEEP" });
+await host.bind(sRel, "https://api.example.com");
+host.releaseTab(sRel);
+assert.equal(sRel.tab, undefined);
+assert.equal(raw.inWindow(sRel.key).length, 1, "releaseTab 不清窗口级原始请求");
+await host.end(sRel.key);
+assert.equal(raw.inWindow(sRel.key).length, 0, "end(key) 清理窗口级原始请求");
+
 const s2 = new Session("r-20261101-140000");
 host.watchSent(s2.key);
 await host.op(s2, "request", { url: "https://api.example.com/v1/listItems", method: "POST", json: { page: 1 } });

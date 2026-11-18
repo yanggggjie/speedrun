@@ -44,7 +44,7 @@ export async function runCommand(argv: string[], ctx: Ctx, out: Output): Promise
     return out.usage(msg);
   }
   await ctx.ensureExtension();
-  const outcome = await ctx.runner.runAction(name, a.params, undefined, { ...(out.signal ? { signal: out.signal } : {}) });
+  const outcome = await ctx.runner.runAction(name, a.params, { ...(out.signal ? { signal: out.signal } : {}) });
   if (timeoutMs !== undefined) {
     // 命令行显式传 --timeout 时仅提示文件头也可声明，单次 runAction 已走文件头或默认上限
   }
@@ -75,7 +75,7 @@ function outcomeLines(name: string, outcome: Outcome, saveFull?: (json: string) 
     if (more.length) lines.push(`错误：\n${indent(more.join("\n"))}`);
     if (outcome.failedAction) lines.push(`出错的 action：${outcome.failedAction}`);
     if (outcome.at) lines.push(`位置：${outcome.at}`);
-    if (outcome.page && !isWarm(outcome.page.url)) lines.push(`页面：${outcome.page.url} "${outcome.page.title}"`, ...(outcome.page.screenshot ? [`截图：${outcome.page.screenshot}`] : []));
+    if (outcome.page && outcome.hasNavigated !== false) lines.push(`页面：${outcome.page.url} "${outcome.page.title}"`, ...(outcome.page.screenshot ? [`截图：${outcome.page.screenshot}`] : []));
     if (outcome.hint) lines.push(`说明：\n${indent(outcome.hint)}`);
   }
   if (outcome.dialogs?.length) lines.push(`被拦下的系统弹窗（alert 放过，confirm、prompt 选取消，离开确认直接离开，有没保存的改动要核对）：\n${indent(outcome.dialogs.join("\n"))}`);
@@ -115,7 +115,7 @@ function finishRun(ctx: Ctx, name: string, outcome: Outcome): string[] {
     const target = outcome.failedAction ?? (name === "-e" ? "explore" : name);
     if (!win) lines.push(`下一步：改好参数或代码后重新运行`);
     else {
-      const at = outcome.page?.url && !isWarm(outcome.page.url) ? outcome.page.url : "<网址>";
+      const at = outcome.page?.url && outcome.hasNavigated !== false ? outcome.page.url : "<网址>";
       lines.push(`下一步：看完整报错或请求日志定位原因；需要看真实页面时 spr debug ${target} navigate ${at}`);
     }
   }
@@ -137,12 +137,10 @@ function presentOutcome(name: string, outcome: Outcome, ctx: Ctx, out: Output, m
   for (const line of lines) out.line(line);
 }
 
-const isWarm = (url: string): boolean => /^https?:\/\/[^/]+\/robots\.txt$/.test(url);
-
 function requestEvidence(ctx: Ctx, win: string, outcome: Extract<Outcome, { status: "failure" }>): string | undefined {
-  if (!outcome.page?.url || !isWarm(outcome.page.url)) return undefined;
+  if (!outcome.page || outcome.hasNavigated !== false) return undefined;
   const bad = ctx.log.readRows(win, { limit: 2000 }).filter((r: Row & { status?: number; error?: string; file?: string }) => r.type === "request" && r.src === "agent" && ((r.status ?? 0) >= 400 || r.error)).at(-1) as (Row & { status?: number; method?: string; url?: string; file?: string }) | undefined;
-  const lead = "这次 run 没打开过页面（停在暖页面 robots.txt，没有截图）";
+  const lead = "这次 run 没打开过页面（没有截图）";
   if (!bad) return `${lead}；窗口里没有出错的请求，看完整报错`;
   return `${lead}；最后一个出错的请求：${bad.method ?? ""} ${bad.url ?? ""} → ${bad.status ?? "没发出去"}，请求和响应在 ${bad.file ? ctx.log.abs(win, bad.file) : ctx.log.winDir(win)}`;
 }

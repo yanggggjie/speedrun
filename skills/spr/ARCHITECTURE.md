@@ -13,13 +13,14 @@ speedrun 的目标、设计原则和运行时实现：每一部分是谁实现�
 
 设计原则（agent 的使用原则在 `SKILL.md`）：
 1. **一个 agent 只背一个目标：主 agent 最快完成当前任务，沉淀交给后台 `distiller` subagent。** 有现成 `action` 时 `spr run` 比点页面快一个量级；没现成 `action` 时主 agent 直接在 `debug` 窗口办完事当场交付（不阻塞用户、不重复触发不可重入的写操作），`daemon` 检测到窗口有未覆盖请求时在输出末尾提示派发后台 subagent 读取 `~/.speedrun/agents/distiller.md` 异步提炼并验证只读 `action`。
-2. **只录 agent 的窗口。** 归属按标签组认：speedrun 组里的标签页是 agent 的（用户自己拖进 speedrun 组的也算，拖出去就收回），其余用户的窗口和标签页不录、不碰，只读标签页列表（地址、标题）；要看用户手上的页面，就在 debug 窗口里重新打开它，从加载开始录。用户很久以前做的操作，agent 不知道请求的来源和意图；只用 agent 自己做出来的请求才准。
+2. **只录 agent 的标签页。** 归属只认 `tabId`（与 `opener` 继承）：只有 speedrun 自己开出及页面内弹出的标签页由它管理并录制，其余用户的窗口和标签页不录、不碰，只读标签页列表（地址、标题）；要看用户手上的页面，就在 debug 窗口里用 `spr debug <名> navigate <tab号>` 重新打开它，从加载开始录。用户很久以前做的操作，agent 不知道请求的来源和意图；只用 agent 自己做出来的请求才准。
 3. **秘密不落盘、不进上下文。** 原始请求（含 token 真值）只在 daemon 内存里；日志、请求文件、观察输出里是别名。这不是对 agent 的隔离：action 和页面脚本与用户同权限（`evaluate` 能读页面的 cookie、localStorage，action 的 worker 有完整的 Node 权限），保证的只是真值不写盘、不出现在 agent 读到的文字里。原始请求按窗口存，窗口关掉（debug `close`、run 结束）就清掉。
 4. **日志和 action 都是文件。** 能读文件的不做命令，agent 用 `rg`、`node`、Python 直接读；speedrun 的命令只做必须由它做的事（控制浏览器、持有不能落盘的原始请求）。
 5. **命令面最小，显式区分优于隐式区分。** 同一条命令不因为 agent 看不到的状态做不同的事。run 窗口每次从空白开始、`spr run <名>` 只按名字找文件，都是为此。run 的行为只取决于 action 文件和这次窗口里发生的事：不读 `endpoints.json`，不用以前或别的窗口的原始请求。
 6. **speedrun 给信号，run 的结果和 agent 来定。** speedrun 只做必须由它做、而且做得准的事：用内存里的真值统计、按固定规则继承复用、把失败说清楚；不提前替 agent 下「这个请求该怎么发」的结论。用哪个请求、用 `request`、`waitRequest` 还是 DOM，由 agent 看信号决定，以 run 的真实结果为准。
 7. **错误的信号不如原始数据。** speedrun 能准确算出来的，给结论；算不准的（靠规则猜的：登录页、依赖、重复、noise），只给原始事实和数据在哪，由 agent 判断。过滤或省略时，写明省略了什么、原始数据在哪。不写替 agent 下的结论（"你做错了"、"像是登录失效"）。用在录制上就是**录和存要宽，展示时再筛**：只有判断很准的规则（命中公开的广告和追踪规则列表）才能决定不存；靠猜的规则（埋点的路径、域名规则）只打标签，数据照常存；跨站请求和同站一样录、一样存；展示时筛掉的写明数量、原因和原始数据在哪。
 8. **靠近 agent 宿主（Claude Code）的机制：能被它直接用，也让模型觉得熟悉。** 一是融入：宿主已有的能力（后台运行和结束通知、杀进程即取消、等某个条件、读大文件），speedrun 不再做一套，而是保证 `spr` 在这些机制下行为正确，例如 `spr run` 就是普通的阻塞命令，放到后台就是后台任务，CLI 进程退出就取消这次 run。二是借鉴：输出、截断、报错、退出码照宿主自己的样子写，例如第一行就是错误原文、裁掉的内容写成「预览 + 完整内容在 <路径>」、日志用 JSONL，模型不用另学一套用法。加新机制前先问：宿主有没有现成的做法可以直接用，或者照着做。
+9. **功能可靠，实现简单，优先思考好机制。** 不堆事后修补和跨层同步补丁；先找准单一权威来源与清晰的生命周期边界（如按独立作用域回收、单飞幂等入组、用显式状态取代特征猜测），用更少的状态和代码从根上消除竞态。
 
 ## 2. 两种窗口，以及 action 与 `spr run -e` 的运行
 
@@ -44,7 +45,7 @@ speedrun 的目标、设计原则和运行时实现：每一部分是谁实现�
 - **draft 变成 verified**（`commands/run.ts` 的 `finishRun`）：run 成功、执行过的 draft 都变成 verified。`blocked` 的 action 直接拒绝执行。
 - **参数**（`run/actions.ts` 的 `checkParams`、`coerceParams`）：对照文件头 `@param <name>[?][:<type>]` 检查缺的、多的，再按类型（`number`、`boolean`、`json`，默认字符串）转换后交给脚本。
 - **取消**（`daemon.ts` 的 `onCli`、`run/runner.ts`）：CLI 的连接断开（`spr` 进程被 Ctrl+C、被停止、超时被杀）时 daemon 中止这次 run：终止 worker、关窗口，结果记成 `cancelled`。
-- **失败输出**（`run/runner.ts` 的 `trimError`、`commands/run.ts`）：第一行是错误原文；stack 只留用户文件（action、helpers）的帧，`位置` 是第一个用户文件的 file:line；完整报错写进窗口的 `error.txt`。停在暖页面（`origin/robots.txt`）时不给截图，改给最后一个出错的请求文件。失败带类别 `code`（`ErrorCode`）。
+- **失败输出**（`run/runner.ts` 的 `trimError`、`commands/run.ts`）：第一行是错误原文；stack 只留用户文件（action、helpers）的帧，`位置` 是第一个用户文件的 file:line；完整报错写进窗口的 `error.txt`。`hasNavigated === false`（未打开过真实页面，仅靠 `robots.txt` 发裸 `request()`）时不给截图，改给最后一个出错的请求文件。失败带类别 `code`（`ErrorCode`）。
 
 ## 3. 进程与分层
 
@@ -97,13 +98,13 @@ daemon 内部分四层，上层只依赖下层：
 
 ## 4. 扩展
 
-`src/chrome-extension/background.js` 没有业务逻辑，是一个固定 ABI 的管道；页面脚本（`page/`）只经 CDP 注入 speedrun 的标签页，不是内容脚本，用户的网页里没有 speedrun 的任何代码。`manifest.json` 有固定的 `key`，扩展 ID 是 `dkjmgdhelenchaippejoppbcfbjfgppl`（和 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）；权限 `tabs`、`tabGroups`、`nativeMessaging`、`alarms`、`scripting`、`storage`、`debugger`、`<all_urls>`，Chrome 135 起，只支持 Chrome。
+`src/chrome-extension/background.js` 没有业务逻辑，是一个固定 ABI 的管道；页面脚本（`page/`）只经 CDP 注入 speedrun 的标签页，不是内容脚本，用户的网页里没有 speedrun 的任何代码。`manifest.json` 有固定的 `key`，扩展 ID 是 `dkjmgdhelenchaippejoppbcfbjfgppl`（和 `native-messaging-host/install.ts` 的 `EXTENSION_ID` 一致）；权限 `tabs`、`tabGroups`、`nativeMessaging`、`alarms`、`scripting`、`debugger`、`<all_urls>`，Chrome 135 起，只支持 Chrome。
 
-- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 16）：`call`（在页面 MAIN world 调 `window.__spr.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`history`（后退、前进）、`openTab`、`closeTab`、`closeGroup`、`closeAllGroups`、`idleGroup`、`screenshot`、`input`、`evaluate`、`reload`。帧是 4 字节小端长度加 UTF-8 JSON。
-- **CDP**（`cdp.js`，`chrome.debugger`）：speedrun 唯一的输入路径，debug 的 `computer` / `form_input` 和 action 的 `click` / `hover` / `key` / `scroll` / `form_input` 都走这里，发的是真实输入（`isTrusted` 为真）：鼠标 `mouseMoved → mousePressed → mouseReleased`（双击三击按 `clickCount`）、拖动分 10 步、滚轮 `mouseWheel`、按键 `dispatchKeyEvent`（键名表在 `keys.js`，扩展和自检共用；mac 上 cmd 组合键带 `commands`，如 `selectAll`）、输入文字每个 ASCII 字符 `rawKeyDown → insertText → keyUp`、中文只 `insertText`。截图是 `Page.captureScreenshot`（按 `1/devicePixelRatio` 缩，图上一个像素就是一个 CSS 像素，不用把标签页切到前台），`evaluate` 是 `Runtime.evaluate`（不受页面 CSP 限制）。只附着 speedrun 的标签页：标签页一开出来就附着（`call`、`goto` 之前也确保附着），附着后开 `Emulation.setFocusEmulationEnabled`。附着同时是放进页面脚本的时机（见下面的「页面脚本怎么进 speedrun 的标签页」）和后台标签页的「渲染开关」：没附着的后台标签页不渲染（rAF、IntersectionObserver 都停），在折叠的组里约 3 秒后还会被 Chrome 冻结（冻结的页面里 `chrome.scripting` 一直挂着）；附着后页面以为自己可见、有焦点，照常渲染，冻结的立刻解冻。组闲置 20 秒（`GROUP_IDLE_MS`）就解除附着（`idleGroup`），不吃 CPU，没有附着时「正在调试此浏览器」的横幅也消失（横幅是浏览器级别的，附着期间所有窗口都显示）；同时附着同一个标签页的调用共用一次附着；每条命令 20 秒超时；附着断了（用户点掉「正在调试此浏览器」提示条）下一次自动重新附着；speedrun 的标签页开着 DevTools 时附着失败，报清楚的错。
+- **ABI**（`browser/extension.ts` 的 `ABI`，现在是 17）：`call`（在页面 MAIN world 调 `window.__spr.exec` 里固定的函数，不执行任意字符串）、`tabs`、`goto`、`history`（后退、前进）、`openTab`、`closeTab`、`idleTab`、`screenshot`、`input`、`evaluate`、`reload`。帧是 4 字节小端长度加 UTF-8 JSON。
+- **CDP**（`cdp.js`，`chrome.debugger`）：speedrun 唯一的输入路径，debug 的 `computer` / `form_input` 和 action 的 `click` / `hover` / `key` / `scroll` / `form_input` 都走这里，发的是真实输入（`isTrusted` 为真）：鼠标 `mouseMoved → mousePressed → mouseReleased`（双击三击按 `clickCount`）、拖动分 10 步、滚轮 `mouseWheel`、按键 `dispatchKeyEvent`（键名表在 `keys.js`，扩展和自检共用；mac 上 cmd 组合键带 `commands`，如 `selectAll`）、输入文字每个 ASCII 字符 `rawKeyDown → insertText → keyUp`、中文只 `insertText`。截图是 `Page.captureScreenshot`（按 `1/devicePixelRatio` 缩，图上一个像素就是一个 CSS 像素，不用把标签页切到前台），`evaluate` 是 `Runtime.evaluate`（不受页面 CSP 限制）。只附着 speedrun 的标签页：标签页一开出来就附着（`call`、`goto` 之前也确保附着），附着后开 `Emulation.setFocusEmulationEnabled`。附着同时是放进页面脚本的时机（见下面的「页面脚本怎么进 speedrun 的标签页」）和后台标签页的「渲染开关」：没附着的后台标签页不渲染（rAF、IntersectionObserver 都停），在折叠的组里约 3 秒后还会被 Chrome 冻结（冻结的页面里 `chrome.scripting` 一直挂着）；附着后页面以为自己可见、有焦点，照常渲染，冻结的立刻解冻。单标签页闲置 20 秒（`TAB_IDLE_MS`）就解除附着（`idleTab`），不吃 CPU，没有附着时「正在调试此浏览器」的横幅也消失（横幅是浏览器级别的，附着期间所有窗口都显示）；同时附着同一个标签页的调用共用一次附着；每条命令 20 秒超时；附着断了（用户点掉「正在调试此浏览器」提示条）下一次自动重新附着；speedrun 的标签页开着 DevTools 时附着失败，报清楚的错。
 - **握手和自动重新加载**：`hello` 带 `abi` 和 `build`（`setup.js` 写进 `chrome-extension/build.js` 的版本）。和 daemon 的 ABI 不一致时不工作；扩展支持 `reload`（ABI ≥ 13）并且跑的不是磁盘上这一版（ABI 不同，或 `build` 和 `~/.speedrun/src/.version` 不同）时，daemon 让它 `chrome.runtime.reload()` 从磁盘重新加载、重连，`ensureExtension` 等它回来。新代码跑在还没有 `debugger` 权限的旧 manifest 上时 `cdp.js` 也会自己重新加载。只有第一次加载要用户在 `chrome://extensions` 里操作。
-- **页面脚本怎么进 speedrun 的标签页**（`cdp.js`）：附着后注册 `Page.addScriptToEvaluateOnNewDocument`（之后每个新文档都在页面自己的脚本之前执行页面脚本，同站 iframe 一起带上）、`Runtime.addBinding`（页面脚本调用 `window.__sprSend` 上报）、`Target.setAutoAttach`（跨站 iframe 作为子会话附着上来，注册后再放行），并给当前文档补注入一次（脚本自己防重复）。要先 `Page.enable`、`Runtime.enable`，否则注册的脚本不执行、binding 收不到。解除附着后注册跟着没了：组闲置 20 秒解除附着期间，页面自己跳到的新文档没有脚本，下次操作重新附着时补上。service worker 重启后调试器和注册都还在，`attach` 会报「已经有调试器」：能发 CDP 命令就是 speedrun 自己之前的附着，解除再重新附着（清掉旧注册）；发不通才是开着 DevTools。经 `chrome.debugger` 单条消息 16MB 能完整送到。
-- 页面消息：页面脚本调用 binding → 扩展在 `chrome.debugger.onEvent` 收到 `Runtime.bindingCalled` → 补上 tab、group、frame（0 是标签页本身，跨站 iframe 的子会话从 1 起）转给 daemon。每条带这次页面加载的编号 `d` 和递增序号 `n`（`page/common.js`），daemon 据此判断记录有没有送达。页面自己的脚本也能调用 binding、改写 `window.__spr`（都在 MAIN world），所以日志只是观察记录，不能当权限依据；最坏是让 speedrun 在这个页面上录不到、拿到假结果，拿不到别的站点的数据。
+- **页面脚本怎么进 speedrun 的标签页**（`cdp.js`）：附着后注册 `Page.addScriptToEvaluateOnNewDocument`（之后每个新文档都在页面自己的脚本之前执行页面脚本，同站 iframe 一起带上）、`Runtime.addBinding`（页面脚本调用 `window.__sprSend` 上报）、`Target.setAutoAttach`（跨站 iframe 作为子会话附着上来，注册后再放行），并给当前文档补注入一次（脚本自己防重复）。要先 `Page.enable`、`Runtime.enable`，否则注册的脚本不执行、binding 收不到。解除附着后注册跟着没了：闲置 20 秒解除附着期间，页面自己跳到的新文档没有脚本，下次操作重新附着时补上。service worker 重启后调试器和注册都还在，`attach` 会报「已经有调试器」：能发 CDP 命令就是 speedrun 自己之前的附着，解除再重新附着（清掉旧注册）；发不通才是开着 DevTools。经 `chrome.debugger` 单条消息 16MB 能完整送到。
+- 页面消息：页面脚本调用 binding → 扩展在 `chrome.debugger.onEvent` 收到 `Runtime.bindingCalled` → 补上 tab、frame（0 是标签页本身，跨站 iframe 的子会话从 1 起）转给 daemon。每条带这次页面加载的编号 `d` 和递增序号 `n`（`page/common.js`），daemon 据此判断记录有没有送达。页面自己的脚本也能调用 binding、改写 `window.__spr`（都在 MAIN world），所以日志只是观察记录，不能当权限依据；最坏是让 speedrun 在这个页面上录不到、拿到假结果，拿不到别的站点的数据。
 - 连接：Chrome 拉起的 relay 无状态，只转发字节；断开后扩展固定 1 秒重连（alarm 兜底 service worker 被停掉的情况），点工具栏图标立即重连。daemon 不随扩展刷新退出。
 
 ## 5. 页面脚本
@@ -113,9 +114,9 @@ daemon 内部分四层，上层只依赖下层：
 - **敏感输入框**（`common.js` 的 `T.sensitiveField`：密码框、隐藏框，`autocomplete` 含 `cc-`、`password`、`one-time` 的卡号、安全码、一次性验证码）：`read_page` 不显示值，`form_input` 填完不回值；`form_input` 和 `computer type`（看当前焦点）往这种框里输入时，时间线只记字数、不记内容。
 - `recorder.js` 只如实上报发生的事，不改变页面行为：HTML 文档、XHR、fetch（WebSocket、事件流、Worker 里的请求由扩展的 Network 事件录，见 `cdp.js`；不录 `sendBeacon`，`blob:` 地址的 Worker 附着不上）、导航、页面快照、渲染后的 DOM；不记输入事件（agent 的每一步操作由 daemon 记成 `cmd` 行）。`executor.js` 等页面安静、等元素、读 auth 来源、`query`、替 `request()` 发请求。页面脚本不发输入：输入都由扩展用 CDP 发。细节见各文件的注释。
 - **页面新开标签页由 speedrun 接管**（`newtab.js`，只在 speedrun 的标签页里生效）：页面在用户手势下自己新开标签页（点 `target=_blank`、cmd/ctrl/shift/中键点击、`window.open`），Chrome 会选中它、显示窗口、把 Chrome 拉到前台。所以页面脚本拦下这些（链接默认行为、`HTMLAnchorElement.prototype.click`、`window.open` 返回假窗口对象并接住后设的地址、`target=_blank` 的表单改在当前标签页提交），把地址发给扩展，扩展在同一个组里开（`openForPage`），时间线记一行 `tab` / `opened`。不拦：带窗口参数的 `window.open`（弹出窗口，如 OAuth 登录）、download 链接、非 http(s) 地址、指向页面里 iframe 的 target。代价：新标签页没有 `window.opener`、`Referer`、`sessionStorage`。漏掉的兜底：opener 是 speedrun 的新标签页收进组、被选中就还给用户，记 `tab` / `leaked`。判断逻辑的自检在 `browser/newtab.selfcheck.mjs`。
-- **只录 speedrun 的标签页（两层，安全相关）**：① 扩展：在 speedrun 的标签组里的标签页才是 speedrun 的（扩展只记哪些组是 speedrun 的，存在 `chrome.storage.session`；组属于哪个窗口由 daemon 记）。只附着 speedrun 的标签页，页面脚本只经附着放进去，所以用户的网页里没有页面脚本，什么都不会上报。用户把标签页拖进组就是交给 speedrun：附着、注册、给当前页面补注入，之后的请求开始录（拖进来之前的不录）；拖出去就收回：先让页面脚本停止上报（`T.stop`），再解除附着，之后的文档里没有脚本。`call`、`input`、`evaluate` 也只对 speedrun 的标签页；扩展转发页面消息前还按组再判断一次。标签页关了只告诉 daemon 出现过的 speedrun 标签页。② daemon：`Ingestor.handle` 按 `AgentWindows.winOf` 丢弃不属于 speedrun 窗口的一切（页面消息带组号，按组号归到窗口），窗口没在 `WindowLog` 登记的也丢；扩展 ABI 不对时一条页面消息都不收。
-- **清理旧组按标题认**：daemon 重启后第一次用时关掉所有旧的 speedrun 组（`closeAllGroups`），浏览器重启后恢复出来的不在扩展的记录里，按标题 `speedrun` 认；用户自己起这个名字的组也会被关掉，拖进 speedrun 组的用户标签页跟着组一起关。
-- speedrun 组里发生的一切都记为 `src: agent`，不区分是 agent 还是有人在那个组里动了一下。
+- **只录 speedrun 的标签页（两层，安全相关）**：① 扩展：全局唯一折叠的黄色 `speedrun` 标签组纯做 UI 收纳（`parkInGroup` 单飞维护），归属认纯内存 `agentTabs`（`Set<number>`）。只附着 speedrun 自己开出及页面内弹出的标签页，页面脚本只经附着放进去，所以用户的网页里没有页面脚本，什么都不会上报。`call`、`input`、`evaluate` 也只对 `agentTabs` 里的标签页；扩展转发页面消息前按 `agentTabs` 过滤。标签页关了只对 `agentTabs` 里的标签页上报 `ev: "closed"`。② daemon：`Ingestor.handle` 按 `AgentWindows.winOf` 丢弃不属于 speedrun `WindowScope` 的一切（页面内新开或漏掉的标签页按 `opener` 继承 `winOf(opener)`），窗口没在 `WindowLog` 登记的也丢；扩展 ABI 不对时一条页面消息都不收。
+- **新连接自清场按标题认**：扩展每次连上新的 native `port` 时，自己单飞清理所有标题为 `speedrun` 的遗留组，替代 daemon 侧 `clean()` / `closeAllGroups`；全部任务结束后最后一个 tab 关闭时 Chrome 自动移除空组。
+- speedrun 窗口名下标签页发生的一切都记为 `src: agent`。
 
 - `dialogs.js`：拦下页面的系统弹窗（它们会抢前台并阻塞操作）：`alert` 放过，`confirm`、`prompt` 选取消，离开确认不弹，页面自己的 `beforeunload` 处理照常跑；都上报，`spr run` 输出和观察里列出。漏掉的由 `cdp.js` 的 `Page.javascriptDialogOpening` 关掉。
 

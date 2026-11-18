@@ -1,6 +1,5 @@
 import type { WindowLog } from "../record/windowlog.ts";
 import { Session, type RunHost } from "../browser/host.ts";
-import type { AgentWindows } from "../browser/window.ts";
 
 /** 一个 debug 窗口最多这么多次页面操作（防止失控地翻页面）。 */
 export const DEBUG_MAX_OPS = 200;
@@ -34,10 +33,10 @@ export type DebugWindow = {
 /** 页面函数快照给观察的信号：页面主体是不是 canvas、页面接口的线索；fresh 是这次观察还没说过。 */
 export type PageSignals = { canvas: boolean; api: string[]; dir: string; fresh: boolean };
 
-export type DebugDeps = { log: WindowLog; host: Pick<RunHost, "op" | "end">; win: Pick<AgentWindows, "isOpen" | "dispose"> };
+export type DebugDeps = { log: WindowLog; host: Pick<RunHost, "op" | "end">; win: { isOpen(key: string, tabId?: number): boolean | Promise<boolean>; dispose(key: string): Promise<void> } };
 
 /** 窗口没开时给 agent 的说明。 */
-export const notOpen = (name: string): string => `${name} 的 debug 窗口没开（没打开过，或者 close、空闲 ${DEBUG_IDLE_MS / 60_000} 分钟、daemon 重启、扩展重连、标签组被关掉）：spr debug ${name} navigate <网址|tab 号> 打开`;
+export const notOpen = (name: string): string => `${name} 的 debug 窗口没开（没打开过，或者 close、空闲 ${DEBUG_IDLE_MS / 60_000} 分钟、daemon 重启、扩展重连、标签页被关掉）：spr debug ${name} navigate <网址|tab 号> 打开`;
 
 /**
  * debug 窗口的登记：只记开着的窗口（和它的页面 Session）。关掉的从这里删掉，目录里的日志和 meta.json 保留。
@@ -122,7 +121,7 @@ export class DebugWindows {
   async page(w: DebugWindow): Promise<{ sess: Session; opened?: { url: string; title: string } }> {
     let sess = this.sessions.get(w.id);
     if (sess) {
-      if (sess.tab !== undefined && await this.d.win.isOpen(w.id)) return { sess };
+      if (sess.tab !== undefined && await this.d.win.isOpen(w.id, sess.tab)) return { sess };
       await this.close(w, "tab-closed");
       throw new Error(notOpen(w.compose));
     }
@@ -133,6 +132,14 @@ export class DebugWindows {
     w.url = res.url;
     w.title = res.title;
     return { sess, opened: res };
+  }
+
+  /** 扩展上报某标签页被关闭：若是当前 debug 窗口的主标签页，立即收尾 meta 与剩余子标签页。 */
+  onTabClosed(key: string, tabId: number): void {
+    const w = this.map.get(key);
+    const sess = this.sessions.get(key);
+    if (!w || !sess || sess.tab !== tabId) return;
+    void this.close(w, "tab-closed").catch(() => {});
   }
 
   /** 关掉 speedrun 组，同步更新 meta.json（open: false, closedBy）；日志目录保留。 */

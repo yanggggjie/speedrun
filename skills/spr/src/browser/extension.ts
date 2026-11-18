@@ -2,7 +2,7 @@
  * 扩展通道：daemon 经 relay（Chrome 拉起的 native messaging host，只转发字节）与 speedrun Chrome 扩展说话。
  * 帧：4 字节小端长度前缀 + UTF-8 JSON。
  *
- * daemon → 扩展：{ id, name, args }   name：call / tabs / goto / history / openTab / closeTab / closeGroup / closeAllGroups / idleGroup / screenshot / input / evaluate / reload，见 chrome-extension/background.js
+ * daemon → 扩展：{ id, name, args }   name：call / tabs / goto / history / openTab / closeTab / idleTab / screenshot / input / evaluate / reload，见 chrome-extension/background.js
  * 扩展 → daemon：{ id, result|error }（应答）| { type: "hello" | "page", ... }（推送：握手、页面消息、标签页的地址变化、新开和关闭）
  *
  * 只支持一个扩展连接、一个 daemon。
@@ -10,11 +10,11 @@
 import { EXTENSION_COMMAND_TIMEOUT_MS } from "../utils/constants.ts";
 
 /** 扩展 ABI 版本：daemon 和扩展之间的操作集合（call、tabs、goto、openTab、screenshot 等）。只有改 ABI 才加一，用户才需要刷新扩展。 */
-export const ABI = 16;
+export const ABI = 17;
 /** 从这个 ABI 起扩展支持 reload（从磁盘重新加载自己）：daemon 发现扩展旧了就自动让它重新加载，不用用户去 chrome://extensions 点。 */
 export const RELOADABLE_ABI = 13;
 
-/** 扩展 tabs 操作返回的一个标签页；speedrun 为真表示它在 speedrun 的标签组里（groupId 是 -1 表示不在任何组里）。 */
+/** 扩展 tabs 操作返回的一个标签页；speedrun 为真表示它是 speedrun 管理的标签页（groupId 是 -1 表示不在任何组里）。 */
 export type TabInfo = { tabId: number; windowId: number; groupId: number; speedrun?: boolean; active: boolean; url: string; title: string; status: string };
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };

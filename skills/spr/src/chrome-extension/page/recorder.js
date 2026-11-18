@@ -1,5 +1,5 @@
 // 页面里（MAIN world）的录制：fetch / XHR 的请求与响应、主文档的渲染结果、导航、页面快照。
-// 只在 speedrun 的标签页里（扩展经 CDP 注入）；被拖出组后 common.js 的 T.stop 让它停止上报；只如实上报发生的事，不改变页面行为。不记输入事件：agent 窗口里的操作都是 agent 的，由 daemon 记成 cmd 行。
+// 只经 CDP 注入 speedrun 的标签页；只如实上报发生的事，不改变页面行为。不记输入事件：agent 窗口里的操作都是 agent 的，由 daemon 记成 cmd 行。
 // WebSocket、事件流、Worker 里的请求由扩展的 Network 事件录（cdp.js）；sendBeacon 大多是埋点，不录。
 (() => {
   const T = window.__spr;
@@ -14,7 +14,7 @@
   const post = T.post;
 
   // ---- 读不读响应体：文本类的都读（跨站的也读，噪声由 daemon 判断）；不读的上报原因（bodySkip），daemon 写进 bodyOmitted ----
-  const skipOf = (ct) => (/event-stream/i.test(ct || "") ? "event-stream" : !TEXTY.test(ct || "") ? "not-text" : !T.foreground() ? "background" : null);
+  const skipOf = (ct) => (/event-stream/i.test(ct || "") ? "event-stream" : !TEXTY.test(ct || "") ? "not-text" : null);
 
   const bodyStr = (b) => {
     if (b == null) return null;
@@ -42,7 +42,7 @@
   // ---- fetch ----
   const prevFetch = window.fetch;
   window.fetch = function (input, init) {
-    const id = ++seq, t0 = performance.now(), fg = T.foreground();
+    const id = ++seq, t0 = performance.now();
     let url, method, reqBody = null, reqHeaders = null;
     try {
       const r = input instanceof Request ? input : null;
@@ -53,7 +53,6 @@
       else if (r && method !== "GET" && method !== "HEAD") reqBody = "[Request body not read]";
     } catch {}
     const p = prevFetch.apply(this, arguments);
-    if (!fg || !T.recording()) return p;
     p.then(async (res) => {
       const rec = { k: "net", via: "fetch", id, rid: docId + ":" + id, url, finalUrl: res.url, method, reqHeaders, reqBody, status: res.status, ct: res.headers.get("content-type"), ms: Math.round(performance.now() - t0), at: Math.round(t0) };
       try {
@@ -91,22 +90,20 @@
   XMLHttpRequest.prototype.send = function (b) {
     const t = this.__t;
     if (t) {
-      if (T.foreground() && T.recording()) {
-        t.reqBody = bodyStr(b);
-        const t0 = performance.now();
-        this.addEventListener("loadend", () => {
-          const xid = ++seq, rec = { k: "net", via: "xhr", id: xid, rid: docId + ":" + xid, ...t, finalUrl: this.responseURL, status: this.status, ct: this.getResponseHeader("content-type"), ms: Math.round(performance.now() - t0), at: Math.round(t0) };
-          try {
-            const skip = skipOf(rec.ct);
-            const rt = this.responseType;
-            if (skip) rec.bodySkip = skip;
-            else if (rt === "" || rt === "text") { rec.body = this.responseText.slice(0, BODY_MAX); rec.size = this.responseText.length; rec.truncated = this.responseText.length > BODY_MAX; }
-            else if (rt === "json") { const s = JSON.stringify(this.response) || ""; rec.body = s.slice(0, BODY_MAX); rec.size = s.length; rec.truncated = s.length > BODY_MAX; }
-            else rec.bodySkip = `responseType-${rt}`;
-          } catch (e) { rec.bodyErr = String(e); }
-          post(rec);
-        });
-      }
+      t.reqBody = bodyStr(b);
+      const t0 = performance.now();
+      this.addEventListener("loadend", () => {
+        const xid = ++seq, rec = { k: "net", via: "xhr", id: xid, rid: docId + ":" + xid, ...t, finalUrl: this.responseURL, status: this.status, ct: this.getResponseHeader("content-type"), ms: Math.round(performance.now() - t0), at: Math.round(t0) };
+        try {
+          const skip = skipOf(rec.ct);
+          const rt = this.responseType;
+          if (skip) rec.bodySkip = skip;
+          else if (rt === "" || rt === "text") { rec.body = this.responseText.slice(0, BODY_MAX); rec.size = this.responseText.length; rec.truncated = this.responseText.length > BODY_MAX; }
+          else if (rt === "json") { const s = JSON.stringify(this.response) || ""; rec.body = s.slice(0, BODY_MAX); rec.size = s.length; rec.truncated = s.length > BODY_MAX; }
+          else rec.bodySkip = `responseType-${rt}`;
+        } catch (e) { rec.bodyErr = String(e); }
+        post(rec);
+      });
     }
     return xs.apply(this, arguments);
   };
@@ -115,11 +112,11 @@
   let snapTimer = 0, lastSnap = 0;
   const later = (why, ms) => {
     clearTimeout(snapTimer);
-    snapTimer = setTimeout(() => { if (!T.foreground() || Date.now() - lastSnap < 1000) return; lastSnap = Date.now(); post({ k: "snap", snap: T.snap(why) }); }, ms);
+    snapTimer = setTimeout(() => { if (Date.now() - lastSnap < 1000) return; lastSnap = Date.now(); post({ k: "snap", snap: T.snap(why) }); }, ms);
   };
   // 主文档：渲染后的 DOM（不是服务器原始源码），原样上报；只记主框架的加载，不记 iframe 和单页应用的路由变化
   const captureDoc = () => {
-    if (window !== window.top || !T.foreground()) return;
+    if (window !== window.top) return;
     try {
       const html = "<!doctype html>\n" + document.documentElement.outerHTML;
       if (html.length <= BODY_MAX) post({ k: "doc", url: location.href, html });
@@ -134,7 +131,7 @@
   window.addEventListener("popstate", () => { post({ k: "nav", via: "popstate", url: location.href }); later("popstate", 600); });
 
   // ---- 点击、改值、提交之后补一张页面快照（输入本身不记：agent 的每一步操作由 daemon 记成 cmd 行）----
-  addEventListener("click", () => { if (T.foreground()) later("after-click", 700); }, true);
-  addEventListener("change", () => { if (T.foreground()) later("after-change", 700); }, true);
-  addEventListener("submit", () => { if (T.foreground()) later("after-submit", 700); }, true);
+  addEventListener("click", () => { later("after-click", 700); }, true);
+  addEventListener("change", () => { later("after-change", 700); }, true);
+  addEventListener("submit", () => { later("after-submit", 700); }, true);
 })();

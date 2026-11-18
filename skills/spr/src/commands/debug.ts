@@ -70,9 +70,15 @@ async function openWindow(name: string, url: string, ctx: Ctx, out: Output): Pro
   const w = ctx.debug.create({ compose: name, site: initialSite, url });
   out.rec.window = w.id;
   out.rec.ops = w.ops;
-  const { sess, opened } = await ctx.debug.page(w);
-  await ctx.host.quiet(sess);
-  await snapshotPage(ctx, w, sess);
+  let sess: Session, opened: { url: string; title: string } | undefined;
+  try {
+    ({ sess, opened } = await ctx.debug.page(w));
+    await ctx.host.quiet(sess);
+    await snapshotPage(ctx, w, sess);
+  } catch (error) {
+    await ctx.debug.close(w, "cmd").catch(() => {});
+    throw error;
+  }
   const obs = await observe(ctx, w, sess);
   ctx.debug.save(w);
   const site = normalizeSite(siteOfUrl(opened?.url ?? url)) || initialSite;

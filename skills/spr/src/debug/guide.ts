@@ -22,7 +22,7 @@ debug 窗口在用户 Chrome 的折叠标签组里操作页面并自动录制请
 - **修已有的 action**：在这里复现问题、核对请求和响应，修好文件后用 \`spr run <action>\` 验证。
 
 ## 窗口与操作
-- \`${cmd} navigate <网址|tab 号>\` 打开窗口（<名> 用小写字母、数字和 -，无需预先建文件）；close、空闲 ${Math.round(DEBUG_IDLE_MS / 60_000)} 分钟、daemon 重启、扩展重连、标签组被关时关闭，最多 ${DEBUG_MAX_OPS} 次页面操作。
+- \`${cmd} navigate <网址|tab 号>\` 打开窗口（<名> 用小写字母、数字和 -，无需预先建文件）；close、空闲 ${Math.round(DEBUG_IDLE_MS / 60_000)} 分钟、daemon 重启、扩展重连、标签页被关时关闭，最多 ${DEBUG_MAX_OPS} 次页面操作。
 - 遇到登录页：点一下就能登录的自己点（点前点后 find / read_page 确认）；要账号密码、二维码、验证码的停下来请用户在 Chrome 里登录。
 - 工具和 Claude in Chrome 对齐（先 find / read_page 看结构拿 ref，不靠截图猜坐标）：
   - 看结构：\`${cmd} find "搜索框"\`、\`${cmd} read_page --filter interactive\`、\`${cmd} get_page_text\`

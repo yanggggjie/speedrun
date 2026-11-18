@@ -6,7 +6,7 @@
 //   Runtime.addBinding：页面脚本调用 window.__sprSend(字符串) 上报，这里收到 Runtime.bindingCalled；
 //   Target.setAutoAttach（flatten）：跨站 iframe 作为子会话附着上来，同样注册后再放行；Worker 也这样附着，用 Network 录它的请求。
 // 页面脚本包不住的通道由这里的 Network 事件补上：WebSocket、事件流（SSE）、Worker 里的请求（channels 一节）。
-// 当前已经打开的文档补注入一次（脚本自己防重复）。解除附着后注册跟着没了，下一个文档就没有脚本（当前文档里的还在，拖出组时先 stopPage）。
+// 当前已经打开的文档补注入一次（脚本自己防重复）。解除附着后注册跟着没了，下一个文档就没有脚本。
 import { keySequence, modBits, typeSteps } from "./keys.js";
 
 const CMD_TIMEOUT_MS = 20_000;
@@ -94,7 +94,7 @@ chrome.debugger?.onEvent.addListener((source, method, params) => {
     report(source.tabId, { k: "dialog", kind: params.type, message: String(params.message ?? "").slice(0, 200) });
     return;
   }
-  if (method === "Page.frameNavigated" && !source.sessionId && !params.frame?.parentId) { pageUrl.set(source.tabId, params.frame.url); return; }
+  if (method === "Page.frameNavigated" && !source.sessionId && !params.frame?.parentId) { const u = params.frame.url; pageUrl.set(source.tabId, u); if (/^https?:/i.test(u)) report(source.tabId, { k: "tab", ev: "url", url: u }); return; }
   if (method === "Page.navigatedWithinDocument" && !source.sessionId) { pageUrl.set(source.tabId, params.url); return; }
   if (method.startsWith("Network.")) {
     if (source.sessionId && workerSessions.has(source.sessionId)) { void workerEvent(source, method, params).catch(() => {}); return; }
@@ -161,18 +161,12 @@ export async function attach(tabId) {
   try { await p; } finally { attaching.delete(tabId); }
 }
 
-/** 解除附着（speedrun 的组闲置时）：页面不再渲染，折叠组里的会被 Chrome 冻结，不吃 CPU；没有标签页附着时「正在调试此浏览器」的横幅也会消失。下次操作时 cdp() 自动重新附着。 */
+/** 解除附着（标签页闲置时）：页面不再渲染，折叠组里的会被 Chrome 冻结，不吃 CPU；没有标签页附着时「正在调试此浏览器」的横幅也会消失。下次操作时 cdp() 自动重新附着。 */
 export async function detach(tabId) {
   if (!attached.has(tabId)) return;
   attached.delete(tabId);
   childNo.delete(tabId);
   try { await chrome.debugger.detach({ tabId }); } catch { /* 已经断开、标签页已关 */ }
-}
-
-/** 标签页不再是 speedrun 的（被拖出组）：先让当前文档里的页面脚本停止上报、不再拦新标签页，再解除附着（之后的文档就没有脚本了）。 */
-export async function release(tabId) {
-  if (attached.has(tabId)) await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "window.__spr && window.__spr.stop && window.__spr.stop()" }).catch(() => {});
-  await detach(tabId);
 }
 
 /** 发一条 CDP 命令；附着断了（用户点掉提示条）就重新附着再发一次。每条命令有超时，页面卡住时不会一直挂着。 */
